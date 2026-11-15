@@ -27,4 +27,11 @@ impl Hub {
             *r = LegacyRandom::from_state(state);
         }
     }
+
+    pub fn rreturn_sync_time(&mut self, world: &World, rate: f32) {
+        let packet = self.time_packet(world, rate);
+        self.broadcast_level(&packet);
+        self.last_clock = world.day_time;
+        self.last_rate = rate;
+    }
 }

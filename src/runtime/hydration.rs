@@ -90,6 +90,8 @@ pub fn hydrate_level_from_disk(
         HashMap::new();
     let mut disk_gateway_anims: Vec<([i32; 3], horizon_client::block_entity_anim::EndGateway)> =
         Vec::new();
+    let mut disk_hoppers: HashMap<(i32, i32, i32), super::super::machines::HopperState> =
+        HashMap::new();
 
     if let Ok(meta_str) = fs::read_to_string(cp_dir.join("meta.json")) {
         if let Ok(meta) = serde_json::from_str::<serde_json::Value>(&meta_str) {
@@ -447,6 +449,21 @@ pub fn hydrate_level_from_disk(
                                 teleport_cooldown: cd as i32,
                             },
                         ));
+                    }
+                }
+            }
+            if let Some(arr) = rs["hoppers"].as_array() {
+                for row in arr {
+                    if let Some(a) = row.as_array()
+                        && a.len() == 4
+                        && let (Some(x), Some(y), Some(z), Some(cd)) =
+                            (a[0].as_i64(), a[1].as_i64(), a[2].as_i64(), a[3].as_i64())
+                    {
+                        let tag = Tag::compound([("TransferCooldown", Tag::Int(cd as i32))]);
+                        disk_hoppers.insert(
+                            (x as i32, y as i32, z as i32),
+                            super::super::machines::HopperState::load(&tag),
+                        );
                     }
                 }
             }
@@ -913,7 +930,7 @@ pub fn hydrate_level_from_disk(
         moving_pistons: disk_moving_pistons,
         piston_pushes: disk_piston_pushes,
         block_events: disk_block_events,
-        hoppers: HashMap::new(),
+        hoppers: disk_hoppers,
         mobs,
         dropped,
         orbs,

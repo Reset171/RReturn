@@ -640,23 +640,25 @@ pub fn restore_players_on_rollback(
                 if policy.player_potion_effects {
                     host.hub.send_active_effects(gi);
                 }
-                if let Some(hs) = &gs.hook {
-                    if let Some(h) = game.hook.as_mut() {
-                        h.position = Vec3::new(hs.position[0], hs.position[1], hs.position[2]);
-                        h.previous = Vec3::new(hs.previous[0], hs.previous[1], hs.previous[2]);
-                        if hs.rng_state != 0 {
-                            h.random = LegacyRandom::from_state(hs.rng_state);
+                if policy.entities_presence {
+                    if let Some(hs) = &gs.hook {
+                        if let Some(h) = game.hook.as_mut() {
+                            h.position = Vec3::new(hs.position[0], hs.position[1], hs.position[2]);
+                            h.previous = Vec3::new(hs.previous[0], hs.previous[1], hs.previous[2]);
+                            if hs.rng_state != 0 {
+                                h.random = LegacyRandom::from_state(hs.rng_state);
+                            }
+                        } else {
+                            game.spawn_remote_hook(
+                                hs.id,
+                                Vec3::new(hs.position[0], hs.position[1], hs.position[2]),
+                                Vec3::ZERO,
+                                ent_id,
+                            );
                         }
-                    } else {
-                        game.spawn_remote_hook(
-                            hs.id,
-                            Vec3::new(hs.position[0], hs.position[1], hs.position[2]),
-                            Vec3::ZERO,
-                            ent_id,
-                        );
+                    } else if let Some(h) = game.hook.take() {
+                        game.remove_remote_hook(h.id());
                     }
-                } else if let Some(h) = game.hook.take() {
-                    game.remove_remote_hook(h.id());
                 }
 
                 host.hub.flush_progress(conn);
@@ -708,6 +710,12 @@ pub fn restore_players_on_rollback(
         if policy.player_inventory {
             game.location_armor = game.armor.clone();
             game.apply_enchantment_attributes();
+        }
+        if policy.player_potion_effects {
+            game.potions.effects.list = gs.effects.clone();
+            game.potions.effects.tick_count = gs.effects_tick_count;
+            game.potions.effects.changes = gs.effects_changes;
+            game.level.active_effects = game.potions.effects.saved();
         }
         if policy.player_potion_effects || policy.player_inventory {
             game.potions.applied.clear();

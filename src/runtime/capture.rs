@@ -491,6 +491,22 @@ pub fn create_slot_checkpoint_on_server(
                 ),
                 None => (0, Cooldowns::default(), BTreeMap::new(), None),
             };
+            let is_owner = host.owner.as_ref().is_some_and(|o| o.uuid == g.uuid)
+                || host.hub.guests.len() == 1;
+            let (effects, effects_tick_count, effects_changes) =
+                if !g.effects.list.is_empty() || !is_owner || game.potions.effects.list.is_empty() {
+                    (
+                        g.effects.list.clone(),
+                        g.effects.tick_count,
+                        g.effects.changes,
+                    )
+                } else {
+                    (
+                        game.potions.effects.list.clone(),
+                        game.potions.effects.tick_count,
+                        game.potions.effects.changes,
+                    )
+                };
             guests.insert(
                 g.uuid,
                 GuestSnapshot {
@@ -545,9 +561,9 @@ pub fn create_slot_checkpoint_on_server(
                     selected: g.selected,
                     craft_grid: g.craft_grid.clone(),
                     craft_result: g.craft_result.clone(),
-                    effects: g.effects.list.clone(),
-                    effects_tick_count: g.effects.tick_count,
-                    effects_changes: g.effects.changes,
+                    effects,
+                    effects_tick_count,
+                    effects_changes,
                     shield_cooldown,
                     cooldowns,
                     recipe_book: g.recipe_book.clone(),

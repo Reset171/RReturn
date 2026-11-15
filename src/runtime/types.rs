@@ -54,10 +54,22 @@ pub fn is_valid_slot_name(name: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
+fn is_local_dev_allowed(game: &Game<'_>, requester: Option<u128>) -> bool {
+    if game.remote.is_some() {
+        return false;
+    }
+    let is_local_or_owner = match (requester, &game.lan) {
+        (None, _) => true,
+        (Some(req), Some(host)) => host.owner.as_ref().is_some_and(|o| o.uuid == req),
+        _ => false,
+    };
+    is_local_or_owner
+        && (with_state(|st| st.dev_mode)
+            || std::env::var_os("RRETURN_DEV").is_some_and(|v| v == "1" || v == "true"))
+}
+
 pub fn has_cheat_permission(game: &Game<'_>, requester: Option<u128>) -> bool {
-    if with_state(|st| st.dev_mode)
-        || std::env::var_os("RRETURN_DEV").is_some_and(|v| v == "1" || v == "true")
-    {
+    if is_local_dev_allowed(game, requester) {
         return true;
     }
     if game.allow_commands() {
@@ -98,9 +110,7 @@ pub fn has_cheat_permission(game: &Game<'_>, requester: Option<u128>) -> bool {
 }
 
 pub fn has_level_4_permission(game: &Game<'_>, requester: Option<u128>) -> bool {
-    if with_state(|st| st.dev_mode)
-        || std::env::var_os("RRETURN_DEV").is_some_and(|v| v == "1" || v == "true")
-    {
+    if is_local_dev_allowed(game, requester) {
         return true;
     }
     if game.allow_commands() {

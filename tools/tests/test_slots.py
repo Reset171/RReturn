@@ -1,5 +1,7 @@
 """Test 11: Timeline branching with named slots."""
 
+import os
+from tools.rreturn_harness import default_saves_dir
 from . import setup_clean_env
 
 
@@ -34,6 +36,31 @@ def test_11_slots_branching(h):
     invalid_res = h.rreturn("slot save ../bad")
     assert "Invalid slot name" in str(invalid_res), f"Invalid slot name was not rejected: {invalid_res}"
 
+    h.tp(25.5, 75.0, 25.5)
+    h.wait(4)
+    h.rreturn("save slot_io_guard")
+    h.wait(4)
+    slots_dir = default_saves_dir(h.instance) / h.world / "rreturn" / "slots"
+    if slots_dir.is_dir() and hasattr(os, "geteuid") and os.geteuid() != 0:
+        h.tp(60.5, 75.0, 60.5)
+        h.wait(4)
+        os.chmod(slots_dir, 0o555)
+        try:
+            io_res = h.rreturn("save slot_io_guard")
+        finally:
+            os.chmod(slots_dir, 0o755)
+        err_text = str(io_res).lower()
+        assert "failed" in err_text or "ошибка" in err_text or "i/o" in err_text, (
+            f"Unwritable checkpoint save did not report I/O failure: {io_res}"
+        )
+        h.rreturn("load slot_io_guard")
+        h.wait(6)
+        pos_guard = h.state()["player"]["position"]
+        assert abs(pos_guard[0] - 25.5) < 1.5 and abs(pos_guard[2] - 25.5) < 1.5, (
+            f"Known-good checkpoint corrupted after I/O failure: {pos_guard}"
+        )
+
+    h.rreturn("slot delete slot_io_guard")
     h.rreturn("slot delete slot_alpha")
     h.rreturn("slot delete slot_beta")
 

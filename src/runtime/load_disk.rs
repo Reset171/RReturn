@@ -534,6 +534,50 @@ pub fn load_slot_from_disk(world_root: &Path, slot: &str) -> Option<TimelineSnap
         .and_then(|t| t.get("player_extra").cloned())
         .or_else(|| disk_level.as_ref().and_then(|l| l.player_extra.clone()));
 
+    let player_attachments = globals_tag
+        .as_ref()
+        .and_then(|t| match t.get("player_attachments") {
+            Some(Tag::Compound(c)) => {
+                Some(horizon_world::attachments::Attachments::from_nbt(c.clone()))
+            }
+            _ => None,
+        })
+        .unwrap_or_default();
+
+    let mut guest_attachments = HashMap::new();
+    if let Some(Tag::List(list)) = globals_tag.as_ref().and_then(|t| t.get("guest_attachments")) {
+        for item in list {
+            if let (Some(Tag::String(u_str)), Some(Tag::Compound(c))) =
+                (item.get("uuid"), item.get("data"))
+                && let Ok(s) = u_str.to_string()
+                && let Ok(u) = u128::from_str_radix(&s, 16)
+            {
+                guest_attachments.insert(
+                    u,
+                    horizon_world::attachments::Attachments::from_nbt(c.clone()),
+                );
+            }
+        }
+    }
+
+    let mut entity_attachments = HashMap::new();
+    if let Some(Tag::List(list)) = globals_tag
+        .as_ref()
+        .and_then(|t| t.get("entity_attachments"))
+    {
+        for item in list {
+            if let (Some(Tag::IntArray(arr)), Some(Tag::Compound(c))) =
+                (item.get("uuid"), item.get("data"))
+                && arr.len() == 4
+            {
+                entity_attachments.insert(
+                    [arr[0], arr[1], arr[2], arr[3]],
+                    horizon_world::attachments::Attachments::from_nbt(c.clone()),
+                );
+            }
+        }
+    }
+
     let sculk_darkness = meta["sculk_darkness"]
         .as_array()
         .and_then(|arr| {
@@ -704,6 +748,20 @@ pub fn load_slot_from_disk(world_root: &Path, slot: &str) -> Option<TimelineSnap
         })
         .unwrap_or_default();
 
+    let mut lead_killers = HashMap::new();
+    if let Some(arr) = meta["lead_killers"].as_array() {
+        for row in arr {
+            if let Some(a) = row.as_array()
+                && a.len() == 3
+                && let (Some(id), Some(u_str), Some(dim_str)) =
+                    (a[0].as_u64(), a[1].as_str(), a[2].as_str())
+                && let Ok(u) = u128::from_str_radix(u_str, 16)
+            {
+                lead_killers.insert(id as u32, (u, Dim::from_id(dim_str)));
+            }
+        }
+    }
+
     let sleep_seen = meta["sleep_seen"]
         .as_array()
         .and_then(|a| {
@@ -782,11 +840,11 @@ pub fn load_slot_from_disk(world_root: &Path, slot: &str) -> Option<TimelineSnap
         lectern_pulses,
         player_beds,
         sleep_seen,
-        lead_killers: HashMap::new(),
+        lead_killers,
         lid_openers,
-        entity_attachments: HashMap::new(),
-        player_attachments: horizon_world::attachments::Attachments::default(),
-        guest_attachments: HashMap::new(),
+        entity_attachments,
+        player_attachments,
+        guest_attachments,
         scheduled_events,
         scoreboard,
         sound_seed_state: meta["sound_seed_state"].as_u64(),

@@ -204,19 +204,19 @@ class RReturnHarness:
         res = self.command(f"rreturn {subcmd}")
         chat = res.get("chat", [])
         if chat:
-            text = "\n".join(chat)
+            latest = chat[0]
             try:
-                return json.loads(text)
+                return json.loads(latest)
             except Exception:
                 pass
-            start = text.find("{")
+            start = latest.find("{")
             if start != -1:
                 try:
-                    val, _ = json.JSONDecoder().raw_decode(text[start:])
+                    val, _ = json.JSONDecoder().raw_decode(latest[start:])
                     return val
                 except Exception:
                     pass
-            return text
+            return latest
         return res
 
     def state(self):

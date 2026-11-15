@@ -66,12 +66,38 @@ pub fn save_slot_to_disk(world_root: &Path, slot: &str, snap: &TimelineSnapshot)
             &staging_dir.join("generated"),
         )?;
 
+        let guest_att_list: Vec<Tag> = snap
+            .guest_attachments
+            .iter()
+            .map(|(&u, att)| {
+                Tag::compound([
+                    ("uuid", Tag::String(format!("{:032x}", u).as_str().into())),
+                    ("data", Tag::Compound(att.to_nbt())),
+                ])
+            })
+            .collect();
+        let entity_att_list: Vec<Tag> = snap
+            .entity_attachments
+            .iter()
+            .map(|(&u, att)| {
+                Tag::compound([
+                    ("uuid", Tag::IntArray(u.to_vec())),
+                    ("data", Tag::Compound(att.to_nbt())),
+                ])
+            })
+            .collect();
         let mut globals_entries = vec![
             ("border", snap.border.pack()),
             ("scoreboard", snap.scoreboard.pack()),
             ("bossbars", snap.bossbars.clone()),
             ("sculk_tracker", snap.sculk_tracker.to_nbt()),
             ("rand_sequences", snap.rand_sequences.to_nbt()),
+            (
+                "player_attachments",
+                Tag::Compound(snap.player_attachments.to_nbt()),
+            ),
+            ("guest_attachments", Tag::List(guest_att_list)),
+            ("entity_attachments", Tag::List(entity_att_list)),
         ];
         if let Some(ls) = snap.levels.get(&Dim::Overworld) {
             globals_entries.push(("border_overworld", ls.border.pack()));
@@ -404,7 +430,12 @@ pub fn save_slot_to_disk(world_root: &Path, slot: &str, snap: &TimelineSnapshot)
                     serde_json::json!([x, y, z, gw.age, gw.teleport_cooldown])
                 })
                 .collect();
-            let mut rs_obj = serde_json::Map::with_capacity(16);
+            let hoppers_rt: Vec<serde_json::Value> = lsnap
+                .hoppers
+                .iter()
+                .map(|(&(x, y, z), h)| serde_json::json!([x, y, z, h.cooldown]))
+                .collect();
+            let mut rs_obj = serde_json::Map::with_capacity(17);
             rs_obj.insert("comparator_outputs".to_owned(), serde_json::Value::Array(comps));
             rs_obj.insert("torch_toggles".to_owned(), serde_json::Value::Array(torches));
             rs_obj.insert("moving_pistons".to_owned(), serde_json::Value::Array(moving));
@@ -421,6 +452,7 @@ pub fn save_slot_to_disk(world_root: &Path, slot: &str, snap: &TimelineSnapshot)
             rs_obj.insert("lectern_pulses".to_owned(), serde_json::Value::Array(lectern_rt));
             rs_obj.insert("portals_entities".to_owned(), serde_json::Value::Array(portals_rt));
             rs_obj.insert("gateway_anims".to_owned(), serde_json::Value::Array(gateways_rt));
+            rs_obj.insert("hoppers".to_owned(), serde_json::Value::Array(hoppers_rt));
             level_redstone_json.insert(dim.id().to_owned(), serde_json::Value::Object(rs_obj));
         }
 
@@ -469,6 +501,11 @@ pub fn save_slot_to_disk(world_root: &Path, slot: &str, snap: &TimelineSnapshot)
             .iter()
             .map(|(k, (ticks, c))| serde_json::json!([k, ticks, c.partial, c.rate, c.paused]))
             .collect();
+        let lead_killers_json: Vec<serde_json::Value> = snap
+            .lead_killers
+            .iter()
+            .map(|(&id, &(u, dim))| serde_json::json!([id, format!("{:032x}", u), dim.id()]))
+            .collect();
 
         let saved_at_unix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -498,7 +535,7 @@ pub fn save_slot_to_disk(world_root: &Path, slot: &str, snap: &TimelineSnapshot)
             serde_json::json!(snap.health_rules.freeze_damage),
         );
 
-        let mut meta_map = serde_json::Map::with_capacity(40);
+        let mut meta_map = serde_json::Map::with_capacity(41);
         meta_map.insert("slot".to_owned(), serde_json::json!(clean));
         meta_map.insert("saved_at_unix".to_owned(), serde_json::json!(saved_at_unix));
         meta_map.insert("game_time".to_owned(), serde_json::json!(snap.game_time));
@@ -587,6 +624,10 @@ pub fn save_slot_to_disk(world_root: &Path, slot: &str, snap: &TimelineSnapshot)
         meta_map.insert(
             "level_redstone".to_owned(),
             serde_json::Value::Object(level_redstone_json),
+        );
+        meta_map.insert(
+            "lead_killers".to_owned(),
+            serde_json::Value::Array(lead_killers_json),
         );
         meta_map.insert(
             "mob_players".to_owned(),

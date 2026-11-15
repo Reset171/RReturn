@@ -207,6 +207,7 @@ pub fn restore_players_on_rollback(
     target_dim: Dim,
 ) {
     let policy = &snap.policy;
+    let net_clock_rate = game.network_clock_rate();
     if let Some(mut host) = game.lan.take() {
         if policy.server_world_border && prev_dim != target_dim {
             host.border_sent = None;
@@ -684,6 +685,9 @@ pub fn restore_players_on_rollback(
             host.hub.native_menu_returns.clear();
         }
         host.hub.rreturn_reset_tracked();
+        if policy.world_time {
+            host.hub.rreturn_sync_time(&game.world, net_clock_rate);
+        }
         host.hub.synced.clear();
         game.lan = Some(host);
     }

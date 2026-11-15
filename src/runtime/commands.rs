@@ -440,14 +440,13 @@ pub fn handle_client_command(game: &mut Game<'_>, command: &str, ran: &mut bool)
         || trimmed == "rreturn slot delete"
         || trimmed.starts_with("rreturn slot delete ")
         || trimmed == "rreturn slots delete"
-        || trimmed.starts_with("rreturn slots delete ");
-    let is_dev_cmd = trimmed == "rreturn dev" || trimmed.starts_with("rreturn dev ");
+        || trimmed.starts_with("rreturn slots delete ")
+        || trimmed == "rreturn dev"
+        || trimmed.starts_with("rreturn dev ");
     let cmd_owned = trimmed.to_owned();
     if let Some(server) = &game.integrated {
         if let Some((allowed, lines)) = server.call(move |srv| {
-            let permitted = if is_dev_cmd {
-                true
-            } else if needs_level_4 {
+            let permitted = if needs_level_4 {
                 has_level_4_permission(srv, None)
             } else {
                 has_cheat_permission(srv, None)
@@ -468,9 +467,7 @@ pub fn handle_client_command(game: &mut Game<'_>, command: &str, ran: &mut bool)
             }
         }
     } else {
-        let permitted = if is_dev_cmd {
-            true
-        } else if needs_level_4 {
+        let permitted = if needs_level_4 {
             has_level_4_permission(game, None)
         } else {
             has_cheat_permission(game, None)
@@ -550,7 +547,9 @@ pub fn intercept_guest_command(
         || trimmed.starts_with("rreturn slot delete ")
         || trimmed == "rreturn slots delete"
         || trimmed.starts_with("rreturn slots delete ")
-        || trimmed.starts_with("rreturn trigger rewind");
+        || trimmed.starts_with("rreturn trigger rewind")
+        || trimmed == "rreturn dev"
+        || trimmed.starts_with("rreturn dev ");
     let min_op = if needs_level_4 { 4 } else { 2 };
     let has_op = host.hub.guest(conn).is_some_and(|g| {
         g.permission >= min_op || host.hub.ops.get(&g.uuid).copied().unwrap_or(0) >= min_op

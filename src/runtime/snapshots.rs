@@ -330,6 +330,10 @@ pub struct TimelineSnapshot {
     pub levels: HashMap<Dim, LevelSnapshot>,
     pub mob_players: FxHashMap<u32, u32>,
     pub disk_restored: bool,
+    pub client_using: Option<(usize, u32)>,
+    pub client_use_duration: i32,
+    pub client_use_ticks_set: bool,
+    pub client_crossbow_sounds: [bool; 2],
 }
 
 #[derive(Clone)]

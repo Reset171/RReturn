@@ -855,6 +855,10 @@ pub fn load_slot_from_disk(world_root: &Path, slot: &str) -> Option<TimelineSnap
         levels: HashMap::new(),
         mob_players,
         disk_restored: false,
+        client_using: None,
+        client_use_duration: 0,
+        client_use_ticks_set: false,
+        client_crossbow_sounds: [false; 2],
     })
 }
 

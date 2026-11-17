@@ -38,8 +38,6 @@ pub fn apply_client_level_rollback(game: &mut Game<'_>, slot: &str) {
     game.sign_edit = None;
     game.book = None;
     game.command_block_screen = None;
-    game.using = None;
-    game.end_mod_use();
     game.mining = None;
     game.clicks.miss_time = 0;
     game.hotbar_pop = [0; 10];

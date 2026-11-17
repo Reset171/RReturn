@@ -115,7 +115,6 @@ pub fn rollback_slot_checkpoint_on_server(game: &mut Game<'_>, slot: &str) -> bo
         );
     }
     game.portals = Default::default();
-    game.portals.player.cooldown = 80;
     game.load_portal_arrivals();
     let locator = game.end.locator();
     game.end = Default::default();

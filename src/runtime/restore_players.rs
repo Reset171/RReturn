@@ -586,7 +586,6 @@ pub fn restore_players_on_rollback(
 
                     *play_state = Default::default();
                     play_state.left_game = prev_left_game;
-                    play_state.portal.cooldown = 80;
 
                     if let Some((st, lec, merch, mw, craft, heard)) = prev_menus {
                         play_state.station = st;
@@ -722,7 +721,6 @@ pub fn restore_players_on_rollback(
             } else if !policy.preserve_new_player_inventory {
                 if let Some(play_state) = host.play.get_mut(&conn) {
                     *play_state = Default::default();
-                    play_state.portal.cooldown = 80;
                 }
                 let g = &mut host.hub.guests[gi];
                 g.inventory = vec![None; 36];
@@ -736,6 +734,19 @@ pub fn restore_players_on_rollback(
         if !game.level_teleports.is_empty() {
             game.run_level_teleports(&mut host);
         }
+        game.server_trips.clear();
+        game.teleport_notes.clear();
+        game.spawn_wait.clear();
+        for gi in 0..host.hub.guests.len() {
+            let conn = host.hub.guests[gi].conn;
+            host.hub.guests[gi].landing = false;
+            host.hub.guests[gi].loading = false;
+            host.hub.guests[gi].load_timeout = 0;
+            if let Some(play_state) = host.play.get_mut(&conn) {
+                play_state.portal = Default::default();
+            }
+        }
+        game.portals = Default::default();
         if policy.player_inventory {
             host.hub.native_menu_events.clear();
             host.hub.native_menu_returns.clear();

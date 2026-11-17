@@ -624,9 +624,15 @@ pub fn restore_players_on_rollback(
                     }
 
                     if policy.entities_presence {
-                        if let Some(hs) = &gs.hook
-                            && let Some(mut h) = prev_hook
-                        {
+                        if let Some(hs) = &gs.hook {
+                            let mut h = prev_hook.unwrap_or_else(|| {
+                                fishing::Hook::rreturn_create(
+                                    hs.id,
+                                    hs.position,
+                                    hs.previous,
+                                    hs.rng_state,
+                                )
+                            });
                             h.position = Vec3::new(hs.position[0], hs.position[1], hs.position[2]);
                             h.previous = Vec3::new(hs.previous[0], hs.previous[1], hs.previous[2]);
                             if hs.rng_state != 0 {
@@ -686,7 +692,14 @@ pub fn restore_players_on_rollback(
                 }
                 if policy.entities_presence {
                     if let Some(hs) = &gs.hook {
-                        if let Some(h) = game.hook.as_mut() {
+                        if is_singleplayer || host.owner.as_ref().is_some_and(|o| o.uuid == uuid) {
+                            game.rreturn_restore_hook(
+                                hs.id,
+                                hs.position,
+                                hs.previous,
+                                hs.rng_state,
+                            );
+                        } else if let Some(h) = game.hook.as_mut() {
                             h.position = Vec3::new(hs.position[0], hs.position[1], hs.position[2]);
                             h.previous = Vec3::new(hs.previous[0], hs.previous[1], hs.previous[2]);
                             if hs.rng_state != 0 {

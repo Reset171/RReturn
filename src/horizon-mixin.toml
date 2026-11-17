@@ -42,6 +42,12 @@ file = "crates/horizon-client/src/game/end.rs"
 name = "rreturn_end"
 source = "end_ext.rs"
 
+[[module]]
+id = "fishing_ext"
+file = "crates/horizon-client/src/game/fishing.rs"
+name = "rreturn_fishing"
+source = "fishing_ext.rs"
+
 [[injection]]
 id = "native-mods"
 target = "horizon_client::game::native_hooks::Game<'_>::native_mods"

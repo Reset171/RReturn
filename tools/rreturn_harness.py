@@ -81,7 +81,11 @@ class RReturnHarness:
                     self.launched_new_process = launched
                     return True
                 except (socket.error, ConnectionRefusedError):
-                    pass
+                    if not launched and (time.time() - start > 1.0):
+                        try:
+                            self.socket_path.unlink(missing_ok=True)
+                        except OSError:
+                            pass
             elif auto_launch and not launched and (time.time() - start > 1.5):
                 print(f"[Harness] Socket {self.socket_path} not found, launching isolated world '{self.world}'...")
                 if self.player_dir is None:

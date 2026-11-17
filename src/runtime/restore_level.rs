@@ -422,7 +422,8 @@ pub fn apply_level_snapshot_in_place(
                 let _ = fs::remove_file(&path);
             }
         }
-        game.raiding = Default::default();
+        game.raiding.loaded = None;
+        game.load_raids();
     }
 
     game.spawn_scratch = Default::default();
@@ -540,7 +541,6 @@ pub fn apply_level_snapshot_in_place(
     game.transient_blocks.clear();
     game.destroying.clear();
     game.mining = None;
-    game.using = None;
     game.lan_events.clear();
     game.lan_block_events.clear();
     game.lan_entity_events.clear();

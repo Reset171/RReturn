@@ -248,6 +248,7 @@ pub fn rollback_slot_checkpoint_on_server(game: &mut Game<'_>, slot: &str) -> bo
         }
     }
     game.creatures.reset_trader();
+    game.load_trader_data();
     bench_accum(Phase::Bosses, t_bosses);
 
     let t_mca = std::time::Instant::now();

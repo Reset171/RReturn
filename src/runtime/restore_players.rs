@@ -279,10 +279,12 @@ pub fn restore_players_on_rollback(
                 host.hub.guests[gi]
                     .send(&C::ContainerClose(play::ContainerClose { container: w }));
             }
-            host.hub.guests[gi].send(&C::StopSound(play::StopSound {
-                source: None,
-                sound: None,
-            }));
+            if prev_dim != target_dim {
+                host.hub.guests[gi].send(&C::StopSound(play::StopSound {
+                    source: None,
+                    sound: None,
+                }));
+            }
             host.hub.guests[gi].landing = false;
 
             let is_singleplayer = host.hub.guests.len() == 1
@@ -481,13 +483,37 @@ pub fn restore_players_on_rollback(
                     }
                     let pose_now = g.pose();
                     g.sent_pose = pose_now;
+                    let mut shared_flags: i8 = 0;
+                    if gs.fire_ticks > 0 {
+                        shared_flags |= 0x01;
+                    }
+                    if gs.sneaking {
+                        shared_flags |= 0x02;
+                    }
+                    if gs.sprinting {
+                        shared_flags |= 0x08;
+                    }
+                    if gs.fall_flying {
+                        shared_flags |= 0x80u8 as i8;
+                    }
+
                     g.send(&C::SetEntityData(play::SetEntityData {
                         id: g.entity_id,
                         values: vec![
                             (
+                                0,
+                                horizon_protocol::entity_data::serializer::BYTE,
+                                horizon_protocol::entity_data::Value::Byte(shared_flags),
+                            ),
+                            (
                                 6,
                                 horizon_protocol::entity_data::serializer::POSE,
                                 horizon_protocol::entity_data::Value::Id(pose_now.id()),
+                            ),
+                            (
+                                7,
+                                horizon_protocol::entity_data::serializer::INT,
+                                horizon_protocol::entity_data::Value::Int(gs.ticks_frozen),
                             ),
                             (
                                 8,
@@ -805,4 +831,8 @@ pub fn restore_players_on_rollback(
     if policy.server_bossbars {
         game.publish_boss_bars();
     }
+    game.using = snap.client_using;
+    game.use_duration = snap.client_use_duration;
+    game.use_ticks_set = snap.client_use_ticks_set;
+    game.crossbow_sounds = snap.client_crossbow_sounds;
 }

@@ -722,6 +722,10 @@ pub fn create_slot_checkpoint_on_server(
         levels,
         mob_players: game.lan.as_ref().map(|h| h.mob_players.clone()).unwrap_or_default(),
         disk_restored: true,
+        client_using: game.using,
+        client_use_duration: game.use_duration,
+        client_use_ticks_set: game.use_ticks_set,
+        client_crossbow_sounds: game.crossbow_sounds,
     });
 
     bench_accum(Phase::CaptureGlobals, t_globals);

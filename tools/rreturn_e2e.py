@@ -17,6 +17,7 @@ from tools.tests.test_vehicles import (
     test_4_fishing_bobber_preservation,
     test_5_boat_mount_rollback,
     test_16_flying_arrow_projectile,
+    test_45_fishing_bobber_unheld_rod_rollback,
 )
 from tools.tests.test_mobs_ai import (
     test_6_remote_chunks_mob_cleanup,
@@ -159,6 +160,7 @@ def build_test_catalog():
         (42, "Test 42: Sheep Sheared and Wool Color Rollback", "mobs", test_42_sheep_sheared_and_color_rollback),
         (43, "Test 43: Potion Effects Cleared on Rollback", "death", test_43_potion_effects_cleared_on_rollback),
         (44, "Test 44: Disk Checkpoint Singleplayer UUID Fallback", "slots", test_44_disk_checkpoint_singleplayer_uuid_fallback),
+        (45, "Test 45: Fishing Bobber Unheld Rod Rollback", "vehicles", test_45_fishing_bobber_unheld_rod_rollback),
     ]
 
 

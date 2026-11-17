@@ -142,6 +142,7 @@ fn assemble_runtime(bundle_dir: &Path) {
     boats::Boat,
     commands::OtherEntity,
     dragon::{Crystal, Dragon},
+    fishing,
     lan::LanHost,
     machines::HopperState,
     minecarts::Minecart,

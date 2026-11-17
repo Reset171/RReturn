@@ -31,6 +31,7 @@ def test_4_fishing_bobber_preservation(h):
     p = st.get("player", {})
     assert abs(p.get("position", [0, 0, 0])[0] - 400.5) < 1.5, f"Position not restored: {p}"
     assert h.inventory().get("counts", {}).get("minecraft:fishing_rod") == 1, "Fishing rod was not restored"
+    assert h.status().get("fishing") is not None, "Fishing bobber was not restored after rollback"
     h.command("clear @s")
     h.command("fill 398 63 401 402 64 405 minecraft:stone")
 
@@ -97,3 +98,44 @@ def test_16_flying_arrow_projectile(h):
 
     h.command("tick unfreeze")
     h.command("kill @e[type=arrow,distance=..32]")
+
+
+def test_45_fishing_bobber_unheld_rod_rollback(h):
+    setup_clean_env(h)
+    h.tp(400.5, 65, 400.5)
+    h.command("fill 398 63 401 402 64 405 minecraft:water")
+    h.command("fill 399 64 399 401 64 400 minecraft:stone")
+    h.command("tp @s 400.5 65.0 400.0 0 25")
+    h.command("give @s minecraft:fishing_rod 1")
+    h.select_slot(1)
+    h.wait(3)
+
+    # 1. Кинул крючок удочки
+    h.use_item()
+    h.wait(8)
+    assert h.status().get("fishing") is not None, "Hook not cast into water"
+
+    # 2. Сделал чекпоинт
+    h.rreturn("set")
+    h.wait(2)
+
+    # 3. Первый откат (удочка в руке)
+    h.rreturn("load")
+    h.wait(6)
+
+    # 4. Крючок в воде
+    assert h.status().get("fishing") is not None, "Hook disappeared on first rollback"
+
+    # 5. Убрал из руки удочку (переключил на пустой слот 2)
+    h.select_slot(2)
+    h.wait(4)
+    assert h.status().get("fishing") is None, "Hook was not removed when unholding rod"
+
+    # 6. Второй откат
+    h.rreturn("load")
+    h.wait(6)
+
+    # 7. Крючок снова в воде и привязан к руке
+    assert h.status().get("fishing") is not None, "Hook not restored after unholding rod and rolling back"
+    h.command("clear @s")
+    h.command("fill 398 63 401 402 64 405 minecraft:stone")

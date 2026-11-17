@@ -477,6 +477,8 @@ pub fn create_slot_checkpoint_on_server(
                     )
                 }
             };
+            let is_owner = host.owner.as_ref().is_some_and(|o| o.uuid == g.uuid)
+                || host.hub.guests.len() == 1;
             let (shield_cooldown, cooldowns, stats, hook) = match host.play.get(&g.conn) {
                 Some(p) => (
                     p.shield_cooldown,
@@ -491,8 +493,18 @@ pub fn create_slot_checkpoint_on_server(
                 ),
                 None => (0, Cooldowns::default(), BTreeMap::new(), None),
             };
-            let is_owner = host.owner.as_ref().is_some_and(|o| o.uuid == g.uuid)
-                || host.hub.guests.len() == 1;
+            let hook = hook.or_else(|| {
+                if is_owner {
+                    game.hook.as_ref().map(|h| HookSnapshot {
+                        id: h.id(),
+                        position: [h.position.x, h.position.y, h.position.z],
+                        previous: [h.previous.x, h.previous.y, h.previous.z],
+                        rng_state: h.random.state(),
+                    })
+                } else {
+                    None
+                }
+            });
             let (effects, effects_tick_count, effects_changes) =
                 if !g.effects.list.is_empty() || !is_owner || game.potions.effects.list.is_empty() {
                     (

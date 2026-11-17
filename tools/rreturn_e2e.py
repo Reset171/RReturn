@@ -55,6 +55,7 @@ from tools.tests.test_portals import (
     test_25_flying_ender_pearl_discard,
     test_26_portal_processor_cooldown,
     test_27_end_credits_respawn_safety,
+    test_46_nether_portal_creative_rollback_and_reenter,
 )
 from tools.tests.test_mobs_advanced import (
     test_28_shoulder_parrots_rollback,
@@ -161,6 +162,7 @@ def build_test_catalog():
         (43, "Test 43: Potion Effects Cleared on Rollback", "death", test_43_potion_effects_cleared_on_rollback),
         (44, "Test 44: Disk Checkpoint Singleplayer UUID Fallback", "slots", test_44_disk_checkpoint_singleplayer_uuid_fallback),
         (45, "Test 45: Fishing Bobber Unheld Rod Rollback", "vehicles", test_45_fishing_bobber_unheld_rod_rollback),
+        (46, "Test 46: Nether Portal Creative Rollback and Reenter", "portals", test_46_nether_portal_creative_rollback_and_reenter),
     ]
 
 

@@ -86,3 +86,67 @@ def test_27_end_credits_respawn_safety(h):
 
     st = h.state()
     assert st.get("screen") == "playing", f"Screen was broken after credits check: {st.get('screen')}"
+
+
+def test_46_nether_portal_creative_rollback_and_reenter(h):
+    setup_clean_env(h)
+    h.command("gamemode creative")
+    h.wait(2)
+
+    # Стоим в безопасном месте в Оверворлде
+    h.tp(1380.5, 65.0, 1380.5)
+    h.wait(2)
+    assert "overworld" in h.state().get("dimension", ""), f"Player not in overworld before building portal: {h.state().get('dimension')}"
+
+    # Строим портал на отдалении
+    h.command("fill 1399 64 1399 1401 64 1401 minecraft:obsidian")
+    h.command("fill 1399 65 1400 1399 68 1400 minecraft:obsidian")
+    h.command("fill 1401 65 1400 1401 68 1400 minecraft:obsidian")
+    h.command("fill 1399 68 1400 1401 68 1400 minecraft:obsidian")
+    h.command("setblock 1400 65 1400 minecraft:nether_portal[axis=x]")
+    h.wait(3)
+
+    # Стоим перед порталом (но НЕ внутри)
+    h.tp(1400.5, 65.0, 1396.0)
+    h.wait(2)
+    assert "overworld" in h.state().get("dimension", ""), f"Player not in overworld before checkpoint: {h.state().get('dimension')}"
+
+    # Делаем чекпоинт в Оверворлде в creative
+    h.rreturn("set")
+    h.wait(2)
+
+    # Идем в портал в Незер
+    h.tp(1400.5, 65.0, 1400.0)
+    in_nether = False
+    for _ in range(40):
+        h.wait(2)
+        dim = h.state().get("dimension", "")
+        if "the_nether" in dim or "nether" in dim:
+            in_nether = True
+            break
+    assert in_nether, f"Player did not travel to the Nether: dimension is {h.state().get('dimension')}"
+
+    h.rreturn("load")
+    for _ in range(10):
+        h.wait(2)
+        if "overworld" in h.state().get("dimension", ""):
+            break
+
+    st_after = h.state()
+    assert "overworld" in st_after.get("dimension", ""), f"Dimension not overworld after rollback: {st_after.get('dimension')}"
+    assert st_after.get("screen") == "playing", f"Screen stuck on loading after rollback: {st_after.get('screen')}"
+
+    h.tp(1400.5, 65.0, 1400.0)
+
+    reentered_nether = False
+    for _ in range(40):
+        h.wait(2)
+        st_loop = h.state()
+        dim = st_loop.get("dimension", "")
+        if "the_nether" in dim or "nether" in dim:
+            reentered_nether = True
+            break
+    assert reentered_nether, f"Player failed to re-enter Nether after rollback: dim={h.state().get('dimension')}, screen={h.state().get('screen')}"
+    assert h.state().get("screen") == "playing", f"Screen stuck after re-entering Nether: {h.state().get('screen')}"
+
+    h.tp(0.5, 65.0, 0.5)

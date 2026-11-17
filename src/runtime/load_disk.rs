@@ -101,7 +101,8 @@ pub fn load_slot_from_disk(world_root: &Path, slot: &str) -> Option<TimelineSnap
     if let Some(g_arr) = meta["guests"].as_array() {
         for g_val in g_arr {
             let uuid_str = g_val["uuid"].as_str().unwrap_or("");
-            let uuid = u128::from_str_radix(uuid_str, 16).unwrap_or(0);
+            let uuid_clean = uuid_str.replace('-', "");
+            let uuid = u128::from_str_radix(&uuid_clean, 16).unwrap_or(0);
             if uuid == 0 {
                 continue;
             }

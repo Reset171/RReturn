@@ -150,3 +150,54 @@ def test_41_disk_checkpoint_reopen_and_rollback(h):
     h.command("fill 2397 65 2397 2403 70 2403 minecraft:air")
     h.tp(0.5, 65.0, 0.5)
     h.wait(4)
+
+
+def test_44_disk_checkpoint_singleplayer_uuid_fallback(h):
+    import json
+    setup_clean_env(h)
+    h.tp(500.5, 70.0, 500.5)
+    h.wait(4)
+    h.rreturn("set")
+    h.wait(4)
+
+    cp_meta = default_saves_dir(h.instance) / h.world / "rreturn" / "checkpoint" / "meta.json"
+    assert cp_meta.is_file(), f"meta.json not found at {cp_meta}"
+
+    with open(cp_meta, "r") as f:
+        meta = json.load(f)
+
+    # Заменяем UUID гостя на чужой UUID (например, имитируя запуск под другим профилем)
+    dummy_uuid = "3bfd098ae4013b628300bbcb64541035"
+    if meta.get("guests"):
+        meta["guests"][0]["uuid"] = dummy_uuid
+    with open(cp_meta, "w") as f:
+        json.dump(meta, f)
+
+    # Очищаем память, заставляя мод гидрировать снапшот с изменённым UUID с диска
+    h.rreturn("purge_memory")
+    h.wait(3)
+
+    # Перемещаемся в другое место и наносим урон
+    h.tp(600.5, 70.0, 600.5)
+    h.command("damage @s 10 minecraft:generic")
+    h.wait(4)
+
+    p_moved = h.state()["player"]
+    assert abs(p_moved["position"][0] - 600.5) < 2.0, "Player did not move"
+    assert p_moved["health"] <= 15.0, "Player did not take damage"
+
+    # Выполняем откат с диска
+    h.rreturn("load")
+    h.wait(8)
+
+    p_after = h.state()["player"]
+    pos_x = p_after["position"][0]
+    pos_z = p_after["position"][2]
+    assert abs(pos_x - 500.5) < 2.0 and abs(pos_z - 500.5) < 2.0, (
+        f"Player position not restored from disk fallback: pos={p_after['position']}"
+    )
+    assert p_after["health"] >= 19.0, (
+        f"Player health not restored from disk fallback: health={p_after['health']}"
+    )
+    h.tp(0.5, 65.0, 0.5)
+    h.wait(4)

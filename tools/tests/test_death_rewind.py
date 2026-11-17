@@ -80,3 +80,26 @@ def test_18_drowning_and_damage_after_rewind(h):
     assert air < 300, f"Player does not lose air under water after rewind: air={air}"
     h.command("fill 990 60 990 994 64 994 minecraft:air")
     h.tp(0.5, 65, 0.5)
+
+
+def test_43_potion_effects_cleared_on_rollback(h):
+    setup_clean_env(h)
+    h.command("effect clear @s")
+    h.wait(2)
+    h.rreturn("set")
+    h.wait(4)
+
+    h.command("effect give @s minecraft:poison 30 1")
+    h.wait(4)
+    eff_client = h.raw_send("effects")
+    active_ids = [e.get("id") for e in eff_client.get("effects", {}).get("active", [])]
+    assert any("poison" in str(i) for i in active_ids), f"Poison effect not active on client: {eff_client}"
+
+    h.rreturn("load")
+    h.wait(6)
+
+    eff_after = h.raw_send("effects")
+    active_after = [e.get("id") for e in eff_after.get("effects", {}).get("active", [])]
+    assert not any("poison" in str(i) for i in active_after), (
+        f"Poison effect still active on client after rollback: {active_after}"
+    )

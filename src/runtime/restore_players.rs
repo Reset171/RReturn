@@ -285,10 +285,37 @@ pub fn restore_players_on_rollback(
             }));
             host.hub.guests[gi].landing = false;
 
-            if let Some(gs) = snap.guests.get(&uuid) {
+            let is_singleplayer = host.hub.guests.len() == 1
+                || host.owner.as_ref().is_some_and(|o| o.uuid == uuid);
+            let guest_snap = snap.guests.get(&uuid).or_else(|| {
+                if is_singleplayer {
+                    snap.guests.values().next()
+                } else {
+                    None
+                }
+            });
+
+            if let Some(gs) = guest_snap {
                 let ent_id = host.hub.guests[gi].entity_id as i32;
                 let dim_changed =
                     policy.player_position && host.hub.guests[gi].dimension != gs.dimension;
+                let old_effects: Vec<&'static str> = if policy.player_potion_effects {
+                    let mut ids = std::collections::HashSet::new();
+                    for e in &host.hub.guests[gi].effects.list {
+                        ids.insert(e.id);
+                    }
+                    for s in &host.hub.guests[gi].sent_effects {
+                        ids.insert(s.id);
+                    }
+                    if is_singleplayer {
+                        for e in &game.potions.effects.list {
+                            ids.insert(e.id);
+                        }
+                    }
+                    ids.into_iter().collect()
+                } else {
+                    Vec::new()
+                };
                 {
                     let g = &mut host.hub.guests[gi];
                     if policy.player_position {
@@ -639,6 +666,22 @@ pub fn restore_players_on_rollback(
                     host.hub.send_inventory(gi);
                 }
                 if policy.player_potion_effects {
+                    for old_id in old_effects {
+                        if !gs.effects.iter().any(|new_e| new_e.id == old_id) {
+                            let full_id = if old_id.contains(':') {
+                                old_id.to_string()
+                            } else {
+                                format!("minecraft:{}", old_id)
+                            };
+                            if let Some(effect_id) = host.hub.registry_id("minecraft:mob_effect", &full_id) {
+                                let target_id = host.hub.guests[gi].entity_id;
+                                host.hub.guests[gi].send(&C::RemoveMobEffect(play::RemoveMobEffect {
+                                    id: target_id,
+                                    effect: effect_id,
+                                }));
+                            }
+                        }
+                    }
                     host.hub.send_active_effects(gi);
                 }
                 if policy.entities_presence {

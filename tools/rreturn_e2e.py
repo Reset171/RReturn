@@ -28,10 +28,12 @@ from tools.tests.test_death_rewind import (
     test_9_return_by_death_fatal_fall,
     test_10_multiple_fall_cycles,
     test_18_drowning_and_damage_after_rewind,
+    test_43_potion_effects_cleared_on_rollback,
 )
 from tools.tests.test_slots import (
     test_11_slots_branching,
     test_41_disk_checkpoint_reopen_and_rollback,
+    test_44_disk_checkpoint_singleplayer_uuid_fallback,
 )
 from tools.tests.test_policies import test_12_policy_selective_inventory
 from tools.tests.test_containers import (
@@ -155,6 +157,8 @@ def build_test_catalog():
         (40, "Test 40: Subchunk Palette Bounds Y 318 and -50", "determinism", test_40_subchunk_palette_expansion_bounds),
         (41, "Test 41: Disk Checkpoint Reopen and Anti-XRay Rollback", "slots", test_41_disk_checkpoint_reopen_and_rollback),
         (42, "Test 42: Sheep Sheared and Wool Color Rollback", "mobs", test_42_sheep_sheared_and_color_rollback),
+        (43, "Test 43: Potion Effects Cleared on Rollback", "death", test_43_potion_effects_cleared_on_rollback),
+        (44, "Test 44: Disk Checkpoint Singleplayer UUID Fallback", "slots", test_44_disk_checkpoint_singleplayer_uuid_fallback),
     ]
 
 

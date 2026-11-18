@@ -479,27 +479,54 @@ pub fn create_slot_checkpoint_on_server(
             };
             let is_owner = host.owner.as_ref().is_some_and(|o| o.uuid == g.uuid)
                 || host.hub.guests.len() == 1;
-            let (shield_cooldown, cooldowns, stats, hook) = match host.play.get(&g.conn) {
+            let (shield_cd, cooldowns, stats, hook) = match host.play.get(&g.conn) {
                 Some(p) => (
                     p.shield_cooldown,
                     p.cooldowns.clone(),
                     p.stats.values.clone(),
-                    p.hook.as_ref().map(|h| HookSnapshot {
-                        id: h.id(),
-                        position: [h.position.x, h.position.y, h.position.z],
-                        previous: [h.previous.x, h.previous.y, h.previous.z],
-                        rng_state: h.random.state(),
+                    p.hook.as_ref().map(|h| {
+                        let (nibble, time_lured, time_hooked, fish_angle, open_water, bobbing) =
+                            h.rreturn_fishing_state();
+                        HookSnapshot {
+                            id: h.id(),
+                            position: [h.position.x, h.position.y, h.position.z],
+                            previous: [h.previous.x, h.previous.y, h.previous.z],
+                            velocity: h.rreturn_velocity(),
+                            rng_state: h.random.state(),
+                            nibble,
+                            time_until_lured: time_lured,
+                            time_until_hooked: time_hooked,
+                            fish_angle,
+                            open_water,
+                            state_bobbing: bobbing,
+                        }
                     }),
                 ),
                 None => (0, Cooldowns::default(), BTreeMap::new(), None),
             };
+            let shield_cooldown = if is_owner && shield_cd == 0 {
+                game.shield_cooldown
+            } else {
+                shield_cd
+            };
             let hook = hook.or_else(|| {
                 if is_owner {
-                    game.hook.as_ref().map(|h| HookSnapshot {
-                        id: h.id(),
-                        position: [h.position.x, h.position.y, h.position.z],
-                        previous: [h.previous.x, h.previous.y, h.previous.z],
-                        rng_state: h.random.state(),
+                    game.hook.as_ref().map(|h| {
+                        let (nibble, time_lured, time_hooked, fish_angle, open_water, bobbing) =
+                            h.rreturn_fishing_state();
+                        HookSnapshot {
+                            id: h.id(),
+                            position: [h.position.x, h.position.y, h.position.z],
+                            previous: [h.previous.x, h.previous.y, h.previous.z],
+                            velocity: h.rreturn_velocity(),
+                            rng_state: h.random.state(),
+                            nibble,
+                            time_until_lured: time_lured,
+                            time_until_hooked: time_hooked,
+                            fish_angle,
+                            open_water,
+                            state_bobbing: bobbing,
+                        }
                     })
                 } else {
                     None

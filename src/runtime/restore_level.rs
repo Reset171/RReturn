@@ -314,8 +314,11 @@ pub fn apply_level_snapshot_in_place(
         let saved_next = game.next_entity;
         for (oid, onbt) in &snap.ominous_spawners {
             game.load_ominous_item_spawner(onbt.clone());
-            if let Some(last) = game.ominous_spawners.last_mut() {
-                last.id = *oid;
+            let last_idx = game.ominous_spawners.len().saturating_sub(1);
+            if !game.ominous_spawners.is_empty() {
+                game.ominous_spawners.update(last_idx, |last| {
+                    last.id = *oid;
+                });
             }
         }
         game.next_entity = saved_next;
@@ -339,18 +342,20 @@ pub fn apply_level_snapshot_in_place(
         game.cushions.clone_from(&snap.cushions);
         game.others.clone_from(&snap.others);
         game.crystals.clone_from(&snap.crystals);
-        game.dragon = snap
-            .dragon
-            .as_ref()
-            .and_then(|d| d.to_live(game.level.seed));
+        if let Some(d) = snap.dragon.as_ref().and_then(|d| d.to_live(game.level.seed)) {
+            game.dragon.replace(d);
+        } else {
+            game.dragon.discard();
+        }
         game.knot_ids.clone_from(&snap.knot_ids);
         game.persist = Default::default();
-        game.persist.uuids.clone_from(&snap.persist_uuids);
+        for (&id, &uuid) in &snap.persist_uuids {
+            game.persist.uuids.insert(id, uuid);
+        }
         game.persist.raw.clone_from(&snap.persist_raw);
         game.persist
             .passenger_slots
             .clone_from(&snap.persist_passenger_slots);
-        game.persist.joined_mark = game.next_entity;
         game.tridents.clear();
         let registry = game.pack.assets.registry;
         for ts in &snap.tridents {
@@ -393,6 +398,8 @@ pub fn apply_level_snapshot_in_place(
                 game.breath_clouds.push(cloud);
             } else if bs.from_dragon || bs.potion_none {
                 game.breath_clouds.push(super::super::dragon::Breath {
+                    attachment_lifetime: Default::default(),
+                    join: Default::default(),
                     id: bs.id,
                     at: bs.at,
                     motion: bs.motion,
@@ -525,7 +532,6 @@ pub fn apply_level_snapshot_in_place(
     game.creatures.lan_explosions.clear();
     game.creatures.lan_sounds.clear();
     game.creatures.lan_particles.clear();
-    game.creatures.elder_apparition = 0;
     game.leash_boats.clear();
     game.spawner_tick_positions.clear();
     game.trial_spawner_tick_positions.clear();
@@ -537,7 +543,7 @@ pub fn apply_level_snapshot_in_place(
     game.posed_rider = game.riding;
     game.use_delay = 0;
     game.forced_hit = None;
-    game.tick_hit = None;
+    game.tick_hit = None.into();
     game.tick_mob = None;
     game.use_failed = false;
 
@@ -581,6 +587,7 @@ pub fn apply_level_snapshot_in_place(
     game.sign_edit = None;
     game.book = None;
     game.command_block_screen = None;
+    game.reset_entity_residency();
 
     bench_accum(Phase::SpawnNbt, t_entities);
     let entities_ms = (std::time::Instant::now() - t_entities).as_secs_f64() * 1000.0;

@@ -3,6 +3,7 @@ import hashlib
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tomllib
@@ -11,58 +12,126 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
+PIN_GAME = "26.3"
+PIN_HORIZON = "0b14f8acfd97fa2c750e42795249dcc981178ca4"
+PIN_MIXINS = "e59da9094f0c2fdda6c627fe9eff22dec6a906f0"
+
 
 def build_package(target_dir: Path, skip_check: bool = False, quiet: bool = False) -> dict:
     cargo = tomllib.loads((ROOT / "Cargo.toml").read_text(encoding="utf-8"))
     cargo_version = cargo["package"]["version"]
-    native_path = ROOT / "horizon-native.json"
-    native_manifest = json.loads(native_path.read_text(encoding="utf-8"))
-    mod_id = native_manifest["id"]
-    mod_version = native_manifest["version"]
 
-    bundle_dir = ROOT / "mixins" / mod_id
-    mixin_toml_path = bundle_dir / "horizon-mixin.toml"
-    if not skip_check and (not mixin_toml_path.is_file() or not (bundle_dir / "runtime.rs").is_file()):
+    manifest_path = ROOT / "horizon-mod.toml"
+    if not manifest_path.is_file():
+        raise FileNotFoundError(f"Missing {manifest_path}")
+
+    manifest = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
+    mod_id = manifest["id"]
+    mod_version = manifest["version"]
+
+    if mod_version != cargo_version:
+        raise ValueError(
+            f"Version mismatch: Cargo.toml={cargo_version!r}, horizon-mod.toml={mod_version!r}"
+        )
+
+    native_cfg = manifest.get("native")
+    if not native_cfg:
+        raise ValueError("Missing [native] section in horizon-mod.toml")
+
+    if native_cfg.get("game") != PIN_GAME:
+        raise ValueError(f"Game pin mismatch: expected {PIN_GAME!r}, got {native_cfg.get('game')!r}")
+    if native_cfg.get("horizon") != PIN_HORIZON:
+        raise ValueError(f"Horizon pin mismatch: expected {PIN_HORIZON!r}, got {native_cfg.get('horizon')!r}")
+    if native_cfg.get("mixins") != PIN_MIXINS:
+        raise ValueError(f"Mixins pin mismatch: expected {PIN_MIXINS!r}, got {native_cfg.get('mixins')!r}")
+
+    runtime_path = ROOT / "src" / "runtime.rs"
+    if not skip_check and not runtime_path.is_file():
         subprocess.run(["cargo", "check"], cwd=ROOT, check=True)
 
-    if not mixin_toml_path.is_file():
-        raise FileNotFoundError(f"Missing {mixin_toml_path}; run cargo check first")
+    if not runtime_path.is_file():
+        raise FileNotFoundError(f"Missing {runtime_path}; run cargo check first")
 
-    mixin_manifest = tomllib.loads(mixin_toml_path.read_text(encoding="utf-8"))
-    mixin_id = mixin_manifest["mod"]["id"]
-    mixin_version = mixin_manifest["mod"]["version"]
-    mixin_rev = mixin_manifest.get("compatibility", {}).get("horizon_revision")
+    files: dict[str, bytes] = {}
 
-    if mixin_id != mod_id:
-        raise ValueError(
-            f"Mod id mismatch: horizon-native.json has {mod_id!r}, horizon-mixin.toml has {mixin_id!r}"
-        )
-    if mod_version != cargo_version or mixin_version != cargo_version:
-        raise ValueError(
-            f"Version mismatch: Cargo.toml={cargo_version!r}, horizon-native.json={mod_version!r}, horizon-mixin.toml={mixin_version!r}"
-        )
-    if native_manifest.get("horizon") != mixin_rev:
-        raise ValueError(
-            f"Horizon revision mismatch: horizon-native.json={native_manifest.get('horizon')!r}, horizon-mixin.toml={mixin_rev!r}"
-        )
+    # Root files
+    files["horizon-mod.toml"] = manifest_path.read_bytes()
+    cargo_text = (ROOT / "Cargo.toml").read_text(encoding="utf-8")
+    if "horizon-mod-api" not in cargo_text:
+        # Launcher requires horizon-mod-api in native mod Cargo.toml
+        if "[dependencies]" in cargo_text:
+            cargo_text = cargo_text.replace(
+                "[dependencies]",
+                '[dependencies]\nhorizon-mod-api = { path = ".horizon/sdk/api/crates/horizon-mod-api" }',
+            )
+        else:
+            cargo_text += '\n[dependencies]\nhorizon-mod-api = { path = ".horizon/sdk/api/crates/horizon-mod-api" }\n'
+    files["Cargo.toml"] = cargo_text.encode("utf-8")
+    license_path = ROOT / "LICENSE"
+    if license_path.is_file():
+        files["LICENSE"] = license_path.read_bytes()
+    lock_path = ROOT / "Cargo.lock"
+    if lock_path.is_file():
+        files["Cargo.lock"] = lock_path.read_bytes()
+    icon_path = ROOT / "icon.png"
+    if icon_path.is_file():
+        files["icon.png"] = icon_path.read_bytes()
 
-    files = {"horizon-native.json": native_path.read_bytes()}
-    for path in sorted(bundle_dir.rglob("*")):
+    # Source files under src/
+    src_dir = ROOT / "src"
+    for path in sorted(src_dir.rglob("*")):
         if not path.is_file():
             continue
-        rel = path.relative_to(bundle_dir).as_posix()
-        if path.name != "LICENSE" and path.suffix not in (".rs", ".toml"):
-            raise ValueError(f"Unexpected file inside mixins/{mod_id}/: {rel}")
-        files[f"mixins/{mod_id}/{rel}"] = path.read_bytes()
+        if any(part in (".git", "target", "__pycache__") for part in path.parts):
+            continue
+        rel = path.relative_to(ROOT).as_posix()
+        if not (rel.endswith(".rs") or rel.endswith(".toml")):
+            continue
+        files[rel] = path.read_bytes()
 
-    for required in (
-        f"mixins/{mod_id}/horizon-mixin.toml",
-        f"mixins/{mod_id}/LICENSE",
-        f"mixins/{mod_id}/runtime.rs",
-    ):
-        if required not in files:
-            raise FileNotFoundError(f"Missing required bundle entry: {required}")
+    # Assets & data
+    for dname in ("assets", "data"):
+        dpath = ROOT / dname
+        if dpath.is_dir():
+            for path in sorted(dpath.rglob("*")):
+                if not path.is_file():
+                    continue
+                if any(part in (".git", "target", "__pycache__") for part in path.parts):
+                    continue
+                rel = path.relative_to(ROOT).as_posix()
+                files[rel] = path.read_bytes()
 
+    if "src/lib.rs" in files:
+        lib_text = files["src/lib.rs"].decode("utf-8")
+        if "pub fn hooks" not in lib_text:
+            lib_text += (
+                "\n\n"
+                "extern crate mod_api;\n\n"
+                "#[derive(Default)]\n"
+                "struct Mod;\n\n"
+                "#[mod_api::horizon_mod]\n"
+                "impl mod_api::Hooks for Mod {}\n"
+            )
+            files["src/lib.rs"] = lib_text.encode("utf-8")
+
+    # Validate against forbidden paths
+    for name in files:
+        first = name.split("/")[0]
+        if first in ("horizon-native.json", "horizon-mixin.toml", "mixins", "native", "rust"):
+            raise ValueError(f"Disallowed path inside package: {name}")
+
+    # Validate required modules and mixin helpers
+    for mod in native_cfg.get("module", []):
+        src_file = mod.get("source")
+        if src_file not in files:
+            raise FileNotFoundError(f"Missing support module source: {src_file}")
+
+    for mixin in native_cfg.get("mixin", []):
+        helper_file = mixin.get("helper")
+        if helper_file not in files:
+            raise FileNotFoundError(f"Missing mixin helper: {helper_file}")
+
+    # Build deterministic flat .hmod archive
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for name, content in sorted(files.items()):
@@ -74,11 +143,28 @@ def build_package(target_dir: Path, skip_check: bool = False, quiet: bool = Fals
 
     zip_bytes = buf.getvalue()
     target_dir.mkdir(parents=True, exist_ok=True)
-    out_path = target_dir / f"{mod_id}-{mod_version}.hnmod"
+    out_path = target_dir / f"{mod_id}-{mod_version}.hmod"
     if not out_path.is_file() or out_path.read_bytes() != zip_bytes:
-        tmp_path = target_dir / f".{mod_id}-{mod_version}.hnmod.tmp"
+        tmp_path = target_dir / f".{mod_id}-{mod_version}.hmod.tmp"
         tmp_path.write_bytes(zip_bytes)
         os.replace(tmp_path, out_path)
+
+    # Deploy to Horizon launcher locations and remove retired .hnmod
+    deploy_dirs = [
+        Path.home() / ".local/share/horizon/instances/horizon-2/horizon-native-mods",
+        Path.home() / ".local/share/horizon/horizon-native-mods",
+    ]
+    for d in deploy_dirs:
+        if d.is_dir():
+            # Remove old .hnmod
+            for old in d.glob(f"{mod_id}*.hnmod"):
+                try:
+                    old.unlink()
+                except OSError:
+                    pass
+            # Copy new .hmod
+            shutil.copy2(out_path, d / f"{mod_id}-{mod_version}.hmod")
+            shutil.copy2(out_path, d / f"{mod_id}.hmod")
 
     result = {
         "file": str(out_path),
@@ -91,7 +177,7 @@ def build_package(target_dir: Path, skip_check: bool = False, quiet: bool = Fals
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Package RReturn into a deterministic .hnmod bundle")
+    parser = argparse.ArgumentParser(description="Package RReturn into a deterministic .hmod bundle")
     parser.add_argument("--target-dir", type=Path, default=ROOT / "target")
     parser.add_argument("--skip-check", action="store_true")
     parser.add_argument("--quiet", action="store_true")

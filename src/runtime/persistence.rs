@@ -71,7 +71,7 @@ pub fn save_slot_to_disk(world_root: &Path, slot: &str, snap: &TimelineSnapshot)
             .iter()
             .map(|(&u, att)| {
                 Tag::compound([
-                    ("uuid", Tag::String(format!("{:032x}", u).as_str().into())),
+                    ("uuid", Tag::String((&format!("{:032x}", u)[..]).into())),
                     ("data", Tag::Compound(att.to_nbt())),
                 ])
             })
@@ -79,9 +79,9 @@ pub fn save_slot_to_disk(world_root: &Path, slot: &str, snap: &TimelineSnapshot)
         let entity_att_list: Vec<Tag> = snap
             .entity_attachments
             .iter()
-            .map(|(&u, att)| {
+            .map(|(&id, att)| {
                 Tag::compound([
-                    ("uuid", Tag::IntArray(u.to_vec())),
+                    ("id", Tag::Int(id as i32)),
                     ("data", Tag::Compound(att.to_nbt())),
                 ])
             })
@@ -352,7 +352,7 @@ pub fn save_slot_to_disk(world_root: &Path, slot: &str, snap: &TimelineSnapshot)
             let hurt_by: Vec<serde_json::Value> = lsnap
                 .last_hurt_by_player
                 .iter()
-                .map(|(k, v)| serde_json::json!([k, v]))
+                .map(|(k, v)| serde_json::json!([k, v.0]))
                 .collect();
             let love: Vec<serde_json::Value> = lsnap
                 .love_cause
@@ -394,9 +394,7 @@ pub fn save_slot_to_disk(world_root: &Path, slot: &str, snap: &TimelineSnapshot)
                         serde_json::json!(m.extra.flag2),
                         serde_json::json!(vec_arr),
                         serde_json::json!(m.extra.ints),
-                        serde_json::json!(
-                            m.extra.body.is_some() && m.extra.adopted_body == m.extra.body
-                        ),
+                        serde_json::json!(m.extra.adopted_body.is_some()),
                     ])
                 })
                 .collect();

@@ -417,9 +417,6 @@ pub fn handle_autosave_subcommand(game: &mut Game<'_>, args: &[&str]) -> String 
 }
 
 pub fn handle_client_command(game: &mut Game<'_>, command: &str, ran: &mut bool) {
-    if !game.native_on(MOD_ID) {
-        return;
-    }
     let trimmed = command.trim().trim_start_matches('/');
     let Some(first) = trimmed.split_whitespace().next() else {
         return;
@@ -495,9 +492,6 @@ pub fn intercept_owner_console_command(
     game: &mut Game<'_>,
     command: &str,
 ) -> ControlFlow<Vec<String>> {
-    if !game.native_on(MOD_ID) {
-        return ControlFlow::Continue(());
-    }
     let trimmed = command.trim().trim_start_matches('/');
     if trimmed.split_whitespace().next() != Some("rreturn") {
         return ControlFlow::Continue(());
@@ -520,17 +514,16 @@ pub fn intercept_owner_console_command(
 
 pub fn intercept_guest_command(
     game: &mut Game<'_>,
-    host: &mut LanHost,
     conn: u32,
     command: &str,
 ) -> ControlFlow<()> {
-    if !game.native_on(MOD_ID) {
-        return ControlFlow::Continue(());
-    }
     let trimmed = command.trim().trim_start_matches('/');
     if trimmed.split_whitespace().next() != Some("rreturn") {
         return ControlFlow::Continue(());
     }
+    let Some(host) = game.lan.as_ref() else {
+        return ControlFlow::Continue(());
+    };
     let requester = host.hub.guest(conn).map(|g| g.uuid);
     let is_owner = requester.is_some_and(|u| host.owner.as_ref().is_some_and(|o| o.uuid == u));
     let needs_level_4 = trimmed == "rreturn load"
@@ -566,7 +559,9 @@ pub fn intercept_guest_command(
         return ControlFlow::Break(());
     }
     let lines = execute_rreturn_command(game, requester, trimmed);
-    if let Some(g) = host.hub.guest(conn) {
+    if let Some(host) = game.lan.as_ref()
+        && let Some(g) = host.hub.guest(conn)
+    {
         for line in lines {
             g.send(&C::SystemChat(play::SystemChat {
                 content: literal(&line),

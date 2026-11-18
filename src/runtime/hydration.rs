@@ -234,6 +234,7 @@ pub fn hydrate_level_from_disk(
                             block: BlockId(blk as u16),
                             param_a: pa as i32,
                             param_b: pb as i32,
+                            note_override: None,
                         });
                     }
                 }
@@ -244,7 +245,10 @@ pub fn hydrate_level_from_disk(
                         && a.len() == 2
                         && let Some(k) = a[0].as_u64()
                     {
-                        disk_last_hurt_by_player.insert(k as u32, a[1].as_u64().map(|v| v as u32));
+                        disk_last_hurt_by_player.insert(
+                            k as u32,
+                            super::super::combat::PlayerCredit(a[1].as_u64().unwrap_or(0) as u128),
+                        );
                     }
                 }
             }
@@ -759,7 +763,7 @@ pub fn hydrate_level_from_disk(
     let saved_cushions = std::mem::take(&mut game.cushions);
     let saved_others = std::mem::take(&mut game.others);
     let saved_crystals = std::mem::take(&mut game.crystals);
-    let saved_dragon = game.dragon.take();
+    let saved_dragon = game.dragon.extract();
     let saved_knot_ids = std::mem::take(&mut game.knot_ids);
     let saved_persist = std::mem::take(&mut game.persist);
     let saved_tridents = std::mem::take(&mut game.tridents);
@@ -783,7 +787,7 @@ pub fn hydrate_level_from_disk(
 
     if !disk_uuid_to_id.is_empty() {
         let mut id_remap: HashMap<u32, u32> = HashMap::new();
-        for (&spawned_id, uuid) in &game.persist.uuids {
+        for (&spawned_id, uuid) in game.persist.uuids.iter() {
             if let Some(&orig_id) = disk_uuid_to_id.get(uuid) {
                 id_remap.insert(spawned_id, orig_id);
             }
@@ -869,7 +873,7 @@ pub fn hydrate_level_from_disk(
                 d.ticks = rt.ticks;
                 d.bob_offset = rt.bob_offset;
                 if rt.rng_state != 0 {
-                    d.random = LegacyRandom::from_state(rt.rng_state);
+                    d.random = horizon_core::random::EntityRandom::own(LegacyRandom::from_state(rt.rng_state));
                 }
             }
         }
@@ -879,33 +883,34 @@ pub fn hydrate_level_from_disk(
                 o.ticks = ticks;
             }
         }
-        for p in game.creatures.projectiles.iter_mut() {
+        game.creatures.projectiles.for_each_mut(|p| {
             map_id(&mut p.id);
             if let Some(owner) = p.owner.as_mut() {
                 map_who(owner);
             }
-        }
-        for b in game.boats.iter_mut() {
+        });
+        game.boats.for_each_mut(|b| {
             map_id(&mut b.id);
             if let Some(&vel) = disk_boat_velocities.get(&b.id) {
                 b.velocity = vel;
             }
-        }
-        for c in game.carts.iter_mut() {
+        });
+        game.carts.for_each_mut(|c| {
             map_id(&mut c.id);
             if let Some(&vel) = disk_cart_velocities.get(&c.id) {
                 c.velocity = vel;
             }
-        }
+        });
         for t in game.tnts.iter_mut() {
             map_id(&mut t.id);
         }
-        for f in game.falling.iter_mut() {
+        game.falling.for_each_mut(|f| {
             map_id(&mut f.id);
-        }
+        });
         for tnt_val in disk_tnts {
             if game.tnts.iter().all(|t| t.id != tnt_val.id) {
                 game.tnts.push(super::super::tnt::PrimedTnt {
+                    attachment_lifetime: Default::default(),
                     id: tnt_val.id,
                     position: tnt_val.pos,
                     previous: tnt_val.pos,
@@ -932,24 +937,25 @@ pub fn hydrate_level_from_disk(
                     .pack
                     .assets
                     .registry
-                    .block(fb.state)
+                    .state(fb.state)
+                    .map(|s| s.name.as_str())
                     .unwrap_or("minecraft:sand");
                 let tag = Tag::compound([
                     ("id", Tag::String("minecraft:falling_block".into())),
                     (
                         "Pos",
                         Tag::List(vec![
-                            Tag::Double(fb.pos.x),
-                            Tag::Double(fb.pos.y),
-                            Tag::Double(fb.pos.z),
+                            Tag::Double(fb.pos.x.to_bits()),
+                            Tag::Double(fb.pos.y.to_bits()),
+                            Tag::Double(fb.pos.z.to_bits()),
                         ]),
                     ),
                     (
                         "Motion",
                         Tag::List(vec![
-                            Tag::Double(fb.vel.x),
-                            Tag::Double(fb.vel.y),
-                            Tag::Double(fb.vel.z),
+                            Tag::Double(fb.vel.x.to_bits()),
+                            Tag::Double(fb.vel.y.to_bits()),
+                            Tag::Double(fb.vel.z.to_bits()),
                         ]),
                     ),
                     ("Time", Tag::Int(fb.age)),
@@ -959,46 +965,55 @@ pub fn hydrate_level_from_disk(
                     ),
                     ("DropItem", Tag::Byte(if fb.drop_item { 1 } else { 0 })),
                     ("NoGravity", Tag::Byte(if fb.no_gravity { 1 } else { 0 })),
-                    ("FallDistance", Tag::Float(fb.fall_distance as f32)),
+                    ("FallDistance", Tag::Float((fb.fall_distance as f32).to_bits())),
                     ("OnGround", Tag::Byte(if fb.on_ground { 1 } else { 0 })),
                 ]);
                 game.load_falling(tag, None);
-                if let Some(last) = game.falling.last_mut() {
-                    last.id = fb.id;
-                    last.rotation = fb.rot;
+                if !game.falling.is_empty() {
+                    let last_idx = game.falling.len() - 1;
+                    game.falling.update(last_idx, |last| {
+                        last.id = fb.id;
+                        last.rotation = fb.rot;
+                    });
                 }
             }
         }
         for pr in disk_projectiles {
             if game.creatures.projectiles.iter().all(|p| p.id != pr.id) {
                 let tag = Tag::compound([
-                    ("id", Tag::String(pr.kind.clone().into())),
+                    ("id", Tag::String((&pr.kind[..]).into())),
                     (
                         "Pos",
                         Tag::List(vec![
-                            Tag::Double(pr.pos.x),
-                            Tag::Double(pr.pos.y),
-                            Tag::Double(pr.pos.z),
+                            Tag::Double(pr.pos.x.to_bits()),
+                            Tag::Double(pr.pos.y.to_bits()),
+                            Tag::Double(pr.pos.z.to_bits()),
                         ]),
                     ),
                     (
                         "Motion",
                         Tag::List(vec![
-                            Tag::Double(pr.vel.x),
-                            Tag::Double(pr.vel.y),
-                            Tag::Double(pr.vel.z),
+                            Tag::Double(pr.vel.x.to_bits()),
+                            Tag::Double(pr.vel.y.to_bits()),
+                            Tag::Double(pr.vel.z.to_bits()),
                         ]),
                     ),
                     (
                         "Rotation",
-                        Tag::List(vec![Tag::Float(pr.yaw), Tag::Float(pr.pitch)]),
+                        Tag::List(vec![
+                            Tag::Float(pr.yaw.to_bits()),
+                            Tag::Float(pr.pitch.to_bits()),
+                        ]),
                     ),
                     ("Age", Tag::Int(pr.age as i32)),
                     ("inGround", Tag::Byte(if pr.stuck { 1 } else { 0 })),
                 ]);
                 let _ = game.load_listed(&pr.kind, None, None, tag);
-                if let Some(last) = game.creatures.projectiles.last_mut() {
-                    last.id = pr.id;
+                if !game.creatures.projectiles.is_empty() {
+                    let last_idx = game.creatures.projectiles.len() - 1;
+                    game.creatures.projectiles.update(last_idx, |last| {
+                        last.id = pr.id;
+                    });
                 }
             }
         }
@@ -1015,9 +1030,7 @@ pub fn hydrate_level_from_disk(
         for c in &mut game.cushions {
             map_id(&mut c.id);
         }
-        for o in &mut game.others {
-            map_id(&mut o.id);
-        }
+        game.others.for_each_mut(|o| map_id(&mut o.id));
         for c in &mut game.crystals {
             map_id(&mut c.id);
         }
@@ -1035,19 +1048,13 @@ pub fn hydrate_level_from_disk(
             }
             map_opt_id(&mut r.attached_to);
         }
-        for c in &mut game.breath_clouds {
-            map_id(&mut c.id);
-        }
-        for f in &mut game.fangs.list {
-            map_id(&mut f.id);
-        }
-        for o in &mut game.ominous_spawners {
-            map_id(&mut o.id);
-        }
+        game.breath_clouds.for_each_mut(|c| map_id(&mut c.id));
+        game.fangs.list.for_each_mut(|f| map_id(&mut f.id));
+        game.ominous_spawners.for_each_mut(|o| map_id(&mut o.id));
         for id in game.knot_ids.values_mut() {
             map_id(id);
         }
-        let old_uuids = std::mem::take(&mut game.persist.uuids);
+        let old_uuids: HashMap<u32, [i32; 4]> = (*std::mem::take(&mut game.persist.uuids)).clone();
         for (mut k, v) in old_uuids {
             map_id(&mut k);
             game.persist.uuids.insert(k, v);
@@ -1156,8 +1163,12 @@ pub fn hydrate_level_from_disk(
     let cushions = std::mem::replace(&mut game.cushions, saved_cushions);
     let others = std::mem::replace(&mut game.others, saved_others);
     let crystals = std::mem::replace(&mut game.crystals, saved_crystals);
-    let dragon = game.dragon.take().as_ref().map(DragonSnapshot::from_live);
-    game.dragon = saved_dragon;
+    let dragon = game.dragon.extract().as_ref().map(DragonSnapshot::from_live);
+    if let Some(d) = saved_dragon {
+        game.dragon.replace(d);
+    } else {
+        game.dragon.discard();
+    }
     let knot_ids = std::mem::replace(&mut game.knot_ids, saved_knot_ids);
     let persist_mem = std::mem::replace(&mut game.persist, saved_persist);
     game.tridents = saved_tridents;
@@ -1179,6 +1190,7 @@ pub fn hydrate_level_from_disk(
         Dim::Overworld => "border_overworld",
         Dim::Nether => "border_nether",
         Dim::End => "border_end",
+        Dim::Extra(_) => "border_extra",
     };
     let hydrated_border = globals_tag
         .as_ref()
@@ -1242,7 +1254,7 @@ pub fn hydrate_level_from_disk(
         rockets,
         breath_clouds,
         knot_ids,
-        persist_uuids: persist_mem.uuids,
+        persist_uuids: (*persist_mem.uuids).clone(),
         persist_raw: persist_mem.raw,
         persist_passenger_slots: persist_mem.passenger_slots,
         raids_dat,

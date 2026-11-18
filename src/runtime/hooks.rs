@@ -15,12 +15,21 @@ use super::ui::{load_saved_settings, save_current_settings};
 use std::ops::ControlFlow;
 
 pub fn handle_key(game: &mut Game<'_>, key: &str, pressed: bool) {
-    if !pressed || !game.native_on(MOD_ID) || !game.native_playing() {
+    if !pressed || !game.playing() {
         return;
     }
-    let save_key = game.native_mod_key(MOD_ID, "save", "key.keyboard.f6");
-    let load_key = game.native_mod_key(MOD_ID, "load", "key.keyboard.f7");
-    let mode_key = game.native_mod_key(MOD_ID, "anchor_menu", "key.keyboard.f8");
+    let save_key = game
+        .mod_key(MOD_ID, "save")
+        .map(|(k, _)| k)
+        .unwrap_or_else(|| "key.keyboard.f6".to_owned());
+    let load_key = game
+        .mod_key(MOD_ID, "load")
+        .map(|(k, _)| k)
+        .unwrap_or_else(|| "key.keyboard.f7".to_owned());
+    let mode_key = game
+        .mod_key(MOD_ID, "anchor_menu")
+        .map(|(k, _)| k)
+        .unwrap_or_else(|| "key.keyboard.f8".to_owned());
 
     if key == save_key {
         if let Some(server) = &game.integrated {
@@ -98,42 +107,43 @@ pub fn handle_key(game: &mut Game<'_>, key: &str, pressed: bool) {
     }
 }
 
-pub fn handle_lifecycle(game: &mut Game<'_>, phase: WorldPhase) {
-    match phase {
-        WorldPhase::WorldOpenReady => {
-            load_saved_settings(game);
-            clear_all_slots();
-            clear_client_snapshots();
-            let has_disk_cp = has_disk_checkpoint(&game.world_root);
-            let mut restored_anchors = HashSet::new();
-            let mut restored_save_tick = game.world.game_time;
-            if has_disk_cp {
-                if let Some(snap) = load_checkpoint_from_disk(&game.world_root) {
-                    restored_anchors = snap.anchor_ids.clone();
-                    restored_save_tick = snap.game_time;
-                    set_snapshot(Some(Arc::new(snap)));
-                }
-                with_state_mut(|st| {
-                    st.has_checkpoint = true;
-                });
-            } else {
-                with_state_mut(|st| {
-                    st.has_checkpoint = false;
-                });
-            }
-            with_state_mut(|st| {
-                st.current_slot = "default".to_owned();
-                st.anchor_ids = restored_anchors;
-                st.pending_death_rollback = None;
-                st.last_save_tick = restored_save_tick;
-                st.current_interval_ticks = i64::from(st.fixed_interval_sec.max(5)) * 20;
-                st.last_rollback_tick = None;
-                st.last_boss_death_tick = -9999;
-                st.current_intensity = 0.0;
-                st.peak_intensity = 0.0;
-                st.relax_ticks = 0;
-            });
+pub fn handle_server_started(game: &mut Game<'_>) {
+    load_saved_settings(game);
+    clear_all_slots();
+    clear_client_snapshots();
+    let has_disk_cp = has_disk_checkpoint(&game.world_root);
+    let mut restored_anchors = HashSet::new();
+    let mut restored_save_tick = game.world.game_time;
+    if has_disk_cp {
+        if let Some(snap) = load_checkpoint_from_disk(&game.world_root) {
+            restored_anchors = snap.anchor_ids.clone();
+            restored_save_tick = snap.game_time;
+            set_snapshot(Some(Arc::new(snap)));
         }
+        with_state_mut(|st| {
+            st.has_checkpoint = true;
+        });
+    } else {
+        with_state_mut(|st| {
+            st.has_checkpoint = false;
+        });
+    }
+    with_state_mut(|st| {
+        st.current_slot = "default".to_owned();
+        st.anchor_ids = restored_anchors;
+        st.pending_death_rollback = None;
+        st.last_save_tick = restored_save_tick;
+        st.current_interval_ticks = i64::from(st.fixed_interval_sec.max(5)) * 20;
+        st.last_rollback_tick = None;
+        st.last_boss_death_tick = -9999;
+        st.current_intensity = 0.0;
+        st.peak_intensity = 0.0;
+        st.relax_ticks = 0;
+    });
+}
+
+pub fn handle_lifecycle(_game: &mut Game<'_>, phase: WorldPhase) {
+    match phase {
         WorldPhase::WorldCloseFinal
         | WorldPhase::WorldCloseFailed
         | WorldPhase::WorldOpenFailed => {
@@ -143,14 +153,11 @@ pub fn handle_lifecycle(game: &mut Game<'_>, phase: WorldPhase) {
                 st.pending_death_rollback = None;
             });
         }
+        _ => {}
     }
 }
 
 pub fn handle_tick(game: &mut Game<'_>) {
-    if !game.native_on(MOD_ID) {
-        return;
-    }
-
     if game.screen == super::super::Screen::Dead {
         let has_cp = with_state(|st| st.has_checkpoint);
         if has_cp {
@@ -239,14 +246,14 @@ pub fn handle_tick(game: &mut Game<'_>) {
 
 pub fn intercept_guest_die(
     game: &mut Game<'_>,
-    host: &mut LanHost,
     gi: usize,
     _conn: u32,
 ) -> ControlFlow<()> {
-    if !game.native_on(MOD_ID) {
+    let now = game.world.game_time;
+    let Some(host) = game.lan.as_mut() else {
         return ControlFlow::Continue(());
-    }
-    if host.hub.guests[gi].health > 0.0 || host.hub.guests[gi].dead {
+    };
+    if gi >= host.hub.guests.len() || host.hub.guests[gi].health > 0.0 || host.hub.guests[gi].dead {
         return ControlFlow::Continue(());
     }
     let player_uuid = host.hub.guests[gi].uuid;
@@ -257,7 +264,6 @@ pub fn intercept_guest_die(
         .filter(|g| g.placed)
         .map(|g| g.uuid)
         .collect();
-    let now = game.world.game_time;
 
     let should_intercept = with_state_mut(|st| {
         if !st.has_checkpoint {
@@ -286,29 +292,36 @@ pub fn intercept_guest_die(
         return ControlFlow::Continue(());
     }
 
-    let g = &mut host.hub.guests[gi];
-    g.health = 20.0;
-    g.dead = false;
-    g.death_time = 0;
-    g.sent_health = None;
-    if let Some(m) = g.motion.as_mut() {
-        m.health.dead = false;
-        m.invulnerable = false;
-        m.may_fly = false;
-        m.spectator = false;
-        m.flying = false;
-        m.fall_distance = 0.0;
-        m.health.hurt.no_action_time = 0;
-        m.health.hurt.cooldown = 0;
-        m.health.hurt.last_hurt = 0.0;
-        m.health.hurt.hurt_duration = 0;
-        m.health.hurt.hurt_time = 0;
-        m.health.hurt.last_source = None;
-        m.health.hurt.last_stamp = 0;
-        m.health.hurt_animation_time = 0;
-        m.health.hurt_dir = 0.0;
-        m.health.indicated_dir = None;
-        let _ = m.set_health(20.0, false);
+    let Some(host) = game.lan.as_mut() else {
+        return ControlFlow::Continue(());
+    };
+    if gi >= host.hub.guests.len() {
+        return ControlFlow::Continue(());
     }
+    host.hub.guests.update(gi, |g| {
+        g.health = 20.0;
+        g.dead = false;
+        g.death_time = 0;
+        g.sent_health = None;
+        if let Some(m) = g.motion.as_mut() {
+            m.health.dead = false;
+            m.invulnerable = false;
+            m.may_fly = false;
+            m.spectator = false;
+            m.flying = false;
+            m.fall_distance = 0.0;
+            m.health.hurt.no_action_time = 0;
+            m.health.hurt.cooldown = 0;
+            m.health.hurt.last_hurt = 0.0;
+            m.health.hurt.hurt_duration = 0;
+            m.health.hurt.hurt_time = 0;
+            m.health.hurt.last_source = None;
+            m.health.hurt.last_stamp = 0;
+            m.health.hurt_animation_time = 0;
+            m.health.hurt_dir = 0.0;
+            m.health.indicated_dir = None;
+            let _ = m.set_health(20.0, false);
+        }
+    });
     ControlFlow::Break(())
 }

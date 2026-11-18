@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -28,9 +27,8 @@ const RUNTIME_FILES: &[&str] = &[
 
 fn main() {
     println!("cargo:rerun-if-changed=Cargo.toml");
-    println!("cargo:rerun-if-changed=horizon-native.json");
+    println!("cargo:rerun-if-changed=horizon-mod.toml");
     println!("cargo:rerun-if-changed=LICENSE");
-    println!("cargo:rerun-if-changed=src/horizon-mixin.toml");
     println!("cargo:rerun-if-changed=src/runtime");
     println!("cargo:rerun-if-changed=src/ext");
     println!("cargo:rerun-if-changed=src/hooks");
@@ -41,34 +39,14 @@ fn main() {
         println!("cargo:rerun-if-changed=src/runtime/{file_name}");
     }
 
-    let bundle_dir = Path::new("mixins/rreturn");
-    fs::create_dir_all(bundle_dir)
-        .unwrap_or_else(|e| panic!("Could not create {}: {e}", bundle_dir.display()));
-
-    let mut expected = HashSet::from([
-        "runtime.rs".to_owned(),
-        "horizon-mixin.toml".to_owned(),
-        "LICENSE".to_owned(),
-    ]);
-
-    sync_dir_files(Path::new("src/ext"), bundle_dir, &mut expected);
-    sync_dir_files(Path::new("src/hooks"), bundle_dir, &mut expected);
-    sync_file(
-        Path::new("src/horizon-mixin.toml"),
-        &bundle_dir.join("horizon-mixin.toml"),
-    );
-    sync_file(Path::new("LICENSE"), &bundle_dir.join("LICENSE"));
-    assemble_runtime(bundle_dir);
-    prune_extra_bundle_files(bundle_dir, &expected);
+    assemble_runtime(Path::new("src"));
 
     let target_dir = resolve_target_dir();
     run_packager(&target_dir);
 
-    println!("cargo:rerun-if-changed=mixins/rreturn/horizon-mixin.toml");
-    println!("cargo:rerun-if-changed=mixins/rreturn/LICENSE");
-    println!("cargo:rerun-if-changed=mixins/rreturn/runtime.rs");
-    let hnmod_path = target_dir.join(format!("rreturn-{}.hnmod", env!("CARGO_PKG_VERSION")));
-    println!("cargo:rerun-if-changed={}", hnmod_path.display());
+    println!("cargo:rerun-if-changed=src/runtime.rs");
+    let hmod_path = target_dir.join(format!("rreturn-{}.hmod", env!("CARGO_PKG_VERSION")));
+    println!("cargo:rerun-if-changed={}", hmod_path.display());
 }
 
 fn write_if_changed(dst: &Path, content: &[u8]) {
@@ -83,56 +61,8 @@ fn write_if_changed(dst: &Path, content: &[u8]) {
     fs::write(dst, content).unwrap_or_else(|e| panic!("Could not write {}: {e}", dst.display()));
 }
 
-fn sync_file(src: &Path, dst: &Path) {
-    let content =
-        fs::read(src).unwrap_or_else(|e| panic!("Could not read {}: {e}", src.display()));
-    write_if_changed(dst, &content);
-}
-
-fn sync_dir_files(src_dir: &Path, dst_dir: &Path, expected: &mut HashSet<String>) {
-    if !src_dir.is_dir() {
-        return;
-    }
-    let _ = fs::create_dir_all(dst_dir);
-    let Ok(entries) = fs::read_dir(src_dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("rs") {
-            continue;
-        }
-        println!("cargo:rerun-if-changed={}", path.display());
-        if let Some(name) = entry.file_name().to_str() {
-            expected.insert(name.to_owned());
-        }
-        let target = dst_dir.join(entry.file_name());
-        sync_file(&path, &target);
-    }
-}
-
-fn prune_extra_bundle_files(bundle_dir: &Path, expected: &HashSet<String>) {
-    let Ok(entries) = fs::read_dir(bundle_dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let keep = entry
-            .file_name()
-            .to_str()
-            .is_some_and(|name| expected.contains(name));
-        if !keep {
-            if path.is_dir() {
-                let _ = fs::remove_dir_all(&path);
-            } else {
-                let _ = fs::remove_file(&path);
-            }
-        }
-    }
-}
-
-fn assemble_runtime(bundle_dir: &Path) {
-    let runtime_dir = Path::new("src/runtime");
+fn assemble_runtime(src_dir: &Path) {
+    let runtime_dir = src_dir.join("runtime");
     if !runtime_dir.is_dir() {
         return;
     }
@@ -146,10 +76,15 @@ fn assemble_runtime(bundle_dir: &Path) {
     lan::LanHost,
     machines::HopperState,
     minecarts::Minecart,
-    native_hooks::NativeMod,
-    native_lifecycle::WorldPhase,
     tnt::PrimedTnt,
 };
+use mod_api::WorldPhase;
+use crate::game::dragon::rreturn_dragon::{DragonExt, FightExt};
+use crate::game::end::rreturn_end::EndExt;
+use crate::game::fishing::rreturn_fishing::{GameFishingExt, HookExt};
+use crate::game::remote::rreturn_remote::RemoteExt;
+use crate::game::stats::rreturn_stats::StatsExt;
+use horizon_mod_runtime::attachments::Attachments;
 use horizon_client::{
     advancements::Progress,
     blocks::Fluid,
@@ -174,6 +109,7 @@ use horizon_client::{
 };
 use horizon_core::{
     geometry::{Direction, Vec3},
+    nbt::Tag,
     position::{BlockPos, ChunkPos},
     random::{LegacyRandom, LevelRandom, RandomSource},
     ticks::ChunkTicks,
@@ -187,10 +123,8 @@ use horizon_protocol::{
     text::literal,
 };
 use horizon_world::{
-    attachments::Attachments,
     ground_support::GroundState,
     level::{BlockEventData, BlockId, MovingPiston, Ticks},
-    nbt::Tag,
     registry::BlockStateId,
 };
 use std::{
@@ -250,7 +184,7 @@ use std::{
         }
     }
 
-    let target = bundle_dir.join("runtime.rs");
+    let target = src_dir.join("runtime.rs");
     write_if_changed(&target, out.as_bytes());
 }
 

@@ -3,6 +3,7 @@ import json
 import py_compile
 import subprocess
 import sys
+import tomllib
 import zipfile
 from pathlib import Path
 
@@ -25,7 +26,7 @@ def check_python_syntax():
 
 
 def check_bundle_and_package():
-    print("==> Checking generated mixins/rreturn/ and .hnmod package", flush=True)
+    print("==> Checking generated src/runtime.rs and .hmod package", flush=True)
     run_step("cargo check", ["cargo", "check"])
     proc = subprocess.run(
         [sys.executable, "tools/package.py"],
@@ -35,36 +36,38 @@ def check_bundle_and_package():
         check=True,
     )
     info = json.loads(proc.stdout)
-    hnmod_path = Path(info["file"])
-    if not hnmod_path.is_file():
-        print(f"[FAIL] Missing package output: {hnmod_path}", file=sys.stderr)
+    hmod_path = Path(info["file"])
+    if not hmod_path.is_file() or not hmod_path.name.endswith(".hmod"):
+        print(f"[FAIL] Missing or invalid package output: {hmod_path}", file=sys.stderr)
         sys.exit(1)
-    with zipfile.ZipFile(hnmod_path, "r") as zf:
+    with zipfile.ZipFile(hmod_path, "r") as zf:
         names = set(zf.namelist())
-        manifest = json.loads(zf.read("horizon-native.json"))
-    bundle_prefix = f"mixins/{manifest['id']}/"
+        manifest = tomllib.loads(zf.read("horizon-mod.toml").decode("utf-8"))
+
     required = {
-        "horizon-native.json",
-        bundle_prefix + "horizon-mixin.toml",
-        bundle_prefix + "LICENSE",
-        bundle_prefix + "runtime.rs",
+        "horizon-mod.toml",
+        "Cargo.toml",
+        "LICENSE",
+        "src/lib.rs",
+        "src/runtime.rs",
     }
     missing = sorted(required - names)
     if missing:
-        print(f"[FAIL] Incomplete .hnmod archive, missing: {missing}", file=sys.stderr)
+        print(f"[FAIL] Incomplete .hmod archive, missing: {missing}", file=sys.stderr)
         sys.exit(1)
+
+    forbidden_roots = {"horizon-native.json", "horizon-mixin.toml", "mixins", "native", "rust"}
     invalid = sorted(
         n
         for n in names
-        if n != "horizon-native.json"
-        and n != bundle_prefix + "LICENSE"
-        and not (n.startswith(bundle_prefix) and n.endswith((".rs", ".toml")))
+        if n.split("/")[0] in forbidden_roots
+        or (n.startswith("src/") and not n.endswith((".rs", ".toml")))
     )
     if invalid:
-        print(f"[FAIL] Disallowed files in .hnmod archive: {invalid}", file=sys.stderr)
+        print(f"[FAIL] Disallowed files in .hmod archive: {invalid}", file=sys.stderr)
         sys.exit(1)
     print(
-        f"    Packaged {hnmod_path.name} ({info['size']} bytes, sha256={info['sha256']})",
+        f"    Packaged {hmod_path.name} ({info['size']} bytes, sha256={info['sha256']})",
         flush=True,
     )
 

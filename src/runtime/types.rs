@@ -312,14 +312,7 @@ pub fn with_state_mut<R>(f: impl FnOnce(&mut RReturnState) -> R) -> R {
 }
 
 pub fn raids_dat_path(world_root: &Path, dim: Dim) -> PathBuf {
-    let dim_folder = match dim {
-        Dim::Overworld => "minecraft/overworld",
-        Dim::Nether => "minecraft/the_nether",
-        Dim::End => "minecraft/the_end",
-    };
-    world_root
-        .join("dimensions")
-        .join(dim_folder)
+    horizon_client::save::dimension_dir(world_root, dim.id())
         .join("data/minecraft/raids.dat")
 }
 

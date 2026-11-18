@@ -43,7 +43,6 @@ pub fn apply_client_level_rollback(game: &mut Game<'_>, slot: &str) {
     game.hotbar_pop = [0; 10];
     game.screen_fx = Default::default();
     game.sculk.darkness = Default::default();
-    game.creatures.elder_apparition = 0;
     game.stop_emote();
     game.clear_remote_hooks();
     game.end.clear_remote_eyes();

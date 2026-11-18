@@ -281,8 +281,15 @@ fn unpack_phase(tag: Option<&Tag>) -> Phase {
     }
 }
 
-impl Dragon {
-    pub fn rreturn_pack(&self) -> Tag {
+pub trait DragonExt {
+    fn rreturn_pack(&self) -> Tag;
+    fn rreturn_unpack(tag: &Tag, seed: i64) -> Option<Self>
+    where
+        Self: Sized;
+}
+
+impl DragonExt for Dragon {
+    fn rreturn_pack(&self) -> Tag {
         let history_y: Vec<Tag> = self
             .history
             .iter()
@@ -293,8 +300,8 @@ impl Dragon {
             .iter()
             .map(|(_, yaw)| Tag::Float(yaw.to_bits()))
             .collect();
-        let parts_cur: Vec<Tag> = self.parts.iter().map(|(cur, _)| pack_vec3(*cur)).collect();
-        let parts_prev: Vec<Tag> = self.parts.iter().map(|(_, prev)| pack_vec3(*prev)).collect();
+        let parts_cur: Vec<Tag> = self.parts.iter().map(|p| pack_vec3(p.0)).collect();
+        let parts_prev: Vec<Tag> = self.parts.iter().map(|p| pack_vec3(p.1)).collect();
         let mut fields = vec![
             ("id", Tag::Int(self.id as i32)),
             ("position", pack_vec3(self.position)),
@@ -353,7 +360,7 @@ impl Dragon {
         Tag::compound(fields)
     }
 
-    pub fn rreturn_unpack(tag: &Tag, seed: i64) -> Option<Self> {
+    fn rreturn_unpack(tag: &Tag, seed: i64) -> Option<Self> {
         let position = unpack_vec3(tag.get("position"))?;
         let yaw = get_f32(tag.get("yaw")).unwrap_or(0.0);
         let mut d = Self::new(position, yaw, seed);
@@ -407,7 +414,8 @@ impl Dragon {
             for i in 0..8.min(pc.len()).min(pp.len()) {
                 if let (Some(cur), Some(prev)) = (unpack_vec3(Some(&pc[i])), unpack_vec3(Some(&pp[i])))
                 {
-                    d.parts[i] = (cur, prev);
+                    d.parts[i].0 = cur;
+                    d.parts[i].1 = prev;
                 }
             }
         }
@@ -430,8 +438,15 @@ impl Dragon {
     }
 }
 
-impl Fight {
-    pub fn rreturn_pack(&self) -> Tag {
+pub trait FightExt {
+    fn rreturn_pack(&self) -> Tag;
+    fn rreturn_unpack(tag: &Tag) -> Self
+    where
+        Self: Sized;
+}
+
+impl FightExt for Fight {
+    fn rreturn_pack(&self) -> Tag {
         let crystals: Vec<Tag> = self.respawn_crystals.iter().map(|v| pack_vec3(*v)).collect();
         let mut fields = vec![
             ("loaded", Tag::Byte(i8::from(self.loaded))),
@@ -464,7 +479,7 @@ impl Fight {
         Tag::compound(fields)
     }
 
-    pub fn rreturn_unpack(tag: &Tag) -> Self {
+    fn rreturn_unpack(tag: &Tag) -> Self {
         let mut f = Self::default();
         f.loaded = get_bool(tag.get("loaded")).unwrap_or(false);
         f.needs_scan = get_bool(tag.get("needs_scan")).unwrap_or(false);

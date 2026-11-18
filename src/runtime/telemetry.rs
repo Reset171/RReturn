@@ -126,7 +126,7 @@ pub fn report_status_json(game: &Game<'_>) -> String {
                     _ => "survival",
                 },
                 "on_ground": g.on_ground,
-                "flying": g.flying,
+                "flying": g.abilities.flying,
             })
         });
 

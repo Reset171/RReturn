@@ -1,8 +1,10 @@
 fn hook_guest_die(
     game: &mut Game<'_>,
-    host: &mut LanHost,
     gi: usize,
     conn: u32,
-) -> std::ops::ControlFlow<()> {
-    crate::game::levels::rreturn::intercept_guest_die(game, host, gi, conn)
+) -> std::ops::ControlFlow<bool> {
+    match crate::game::autosave::rreturn::intercept_guest_die(game, gi, conn) {
+        std::ops::ControlFlow::Break(()) => std::ops::ControlFlow::Break(true),
+        std::ops::ControlFlow::Continue(()) => std::ops::ControlFlow::Continue(()),
+    }
 }

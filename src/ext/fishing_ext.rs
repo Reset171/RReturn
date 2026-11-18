@@ -1,7 +1,26 @@
 use super::*;
 
-impl Hook {
-    pub fn rreturn_create(id: u32, pos: [f64; 3], prev: [f64; 3], rng_state: u64) -> Self {
+pub trait HookExt {
+    fn rreturn_create(id: u32, pos: [f64; 3], prev: [f64; 3], rng_state: u64) -> Self;
+    fn rreturn_create_full(
+        id: u32,
+        pos: [f64; 3],
+        prev: [f64; 3],
+        vel: [f64; 3],
+        rng_state: u64,
+        nibble: i32,
+        time_until_lured: i32,
+        time_until_hooked: i32,
+        fish_angle: f32,
+        open_water: bool,
+        state_bobbing: bool,
+    ) -> Self;
+    fn rreturn_velocity(&self) -> [f64; 3];
+    fn rreturn_fishing_state(&self) -> (i32, i32, i32, f32, bool, bool);
+}
+
+impl HookExt for Hook {
+    fn rreturn_create(id: u32, pos: [f64; 3], prev: [f64; 3], rng_state: u64) -> Self {
         Self::rreturn_create_full(
             id,
             pos,
@@ -17,7 +36,7 @@ impl Hook {
         )
     }
 
-    pub fn rreturn_create_full(
+    fn rreturn_create_full(
         id: u32,
         pos: [f64; 3],
         prev: [f64; 3],
@@ -31,11 +50,11 @@ impl Hook {
         state_bobbing: bool,
     ) -> Self {
         let p = Vec3::new(pos[0], pos[1], pos[2]);
-        let mut hook = Hook::remote(id, p);
+        let mut hook = Hook::remote(id, p, [0; 4]);
         hook.previous = Vec3::new(prev[0], prev[1], prev[2]);
         hook.velocity = Vec3::new(vel[0], vel[1], vel[2]);
         if rng_state != 0 {
-            hook.random = LegacyRandom::from_state(rng_state);
+            hook.random = horizon_core::random::EntityRandom::own(LegacyRandom::from_state(rng_state));
         }
         hook.nibble = nibble;
         hook.time_until_lured = time_until_lured;
@@ -48,11 +67,11 @@ impl Hook {
         hook
     }
 
-    pub fn rreturn_velocity(&self) -> [f64; 3] {
+    fn rreturn_velocity(&self) -> [f64; 3] {
         [self.velocity.x, self.velocity.y, self.velocity.z]
     }
 
-    pub fn rreturn_fishing_state(&self) -> (i32, i32, i32, f32, bool, bool) {
+    fn rreturn_fishing_state(&self) -> (i32, i32, i32, f32, bool, bool) {
         (
             self.nibble,
             self.time_until_lured,
@@ -64,8 +83,33 @@ impl Hook {
     }
 }
 
-impl Game<'_> {
-    pub fn rreturn_restore_hook(
+pub trait GameFishingExt {
+    fn rreturn_restore_hook(
+        &mut self,
+        id: u32,
+        pos: [f64; 3],
+        prev: [f64; 3],
+        rng_state: u64,
+    );
+
+    fn rreturn_restore_hook_full(
+        &mut self,
+        id: u32,
+        pos: [f64; 3],
+        prev: [f64; 3],
+        vel: [f64; 3],
+        rng_state: u64,
+        nibble: i32,
+        time_until_lured: i32,
+        time_until_hooked: i32,
+        fish_angle: f32,
+        open_water: bool,
+        state_bobbing: bool,
+    );
+}
+
+impl GameFishingExt for Game<'_> {
+    fn rreturn_restore_hook(
         &mut self,
         id: u32,
         pos: [f64; 3],
@@ -87,7 +131,7 @@ impl Game<'_> {
         );
     }
 
-    pub fn rreturn_restore_hook_full(
+    fn rreturn_restore_hook_full(
         &mut self,
         id: u32,
         pos: [f64; 3],
@@ -116,7 +160,7 @@ impl Game<'_> {
                 h.state = State::Bobbing;
             }
             if rng_state != 0 {
-                h.random = LegacyRandom::from_state(rng_state);
+                h.random = horizon_core::random::EntityRandom::own(LegacyRandom::from_state(rng_state));
             }
         } else {
             let mut hook = Hook::rreturn_create_full(
@@ -137,7 +181,7 @@ impl Game<'_> {
             if liquid > 0.0 {
                 hook.state = State::Bobbing;
             }
-            self.hook = Some(hook);
+            self.hook.replace(hook);
         }
     }
 }

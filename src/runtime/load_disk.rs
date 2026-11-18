@@ -281,15 +281,17 @@ pub fn load_slot_from_disk(world_root: &Path, slot: &str) -> Option<TimelineSnap
                 })
                 .unwrap_or_default();
 
-            let guest_attachments = match horizon_world::attachments::attachment_compound(
+            let guest_attachments = match horizon_mod_runtime::attachments::attachment_compound(
                 player_tag
                     .as_ref()
-                    .and_then(|tag| tag.get(horizon_world::attachments::ATTACHMENTS_KEY)),
+                    .and_then(|tag| tag.get(horizon_mod_runtime::attachments::ATTACHMENTS_KEY)),
             ) {
                 Ok(Some(data)) => {
-                    horizon_world::attachments::Attachments::from_nbt(data.clone())
+                    let mut a = horizon_mod_runtime::attachments::ResidentAttachments::default();
+                    *a = horizon_mod_runtime::attachments::Attachments::from_nbt(data.clone());
+                    a
                 }
-                _ => horizon_world::attachments::Attachments::default(),
+                _ => horizon_mod_runtime::attachments::ResidentAttachments::default(),
             };
 
             let mut guest_snap = GuestSnapshot {
@@ -324,7 +326,7 @@ pub fn load_slot_from_disk(world_root: &Path, slot: &str) -> Option<TimelineSnap
                 bed,
                 sleep_timer: g_val["sleep_timer"].as_u64().unwrap_or(0) as u32,
                 vehicle: g_val["vehicle"].as_u64().map(|v| v as u32),
-                vehicle_order: g_val["vehicle_order"].as_u64().unwrap_or(0),
+                vehicle_order: g_val["vehicle_order"].as_i64().unwrap_or(0),
                 vehicle_good,
                 spawn: None,
                 respawn_elsewhere: None,
@@ -517,7 +519,7 @@ pub fn load_slot_from_disk(world_root: &Path, slot: &str) -> Option<TimelineSnap
     let weather = disk_level.as_ref().map(|l| l.weather).unwrap_or_default();
     let enabled_features = disk_level
         .as_ref()
-        .map(|l| l.enabled_features.as_slice())
+        .map(|l| &l.enabled_features[..])
         .unwrap_or(&[]);
     let rules = horizon_client::gamerules::GameRules::load_with_features(&cp_dir, enabled_features);
     let dragon_fight_dat = fs::read(fight_dat_path(&cp_dir)).ok();
@@ -579,7 +581,9 @@ pub fn load_slot_from_disk(world_root: &Path, slot: &str) -> Option<TimelineSnap
         .as_ref()
         .and_then(|t| match t.get("player_attachments") {
             Some(Tag::Compound(c)) => {
-                Some(horizon_world::attachments::Attachments::from_nbt(c.clone()))
+                let mut a = horizon_mod_runtime::attachments::ResidentAttachments::default();
+                *a = horizon_mod_runtime::attachments::Attachments::from_nbt(c.clone());
+                Some(a)
             }
             _ => None,
         })
@@ -595,25 +599,24 @@ pub fn load_slot_from_disk(world_root: &Path, slot: &str) -> Option<TimelineSnap
             {
                 guest_attachments.insert(
                     u,
-                    horizon_world::attachments::Attachments::from_nbt(c.clone()),
+                    horizon_mod_runtime::attachments::Attachments::from_nbt(c.clone()),
                 );
             }
         }
     }
 
-    let mut entity_attachments = HashMap::new();
+    let mut entity_attachments = FxHashMap::default();
     if let Some(Tag::List(list)) = globals_tag
         .as_ref()
         .and_then(|t| t.get("entity_attachments"))
     {
         for item in list {
-            if let (Some(Tag::IntArray(arr)), Some(Tag::Compound(c))) =
-                (item.get("uuid"), item.get("data"))
-                && arr.len() == 4
+            if let (Some(Tag::Int(id)), Some(Tag::Compound(c))) =
+                (item.get("id"), item.get("data"))
             {
                 entity_attachments.insert(
-                    [arr[0], arr[1], arr[2], arr[3]],
-                    horizon_world::attachments::Attachments::from_nbt(c.clone()),
+                    *id as u32,
+                    horizon_mod_runtime::attachments::Attachments::from_nbt(c.clone()),
                 );
             }
         }
@@ -821,23 +824,29 @@ pub fn load_slot_from_disk(world_root: &Path, slot: &str) -> Option<TimelineSnap
         3 => Difficulty::Hard,
         _ => Difficulty::Normal,
     };
+    let rule_bool = |name: &str, def: bool| -> bool {
+        match rules.get(name) {
+            Some(horizon_client::gamerules::Value::Bool(b)) => b,
+            _ => def,
+        }
+    };
     let health_rules = HealthRules {
         difficulty: diff_enum,
         natural_regeneration: hr_json["natural_regeneration"]
             .as_bool()
-            .unwrap_or_else(|| rules.bool("natural_health_regeneration")),
+            .unwrap_or_else(|| rule_bool("natural_health_regeneration", true)),
         drowning_damage: hr_json["drowning_damage"]
             .as_bool()
-            .unwrap_or_else(|| rules.bool("drowning_damage")),
+            .unwrap_or_else(|| rule_bool("drowning_damage", true)),
         fall_damage: hr_json["fall_damage"]
             .as_bool()
-            .unwrap_or_else(|| rules.bool("fall_damage")),
+            .unwrap_or_else(|| rule_bool("fall_damage", true)),
         fire_damage: hr_json["fire_damage"]
             .as_bool()
-            .unwrap_or_else(|| rules.bool("fire_damage")),
+            .unwrap_or_else(|| rule_bool("fire_damage", true)),
         freeze_damage: hr_json["freeze_damage"]
             .as_bool()
-            .unwrap_or_else(|| rules.bool("freeze_damage")),
+            .unwrap_or_else(|| rule_bool("freeze_damage", true)),
     };
 
     Some(TimelineSnapshot {
@@ -874,7 +883,7 @@ pub fn load_slot_from_disk(world_root: &Path, slot: &str) -> Option<TimelineSnap
         phantom_tick,
         player_extra,
         shoulder_time,
-        fangs: Vec::new(),
+        fangs: Default::default(),
         ominous_spawners: Vec::new(),
         portals_entities,
         end_gateway_cooldowns,

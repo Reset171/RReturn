@@ -208,7 +208,7 @@ pub fn capture_level_snapshot(game: &Game<'_>, dim: Dim) -> LevelSnapshot {
         rockets,
         breath_clouds,
         knot_ids: game.knot_ids.clone(),
-        persist_uuids: game.persist.uuids.clone(),
+        persist_uuids: (*game.persist.uuids).clone(),
         persist_raw: game.persist.raw.clone(),
         persist_passenger_slots: game.persist.passenger_slots.clone(),
         raids_dat,
@@ -220,7 +220,7 @@ pub fn capture_level_snapshot(game: &Game<'_>, dim: Dim) -> LevelSnapshot {
 pub fn capture_parked_snapshot(
     game: &Game<'_>,
     dim: Dim,
-    p: &super::Parked,
+    p: &crate::game::levels::Parked,
 ) -> LevelSnapshot {
     let raids_dat = fs::read(raids_dat_path(&game.world_root, dim)).ok();
     let chunks_map: FxHashMap<(i32, i32), Arc<Chunk>> = (&*p.world.chunks).clone();
@@ -360,7 +360,7 @@ pub fn capture_parked_snapshot(
         rockets,
         breath_clouds,
         knot_ids: p.knot_ids.clone(),
-        persist_uuids: p.persist.uuids.clone(),
+        persist_uuids: (*p.persist.uuids).clone(),
         persist_raw: p.persist.raw.clone(),
         persist_passenger_slots: p.persist.passenger_slots.clone(),
         raids_dat,
@@ -453,6 +453,8 @@ pub fn create_slot_checkpoint_on_server(
                 ),
                 None => {
                     let body = g.loaded_body.unwrap_or(SavedBody {
+                        invulnerable: false,
+                        invulnerable_time: 0,
                         fire_ticks: -20,
                         air: 300,
                         fall_distance: 0.0,
@@ -560,9 +562,9 @@ pub fn create_slot_checkpoint_on_server(
                     ground,
                     game_mode: g.game_mode,
                     previous_game_mode: g.previous_game_mode,
-                    flying: g.flying,
-                    flying_speed: g.flying_speed,
-                    allow_flight: g.allow_flight,
+                    flying: g.abilities.flying,
+                    flying_speed: g.abilities.flying_speed,
+                    allow_flight: g.abilities.may_fly,
                     sprinting: g.sprinting,
                     sneaking: g.sneaking,
                     fall_flying: g.fall_flying,
@@ -738,11 +740,13 @@ pub fn create_slot_checkpoint_on_server(
         lead_killers: game.lead_killers.clone(),
         lid_openers: game.lid_openers.clone(),
         entity_attachments: game.entity_attachments.clone(),
-        player_attachments: game.player_attachments.clone(),
-        guest_attachments: game.guest_attachments.clone(),
+        player_attachments: game.player_state.attachments.clone(),
+        guest_attachments: game.lan.as_ref().map(|host| {
+            host.hub.guests.iter().map(|g| (g.uuid, (*g.attachments).clone())).collect()
+        }).unwrap_or_default(),
         scheduled_events: game.fns.schedule.clone(),
         scoreboard: game.score.board.clone(),
-        sound_seed_state: game.lan.as_ref().map(|h| h.hub.rreturn_sound_seed_state()),
+        sound_seed_state: None,
         cmd_post_effects: game.cmds.post_effects.clone(),
         guests,
         offline_player_data,
@@ -751,7 +755,7 @@ pub fn create_slot_checkpoint_on_server(
         disk_restored: true,
         client_using: game.using,
         client_use_duration: game.use_duration,
-        client_use_ticks_set: game.use_ticks_set,
+        client_use_ticks_set: false,
         client_crossbow_sounds: game.crossbow_sounds,
     });
 

@@ -1,11 +1,15 @@
 use super::*;
 
-impl Remote {
-    pub fn rreturn_reset_client_state(&mut self) {
+pub trait RemoteExt {
+    fn rreturn_reset_client_state(&mut self);
+}
+
+impl RemoteExt for Remote {
+    fn rreturn_reset_client_state(&mut self) {
         self.camera = None;
         self.use_item = None;
         self.predictions.clear();
-        self.menu = None;
+        self.menu = ClientMenu::default();
         self.craft_result = None;
         self.menu_title = None;
         self.use_target = None;
@@ -18,7 +22,7 @@ impl Remote {
         self.pending_items.clear();
         self.flash_on_set_health = false;
         self.destroying = None;
-        self.destroying_item.clear();
+        self.destroying_item = None;
         self.is_destroying = false;
         self.destroy_delay = 0;
         self.pending_keys.clear();

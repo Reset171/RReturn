@@ -1,3 +1,3 @@
-fn hook_lifecycle(game: &mut Game<'_>, phase: WorldPhase) {
-    crate::game::levels::rreturn::handle_lifecycle(game, phase);
+fn hook_lifecycle(game: &mut Game<'_>, phase: mod_api::WorldPhase) {
+    crate::game::autosave::rreturn::handle_lifecycle(game, phase);
 }

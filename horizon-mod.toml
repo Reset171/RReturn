@@ -1,0 +1,145 @@
+id = "rreturn"
+name = "RReturn"
+version = "0.1.2"
+description = "Timeline-rewind native mod for Horizon"
+authors = ["Reset171"]
+license = "GPL-3.0-only"
+api = "0.2"
+side = "both"
+capabilities = ["registries"]
+
+[native]
+game = "26.3"
+horizon = "0b14f8acfd97fa2c750e42795249dcc981178ca4"
+mixins = "e59da9094f0c2fdda6c627fe9eff22dec6a906f0"
+
+[[native.module]]
+id = "runtime"
+file = "crates/horizon-client/src/game/world/autosave.rs"
+name = "rreturn"
+source = "src/runtime.rs"
+
+[[native.module]]
+id = "dragon_ext"
+file = "crates/horizon-client/src/game/mobs/dragon.rs"
+name = "rreturn_dragon"
+source = "src/ext/dragon_ext.rs"
+
+[[native.module]]
+id = "remote_ext"
+file = "crates/horizon-client/src/game/network/remote/mod.rs"
+name = "rreturn_remote"
+source = "src/ext/remote_ext.rs"
+
+[[native.module]]
+id = "stats_ext"
+file = "crates/horizon-client/src/game/interface/stats.rs"
+name = "rreturn_stats"
+source = "src/ext/stats_ext.rs"
+
+[[native.module]]
+id = "end_ext"
+file = "crates/horizon-client/src/game/world/end.rs"
+name = "rreturn_end"
+source = "src/ext/end_ext.rs"
+
+[[native.module]]
+id = "fishing_ext"
+file = "crates/horizon-client/src/game/items/fishing.rs"
+name = "rreturn_fishing"
+source = "src/ext/fishing_ext.rs"
+
+[[native.mixin]]
+id = "native-key"
+target = "horizon_client::game::native_hooks::input_key::Game<'_>::native_input_key"
+kind = "HEAD"
+helper = "src/hooks/hook_key.rs"
+bindings = [
+  { name = "game", ty = "&mut Game<'_>", value = "&mut *self" },
+  { name = "key", ty = "&str", value = "key" },
+  { name = "action", ty = "mod_api::KeyAction", value = "action" },
+]
+
+[[native.mixin]]
+id = "native-command"
+target = "horizon_client::game::native_hooks::base::Game<'_>::native_command"
+kind = "HEAD"
+helper = "src/hooks/hook_command.rs"
+bindings = [
+  { name = "game", ty = "&mut Game<'_>", value = "&mut *self" },
+  { name = "command", ty = "&str", value = "command" },
+  { name = "ran", ty = "&mut bool", value = "&mut *ran" },
+]
+
+[[native.mixin]]
+id = "native-tick"
+target = "horizon_client::game::native_hooks::client_tick_post::Game<'_>::native_client_tick_post"
+kind = "HEAD"
+helper = "src/hooks/hook_tick.rs"
+bindings = [
+  { name = "game", ty = "&mut Game<'_>", value = "&mut *self" },
+]
+
+[[native.mixin]]
+id = "native-lifecycle"
+target = "horizon_client::game::native_hooks::base::Game<'_>::native_world_lifecycle"
+kind = "HEAD"
+helper = "src/hooks/hook_lifecycle.rs"
+bindings = [
+  { name = "game", ty = "&mut Game<'_>", value = "&mut *self" },
+  { name = "phase", ty = "mod_api::WorldPhase", value = "phase" },
+]
+
+[[native.mixin]]
+id = "server-started"
+target = "horizon_client::game::native_hooks::base::Game<'_>::native_server_started"
+kind = "HEAD"
+helper = "src/hooks/hook_server_started.rs"
+bindings = [
+  { name = "game", ty = "&mut Game<'_>", value = "&mut *self" },
+]
+
+[[native.mixin]]
+id = "guest-die"
+target = "horizon_client::game::lan_actions::death_state::Game<'_>::guest_death_canceled"
+kind = "HEAD"
+cancellable = true
+helper = "src/hooks/hook_guest_die.rs"
+bindings = [
+  { name = "game", ty = "&mut Game<'_>", value = "&mut *self" },
+  { name = "gi", ty = "usize", value = "gi" },
+  { name = "conn", ty = "u32", value = "conn" },
+]
+
+[[native.mixin]]
+id = "owner-console-command"
+target = "horizon_client::game::integrated::Game<'_>::owner_console_command"
+kind = "HEAD"
+cancellable = true
+helper = "src/hooks/hook_owner_command.rs"
+bindings = [
+  { name = "game", ty = "&mut Game<'_>", value = "&mut *self" },
+  { name = "command", ty = "&str", value = "command" },
+]
+
+[[native.mixin]]
+id = "guest-command"
+target = "horizon_client::game::lan_actions::commands::Game<'_>::guest_command"
+kind = "HEAD"
+cancellable = true
+helper = "src/hooks/hook_guest_command.rs"
+bindings = [
+  { name = "game", ty = "&mut Game<'_>", value = "&mut *self" },
+  { name = "conn", ty = "u32", value = "conn" },
+  { name = "command", ty = "&str", value = "command" },
+]
+
+[[native.mixin]]
+id = "frame-visuals"
+target = "horizon_client::game::native_visuals::Game<'_>::native_frame_visuals"
+kind = "HEAD"
+helper = "src/hooks/hook_frame_visuals.rs"
+bindings = [
+  { name = "game", ty = "&Game<'_>", value = "&*self" },
+  { name = "lines", ty = "&mut Vec<horizon_client::gizmos::Line>", value = "&mut *lines" },
+]

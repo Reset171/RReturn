@@ -225,9 +225,6 @@ pub fn restore_players_on_rollback(
         host.waypoint_dead.clear();
         host.idle_states = Default::default();
         host.hub.native_advancement_grants.clear();
-        if let Some(seed_state) = snap.sound_seed_state {
-            host.hub.rreturn_set_sound_seed_state(seed_state);
-        }
         for gi in 0..host.hub.guests.len() {
             if !host.hub.guests[gi].placed {
                 continue;
@@ -238,7 +235,7 @@ pub fn restore_players_on_rollback(
             if !tracked.is_empty() {
                 host.hub.guests[gi]
                     .send(&C::RemoveEntities(play::RemoveEntities { ids: tracked }));
-                host.hub.guests[gi].tracker.clear();
+                host.hub.guests.update(gi, |g| g.tracker.clear());
             }
 
             let mut close_windows = vec![0i32];
@@ -247,9 +244,6 @@ pub fn restore_players_on_rollback(
             }
             if policy.player_inventory {
                 if let Some(play_state) = host.play.get_mut(&conn) {
-                    if let Some(st) = play_state.station.take() {
-                        close_windows.push(st.window);
-                    }
                     if let Some(lec) = play_state.lectern.take() {
                         close_windows.push(lec.window);
                     }
@@ -259,18 +253,9 @@ pub fn restore_players_on_rollback(
                     if let Some(mw) = play_state.mount_window.take() {
                         close_windows.push(mw.window);
                     }
-                    if let Some((w, _, _, _)) = play_state.crafting.table.take() {
-                        close_windows.push(w);
-                    }
-                    if let Some((w, _)) = play_state.crafting.machine.take() {
-                        close_windows.push(w);
-                    }
-                    play_state.crafting = Default::default();
-                    play_state.menu_heard = None;
                 }
                 host.hub.close_container(conn);
             } else {
-                let _ = game.lan_station_closed(&mut host, conn, None);
                 host.hub.close_container(conn);
             }
             close_windows.sort_unstable();
@@ -285,7 +270,7 @@ pub fn restore_players_on_rollback(
                     sound: None,
                 }));
             }
-            host.hub.guests[gi].landing = false;
+            host.hub.guests.update(gi, |g| g.landing = false);
 
             let is_singleplayer = host.hub.guests.len() == 1
                 || host.owner.as_ref().is_some_and(|o| o.uuid == uuid);
@@ -318,8 +303,7 @@ pub fn restore_players_on_rollback(
                 } else {
                     Vec::new()
                 };
-                {
-                    let g = &mut host.hub.guests[gi];
+                host.hub.guests.update(gi, |g| {
                     if policy.player_position {
                         g.dimension = gs.dimension.clone();
                         g.position = gs.position;
@@ -333,9 +317,9 @@ pub fn restore_players_on_rollback(
                     if policy.player_abilities {
                         g.game_mode = gs.game_mode;
                         g.previous_game_mode = gs.previous_game_mode;
-                        g.flying = gs.flying;
-                        g.flying_speed = gs.flying_speed;
-                        g.allow_flight = gs.allow_flight;
+                        g.abilities.flying = gs.flying;
+                        g.abilities.flying_speed = gs.flying_speed;
+                        g.abilities.may_fly = gs.allow_flight;
                     }
                     if policy.player_motion {
                         g.sprinting = gs.sprinting;
@@ -443,7 +427,7 @@ pub fn restore_players_on_rollback(
                         event: 3,
                         param: gs.game_mode as f32,
                     }));
-                    g.send(&g.abilities());
+                    g.send(&g.abilities_packet());
                     g.seen_credits = gs.seen_credits;
                     g.post_effects = gs.post_effects.clone();
                     g.post_effects_dirty = true;
@@ -484,6 +468,8 @@ pub fn restore_players_on_rollback(
                         food_exhaustion: gs.exhaustion,
                         food_tick_timer: gs.food_timer,
                         ticks_frozen: gs.ticks_frozen,
+                        invulnerable: false,
+                        invulnerable_time: 0,
                     });
                     let synced_attrs = g.motion.as_mut().map(|m| {
                         restore_player_motion(m, gs, policy, snap.game_time);
@@ -604,23 +590,20 @@ pub fn restore_players_on_rollback(
                             action: play::BossAction::Remove,
                         }));
                     }
-                }
+                });
 
                 let mut cd_packets: Vec<(String, i32)> = Vec::new();
                 if let Some(play_state) = host.play.get_mut(&conn) {
                     let prev_shield_cd = play_state.shield_cooldown;
                     let prev_cooldowns = std::mem::take(&mut play_state.cooldowns);
                     let prev_stats = std::mem::take(&mut play_state.stats);
-                    let prev_hook = play_state.hook.take();
+                    let prev_hook = play_state.hook.extract();
                     let prev_left_game = play_state.left_game;
                     let prev_menus = if !policy.player_inventory {
                         Some((
-                            play_state.station.take(),
                             play_state.lectern.take(),
                             play_state.merchant.take(),
                             play_state.mount_window.take(),
-                            std::mem::take(&mut play_state.crafting),
-                            play_state.menu_heard.take(),
                         ))
                     } else {
                         None
@@ -629,13 +612,10 @@ pub fn restore_players_on_rollback(
                     *play_state = Default::default();
                     play_state.left_game = prev_left_game;
 
-                    if let Some((st, lec, merch, mw, craft, heard)) = prev_menus {
-                        play_state.station = st;
+                    if let Some((lec, merch, mw)) = prev_menus {
                         play_state.lectern = lec;
                         play_state.merchant = merch;
                         play_state.mount_window = mw;
-                        play_state.crafting = craft;
-                        play_state.menu_heard = heard;
                     }
 
                     if policy.player_cooldowns {
@@ -693,12 +673,14 @@ pub fn restore_players_on_rollback(
                                 h.state = fishing::State::Bobbing;
                             }
                             if hs.rng_state != 0 {
-                                h.random = LegacyRandom::from_state(hs.rng_state);
+                                h.random = horizon_core::random::EntityRandom::own(LegacyRandom::from_state(hs.rng_state));
                             }
-                            play_state.hook = Some(h);
+                            play_state.hook.replace(h);
                         }
+                    } else if let Some(h) = prev_hook {
+                        play_state.hook.replace(h);
                     } else {
-                        play_state.hook = prev_hook;
+                        play_state.hook.discard();
                     }
                 }
                 for (group, duration) in cd_packets {
@@ -719,7 +701,6 @@ pub fn restore_players_on_rollback(
                                 at: gs.position,
                                 rotation: Some([gs.yaw, gs.pitch]),
                                 vehicle: None,
-                                cause: None,
                             });
                     } else {
                         host.hub.teleport(gi, Some(gs.position));
@@ -776,17 +757,18 @@ pub fn restore_players_on_rollback(
                                 h.state = fishing::State::Bobbing;
                             }
                             if hs.rng_state != 0 {
-                                h.random = LegacyRandom::from_state(hs.rng_state);
+                                h.random = horizon_core::random::EntityRandom::own(LegacyRandom::from_state(hs.rng_state));
                             }
                         } else {
                             game.spawn_remote_hook(
                                 hs.id,
-                                Vec3::new(hs.position[0], hs.position[1], hs.position[2]),
+                                [0; 4],
                                 Vec3::new(hs.velocity[0], hs.velocity[1], hs.velocity[2]),
+                                Vec3::new(hs.position[0], hs.position[1], hs.position[2]),
                                 ent_id,
                             );
                         }
-                    } else if let Some(h) = game.hook.take() {
+                    } else if let Some(h) = game.hook.extract() {
                         game.remove_remote_hook(h.id());
                     }
                 }
@@ -796,26 +778,29 @@ pub fn restore_players_on_rollback(
                 if let Some(play_state) = host.play.get_mut(&conn) {
                     *play_state = Default::default();
                 }
-                let g = &mut host.hub.guests[gi];
-                g.inventory = vec![None; 36];
-                g.armor = [None, None, None, None];
-                g.offhand = None;
-                g.ender_items = vec![None; 27];
-                g.carried = None;
+                host.hub.guests.update(gi, |g| {
+                    g.inventory = vec![None; 36];
+                    g.armor = [None, None, None, None];
+                    g.offhand = None;
+                    g.ender_items = vec![None; 27];
+                    g.carried = None;
+                });
                 host.hub.send_inventory(gi);
             }
         }
         if !game.level_teleports.is_empty() {
-            game.run_level_teleports(&mut host);
+            game.run_level_teleports();
         }
         game.server_trips.clear();
         game.teleport_notes.clear();
         game.spawn_wait.clear();
         for gi in 0..host.hub.guests.len() {
             let conn = host.hub.guests[gi].conn;
-            host.hub.guests[gi].landing = false;
-            host.hub.guests[gi].loading = false;
-            host.hub.guests[gi].load_timeout = 0;
+            host.hub.guests.update(gi, |g| {
+                g.landing = false;
+                g.loading = false;
+                g.load_timeout = 0;
+            });
             if let Some(play_state) = host.play.get_mut(&conn) {
                 play_state.portal = Default::default();
             }
@@ -823,11 +808,31 @@ pub fn restore_players_on_rollback(
         game.portals = Default::default();
         if policy.player_inventory {
             host.hub.native_menu_events.clear();
-            host.hub.native_menu_returns.clear();
         }
-        host.hub.rreturn_reset_tracked();
+        host.hub.native_tracking.clear();
+        host.hub.attachment_snapshots.clear();
+        if let Some(far) = host.hub.far.as_mut() {
+            far.forget_level();
+        }
+        let _ = horizon_client::lan::handoff::take_changed();
         if policy.world_time {
-            host.hub.rreturn_sync_time(&game.world, net_clock_rate);
+            let overworld_clock = host
+                .hub
+                .sync_data()
+                .id("minecraft:world_clock", "minecraft:overworld")
+                .unwrap_or(0);
+            let packet = horizon_protocol::packets::play::Clientbound::SetTime(
+                horizon_protocol::packets::play::SetTime {
+                    game_time: game.world.game_time,
+                    clocks: vec![horizon_protocol::packets::play::ClockState {
+                        clock: overworld_clock,
+                        total_ticks: game.world.day_time,
+                        partial_tick: 0.0,
+                        rate: net_clock_rate,
+                    }],
+                },
+            );
+            host.hub.broadcast_level(&packet);
         }
         host.hub.synced.clear();
         game.lan = Some(host);
@@ -837,12 +842,8 @@ pub fn restore_players_on_rollback(
     game.guest_player_sounds.clear();
     game.guest_block_sounds.clear();
     game.guest_cooldowns.clear();
-    game.guest_inventory_resend = false;
     game.save_after_guest_turn = false;
     game.rotation_forced = false;
-    if policy.player_inventory {
-        game.native_click_cursor = None;
-    }
 
     if let Some(gs) = snap.guests.values().next() {
         if policy.player_abilities {
@@ -886,6 +887,5 @@ pub fn restore_players_on_rollback(
     }
     game.using = snap.client_using;
     game.use_duration = snap.client_use_duration;
-    game.use_ticks_set = snap.client_use_ticks_set;
     game.crossbow_sounds = snap.client_crossbow_sounds;
 }

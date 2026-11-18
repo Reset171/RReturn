@@ -206,8 +206,11 @@ pub fn rollback_slot_checkpoint_on_server(game: &mut Game<'_>, slot: &str) -> bo
         let saved_next = game.next_entity;
         for (oid, onbt) in &snap.ominous_spawners {
             game.load_ominous_item_spawner(onbt.clone());
-            if let Some(last) = game.ominous_spawners.last_mut() {
-                last.id = *oid;
+            let last_idx = game.ominous_spawners.len().saturating_sub(1);
+            if !game.ominous_spawners.is_empty() {
+                game.ominous_spawners.update(last_idx, |last| {
+                    last.id = *oid;
+                });
             }
         }
         game.next_entity = saved_next;
@@ -221,15 +224,19 @@ pub fn rollback_slot_checkpoint_on_server(game: &mut Game<'_>, slot: &str) -> bo
         game.lid_openers = snap.lid_openers.clone();
     }
     game.entity_attachments = snap.entity_attachments.clone();
-    game.player_attachments = snap.player_attachments.clone();
-    game.guest_attachments = snap.guest_attachments.clone();
-    game.native_player_fx = Default::default();
-    game.native_moves.clear();
+    game.player_state.attachments.clone_from(&snap.player_attachments);
+    if let Some(host) = game.lan.as_mut() {
+        host.hub.guests.update_all(|g| {
+            if let Some(att) = snap.guest_attachments.get(&g.uuid) {
+                *g.attachments = att.clone();
+            }
+        });
+    }
     if policy.player_stats {
         game.stats.events.clear();
     }
     game.fns.schedule = snap.scheduled_events.clone();
-    game.sync_function_registries();
+    game.sync_schedule_registry();
     game.cmds.post_effects = snap.cmd_post_effects.clone();
     game.exec = Default::default();
     game.maps = Default::default();
@@ -289,6 +296,8 @@ pub fn rollback_slot_checkpoint_on_server(game: &mut Game<'_>, slot: &str) -> bo
             game.world.shape,
             game.level.seed,
             &game.level.enabled_features,
+            game.res.biomes().clone(),
+            None,
         ) {
             if let Some(tables) = game.save.tables.get() {
                 let _ = fresh_save.tables.set(Arc::clone(tables));
@@ -303,7 +312,7 @@ pub fn rollback_slot_checkpoint_on_server(game: &mut Game<'_>, slot: &str) -> bo
     }
 
     if game.dim != target_dim {
-        let _ = game.enter_level(None, target_dim);
+        let _ = game.enter_level(target_dim);
     }
 
     let saved_dims: HashSet<Dim> = snap.levels.keys().copied().collect();
@@ -328,7 +337,7 @@ pub fn rollback_slot_checkpoint_on_server(game: &mut Game<'_>, slot: &str) -> bo
 
     for dim in other_dims {
         if let Some(level_snap) = snap.levels.get(&dim) {
-            if game.enter_level(None, dim).is_ok() {
+            if game.enter_level(dim).is_ok() {
                 if need_force_disk || !is_hot_rollback || disk_files_changed > 0 {
                     let new_save = horizon_client::save::SaveDir::new(
                         game.save.root.clone(),
@@ -352,7 +361,7 @@ pub fn rollback_slot_checkpoint_on_server(game: &mut Game<'_>, slot: &str) -> bo
         }
     }
     if game.dim != target_dim {
-        let _ = game.enter_level(None, target_dim);
+        let _ = game.enter_level(target_dim);
         if need_force_disk || !is_hot_rollback || disk_files_changed > 0 {
             let new_save = horizon_client::save::SaveDir::new(
                 game.save.root.clone(),

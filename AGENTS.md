@@ -1,11 +1,11 @@
 Native timeline-rewind mod for **Horizon** (Minecraft: Java Edition **26.3**).
 
-- **Generated mixin output:** Never edit `mixins/rreturn/*` directly (`mixins/` is gitignored). Edit `src/runtime/*.rs`, `src/ext/*.rs`, `src/hooks/*.rs`, and `src/horizon-mixin.toml`; `build.rs` regenerates `mixins/rreturn/` and packages `target/rreturn-<version>.hnmod` via `tools/package.py` on `cargo check` / `cargo build` / `cargo test`.
+- **Flat .hmod package format:** Single manifest `horizon-mod.toml` (Horizon **0b14f8acfd97fa2c750e42795249dcc981178ca4**). Edit `src/runtime/*.rs`, `src/ext/*.rs`, `src/hooks/*.rs`, and `horizon-mod.toml`; `build.rs` generates `src/runtime.rs` and packages `target/rreturn-<version>.hmod` via `tools/package.py` on `cargo check` / `cargo build` / `cargo test`.
 - **Isolation:** Keep test runs in temporary `rreturn_e2e_*` worlds via `RReturnHarness` (`tools/rreturn_harness.py`). Shut down the game with `quit`, not `SIGKILL`.
 - **Regression tests:** Every bug fix requires a reproducing E2E test in `tools/tests/test_<category>.py` registered in `tools/rreturn_e2e.py`.
 
-- `src/hooks/hook_*.rs` & `src/horizon-mixin.toml` — Mixin declarations and hook helpers injected into `horizon-client` (`horizon_revision = "9f42064c11efe7ef3e5ed2baad7ddc2a3b36eea0"`).
-- `src/ext/*_ext.rs` — Engine extensions (`dragon_ext.rs`, `end_ext.rs`, `hub_ext.rs`, `remote_ext.rs`, `stats_ext.rs`).
+- `horizon-mod.toml` & `src/hooks/hook_*.rs` — Manifest, mixin declarations, and hook helpers injected into `horizon-client` (`horizon = "0b14f8acfd97fa2c750e42795249dcc981178ca4"`).
+- `src/ext/*_ext.rs` — Engine extensions (`dragon_ext.rs`, `end_ext.rs`, `fishing_ext.rs`, `hub_ext.rs`, `remote_ext.rs`, `stats_ext.rs`).
 - `src/runtime/` — Modular runtime implementation:
   - `types.rs` — `RReturnState`, `AnchorMode`, `AnchorSettings`, permissions, and localization.
   - `policy.rs` — `RollbackPolicy` (35 deterministic rollback flags).
@@ -22,12 +22,12 @@ Native timeline-rewind mod for **Horizon** (Minecraft: Java Edition **26.3**).
   - `adaptive.rs` — Player safety checks, escape flood-fill, threat calculation, and interval/adaptive auto-saving.
   - `commands.rs` — `/rreturn` command routing and subcommand handlers.
   - `telemetry.rs` — Text and JSON status, threat metrics, and benchmark formatting.
-  - `ui.rs` — Native mod registration, settings buttons, and `config/rreturn.json` loading.
+  - `ui.rs` — Native mod settings and `config/rreturn.json` loading.
   - `tracker.rs` — `LoopTracker` F3+B hitbox color comparison across loops.
   - `benchmark.rs` — Phase timers and log output (`logs/rreturn.log`, `saves/<World>/rreturn/benchmark.log`).
   - `hooks.rs` — `handle_lifecycle`, `handle_tick`, `intercept_guest_die`, `handle_key`.
 - `src/lib.rs` — Standalone unit-test crate for slot name validation and atomic checkpoint I/O helpers.
-- `tools/` — `package.py` (deterministic `.hnmod` packager), `pr_ready.py` (pre-commit check), `rreturn_harness.py` (control socket client), `rreturn_e2e.py` & `tools/tests/` (42 E2E tests), `rreturn_bench.py` (stress benchmark), `rreturn_spark.py` (CPU profiler).
+- `tools/` — `package.py` (deterministic `.hmod` packager), `pr_ready.py` (pre-commit check), `rreturn_harness.py` (control socket client), `rreturn_e2e.py` & `tools/tests/` (42 E2E tests), `rreturn_bench.py` (stress benchmark), `rreturn_spark.py` (CPU profiler).
 
 ```sh
 python3 tools/pr_ready.py --quick

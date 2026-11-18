@@ -1,149 +1,35 @@
-use super::super::{
-    native_hooks::NativeMod,
-    Game,
-};
+use super::super::Game;
 use super::types::*;
 use std::{
     fs,
     path::Path,
 };
 
-pub fn register_native_mod(mods: &mut Vec<NativeMod>) {
-    mods.push(NativeMod {
-        id: MOD_ID.to_owned(),
-        title: format!("RReturn {MOD_VERSION}"),
-        description: tr("mod.rreturn.description"),
-        keys: vec![
-            [
-                "save".to_owned(),
-                tr("key.rreturn.save"),
-                "key.keyboard.f6".to_owned(),
-            ],
-            [
-                "load".to_owned(),
-                tr("key.rreturn.load"),
-                "key.keyboard.f7".to_owned(),
-            ],
-            [
-                "anchor_menu".to_owned(),
-                tr("key.rreturn.anchor_menu"),
-                "key.keyboard.f8".to_owned(),
-            ],
-        ],
-    });
-}
-
-pub fn populate_settings(game: &mut Game<'_>, mod_id: &str, buttons: &mut Vec<String>) {
-    if mod_id != MOD_ID {
-        return;
-    }
-    load_saved_settings(game);
-    let on = tr("ui.rreturn.on");
-    let off = tr("ui.rreturn.off");
-    with_state(|st| {
-        buttons.push(tr_args(
-            "ui.rreturn.auto_save",
-            &[if st.auto_save { &on } else { &off }],
-        ));
-        buttons.push(tr_args(
-            "ui.rreturn.adaptive_save",
-            &[if st.adaptive_mode { &on } else { &off }],
-        ));
-        buttons.push(tr_args(
-            "ui.rreturn.interval",
-            &[&st.fixed_interval_sec.to_string()],
-        ));
-        buttons.push(tr_args(
-            "ui.rreturn.anchor_mode",
-            &[&tr(st.anchor.mode.lang_key())],
-        ));
-        let cd = st.anchor.rollback_cooldown_seconds;
-        if cd <= 0 {
-            buttons.push(tr("ui.rreturn.cooldown_off"));
-        } else {
-            buttons.push(tr_args("ui.rreturn.cooldown", &[&cd.to_string()]));
-        }
-        buttons.push(tr_args(
-            "ui.rreturn.boss_save",
-            &[if st.save_on_boss_defeat { &on } else { &off }],
-        ));
-        buttons.push(tr_args(
-            "ui.rreturn.logs",
-            &[if st.logs { &on } else { &off }],
-        ));
-        buttons.push(tr_args(
-            "ui.rreturn.f3_hitboxes",
-            &[if st.f3_loop_hitboxes { &on } else { &off }],
-        ));
-        buttons.push(tr_args(
-            "ui.rreturn.dev_mode",
-            &[if st.dev_mode { &on } else { &off }],
-        ));
-    });
-}
-
-pub fn handle_settings_click(game: &mut Game<'_>, mod_id: &str, button: usize) {
-    if mod_id != MOD_ID {
-        return;
-    }
-    with_state_mut(|st| match button {
-        0 => st.auto_save = !st.auto_save,
-        1 => st.adaptive_mode = !st.adaptive_mode,
-        2 => {
-            st.fixed_interval_sec = match st.fixed_interval_sec {
-                60 => 180,
-                180 => 300,
-                300 => 600,
-                600 => 1200,
-                _ => 60,
-            };
-            st.current_interval_ticks = i64::from(st.fixed_interval_sec) * 20;
-        }
-        3 => st.anchor.mode = st.anchor.mode.next(),
-        4 => {
-            st.anchor.rollback_cooldown_seconds = match st.anchor.rollback_cooldown_seconds {
-                0 => 10,
-                10 => 30,
-                30 => 60,
-                60 => 300,
-                _ => 0,
-            };
-            st.last_rollback_tick = None;
-        }
-        5 => st.save_on_boss_defeat = !st.save_on_boss_defeat,
-        6 => st.logs = !st.logs,
-        7 => st.f3_loop_hitboxes = !st.f3_loop_hitboxes,
-        8 => st.dev_mode = !st.dev_mode,
-        _ => {}
-    });
-    save_current_settings(game);
-}
-
 pub fn load_saved_settings(game: &Game<'_>) {
     let auto_save = game
-        .native_setting(MOD_ID, "auto_save")
+        .setting(MOD_ID, "auto_save")
         .map(|v| v != "false");
     let adaptive = game
-        .native_setting(MOD_ID, "adaptive_mode")
+        .setting(MOD_ID, "adaptive_mode")
         .map(|v| v != "false");
     let interval = game
-        .native_setting(MOD_ID, "fixed_interval_sec")
+        .setting(MOD_ID, "fixed_interval_sec")
         .and_then(|v| v.parse::<i32>().ok());
     let mode = game
-        .native_setting(MOD_ID, "anchor_mode")
+        .setting(MOD_ID, "anchor_mode")
         .map(|v| AnchorMode::by_id(&v));
     let cooldown = game
-        .native_setting(MOD_ID, "rollback_cooldown_sec")
+        .setting(MOD_ID, "rollback_cooldown_sec")
         .and_then(|v| v.parse::<i32>().ok());
     let boss_save = game
-        .native_setting(MOD_ID, "save_on_boss_defeat")
+        .setting(MOD_ID, "save_on_boss_defeat")
         .map(|v| v != "false");
-    let logs = game.native_setting(MOD_ID, "logs").map(|v| v == "true");
+    let logs = game.setting(MOD_ID, "logs").map(|v| v == "true");
     let f3_hitboxes = game
-        .native_setting(MOD_ID, "f3_loop_hitboxes")
+        .setting(MOD_ID, "f3_loop_hitboxes")
         .map(|v| v != "false");
     let dev_mode = game
-        .native_setting(MOD_ID, "dev_mode")
+        .setting(MOD_ID, "dev_mode")
         .map(|v| v == "true");
 
     let json_cfg = fs::read_to_string(Path::new("config").join("rreturn.json"))
@@ -253,28 +139,28 @@ pub fn load_saved_settings(game: &Game<'_>) {
 
 pub fn save_current_settings(game: &Game<'_>) {
     with_state(|st| {
-        game.native_set_setting(
+        game.set_setting(
             MOD_ID,
             "auto_save",
             if st.auto_save { "true" } else { "false" },
         );
-        game.native_set_setting(
+        game.set_setting(
             MOD_ID,
             "adaptive_mode",
             if st.adaptive_mode { "true" } else { "false" },
         );
-        game.native_set_setting(
+        game.set_setting(
             MOD_ID,
             "fixed_interval_sec",
             &st.fixed_interval_sec.to_string(),
         );
-        game.native_set_setting(MOD_ID, "anchor_mode", st.anchor.mode.id());
-        game.native_set_setting(
+        game.set_setting(MOD_ID, "anchor_mode", st.anchor.mode.id());
+        game.set_setting(
             MOD_ID,
             "rollback_cooldown_sec",
             &st.anchor.rollback_cooldown_seconds.to_string(),
         );
-        game.native_set_setting(
+        game.set_setting(
             MOD_ID,
             "save_on_boss_defeat",
             if st.save_on_boss_defeat {
@@ -283,13 +169,13 @@ pub fn save_current_settings(game: &Game<'_>) {
                 "false"
             },
         );
-        game.native_set_setting(MOD_ID, "logs", if st.logs { "true" } else { "false" });
-        game.native_set_setting(
+        game.set_setting(MOD_ID, "logs", if st.logs { "true" } else { "false" });
+        game.set_setting(
             MOD_ID,
             "f3_loop_hitboxes",
             if st.f3_loop_hitboxes { "true" } else { "false" },
         );
-        game.native_set_setting(
+        game.set_setting(
             MOD_ID,
             "dev_mode",
             if st.dev_mode { "true" } else { "false" },

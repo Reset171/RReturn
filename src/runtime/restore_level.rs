@@ -501,6 +501,14 @@ pub fn apply_level_snapshot_in_place(
         game.audio.stop_and_release(sound_id);
     }
     game.lan_songs.clear();
+    for be in game.world.block_entities.values_mut() {
+        if let BlockEntity::Jukebox(j) = be {
+            if j.playing {
+                j.loaded_clock = false;
+                j.ticks = 0;
+            }
+        }
+    }
     game.lan_cushion_breaks.clear();
     game.lan_global_events.clear();
 

@@ -181,7 +181,14 @@ pub struct HookSnapshot {
     pub id: u32,
     pub position: [f64; 3],
     pub previous: [f64; 3],
+    pub velocity: [f64; 3],
     pub rng_state: u64,
+    pub nibble: i32,
+    pub time_until_lured: i32,
+    pub time_until_hooked: i32,
+    pub fish_angle: f32,
+    pub open_water: bool,
+    pub state_bobbing: bool,
 }
 
 pub fn extract_active_cooldowns(cooldowns: &Cooldowns) -> Vec<(Arc<str>, i32)> {

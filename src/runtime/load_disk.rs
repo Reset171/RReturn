@@ -370,6 +370,39 @@ pub fn load_slot_from_disk(world_root: &Path, slot: &str) -> Option<TimelineSnap
                         let id = v.get("id")?.as_u64()? as u32;
                         let p = v.get("position")?.as_array()?;
                         let prev = v.get("previous")?.as_array()?;
+                        let vel_arr = v.get("velocity").and_then(|vel| vel.as_array());
+                        let vel = if let Some(va) = vel_arr
+                            && va.len() == 3
+                        {
+                            [
+                                va[0].as_f64().unwrap_or(0.0),
+                                va[1].as_f64().unwrap_or(0.0),
+                                va[2].as_f64().unwrap_or(0.0),
+                            ]
+                        } else {
+                            [0.0, 0.0, 0.0]
+                        };
+                        let nibble = v.get("nibble").and_then(|n| n.as_i64()).unwrap_or(0) as i32;
+                        let time_until_lured = v
+                            .get("time_until_lured")
+                            .and_then(|t| t.as_i64())
+                            .unwrap_or(0) as i32;
+                        let time_until_hooked = v
+                            .get("time_until_hooked")
+                            .and_then(|t| t.as_i64())
+                            .unwrap_or(0) as i32;
+                        let fish_angle = v
+                            .get("fish_angle")
+                            .and_then(|a| a.as_f64())
+                            .unwrap_or(0.0) as f32;
+                        let open_water = v
+                            .get("open_water")
+                            .and_then(|o| o.as_bool())
+                            .unwrap_or(true);
+                        let state_bobbing = v
+                            .get("state_bobbing")
+                            .and_then(|b| b.as_bool())
+                            .unwrap_or(false);
                         if p.len() == 3 && prev.len() == 3 {
                             Some(HookSnapshot {
                                 id,
@@ -379,10 +412,17 @@ pub fn load_slot_from_disk(world_root: &Path, slot: &str) -> Option<TimelineSnap
                                     prev[1].as_f64()?,
                                     prev[2].as_f64()?,
                                 ],
+                                velocity: vel,
                                 rng_state: v
                                     .get("rng_state")
                                     .and_then(|r| r.as_u64())
                                     .unwrap_or(0),
+                                nibble,
+                                time_until_lured,
+                                time_until_hooked,
+                                fish_angle,
+                                open_water,
+                                state_bobbing,
                             })
                         } else {
                             None

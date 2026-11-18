@@ -458,6 +458,22 @@ pub fn restore_players_on_rollback(
                     }
                     g.sent_air = (-1, -1.0);
                     g.sent_frozen = -1;
+                    if snap.policy.world_weather {
+                        let rain_level = if snap.weather.raining { 1.0 } else { 0.0 };
+                        let thunder_level = if snap.weather.thundering { 1.0 } else { 0.0 };
+                        g.send(&C::GameEvent(play::GameEvent {
+                            event: if snap.weather.raining { 2 } else { 1 },
+                            param: 0.0,
+                        }));
+                        g.send(&C::GameEvent(play::GameEvent {
+                            event: 7,
+                            param: rain_level,
+                        }));
+                        g.send(&C::GameEvent(play::GameEvent {
+                            event: 8,
+                            param: thunder_level,
+                        }));
+                    }
                     g.sent_shared ^= -128;
                     g.sent_shoulders = [Some(-999), Some(-999)];
                     g.loaded_body = Some(SavedBody {
@@ -651,15 +667,31 @@ pub fn restore_players_on_rollback(
                     if policy.entities_presence {
                         if let Some(hs) = &gs.hook {
                             let mut h = prev_hook.unwrap_or_else(|| {
-                                fishing::Hook::rreturn_create(
+                                fishing::Hook::rreturn_create_full(
                                     hs.id,
                                     hs.position,
                                     hs.previous,
+                                    hs.velocity,
                                     hs.rng_state,
+                                    hs.nibble,
+                                    hs.time_until_lured,
+                                    hs.time_until_hooked,
+                                    hs.fish_angle,
+                                    hs.open_water,
+                                    hs.state_bobbing,
                                 )
                             });
                             h.position = Vec3::new(hs.position[0], hs.position[1], hs.position[2]);
                             h.previous = Vec3::new(hs.previous[0], hs.previous[1], hs.previous[2]);
+                            h.velocity = Vec3::new(hs.velocity[0], hs.velocity[1], hs.velocity[2]);
+                            h.nibble = hs.nibble;
+                            h.time_until_lured = hs.time_until_lured;
+                            h.time_until_hooked = hs.time_until_hooked;
+                            h.fish_angle = hs.fish_angle;
+                            h.open_water = hs.open_water;
+                            if hs.state_bobbing {
+                                h.state = fishing::State::Bobbing;
+                            }
                             if hs.rng_state != 0 {
                                 h.random = LegacyRandom::from_state(hs.rng_state);
                             }
@@ -718,15 +750,31 @@ pub fn restore_players_on_rollback(
                 if policy.entities_presence {
                     if let Some(hs) = &gs.hook {
                         if is_singleplayer || host.owner.as_ref().is_some_and(|o| o.uuid == uuid) {
-                            game.rreturn_restore_hook(
+                            game.rreturn_restore_hook_full(
                                 hs.id,
                                 hs.position,
                                 hs.previous,
+                                hs.velocity,
                                 hs.rng_state,
+                                hs.nibble,
+                                hs.time_until_lured,
+                                hs.time_until_hooked,
+                                hs.fish_angle,
+                                hs.open_water,
+                                hs.state_bobbing,
                             );
                         } else if let Some(h) = game.hook.as_mut() {
                             h.position = Vec3::new(hs.position[0], hs.position[1], hs.position[2]);
                             h.previous = Vec3::new(hs.previous[0], hs.previous[1], hs.previous[2]);
+                            h.velocity = Vec3::new(hs.velocity[0], hs.velocity[1], hs.velocity[2]);
+                            h.nibble = hs.nibble;
+                            h.time_until_lured = hs.time_until_lured;
+                            h.time_until_hooked = hs.time_until_hooked;
+                            h.fish_angle = hs.fish_angle;
+                            h.open_water = hs.open_water;
+                            if hs.state_bobbing {
+                                h.state = fishing::State::Bobbing;
+                            }
                             if hs.rng_state != 0 {
                                 h.random = LegacyRandom::from_state(hs.rng_state);
                             }
@@ -734,7 +782,7 @@ pub fn restore_players_on_rollback(
                             game.spawn_remote_hook(
                                 hs.id,
                                 Vec3::new(hs.position[0], hs.position[1], hs.position[2]),
-                                Vec3::ZERO,
+                                Vec3::new(hs.velocity[0], hs.velocity[1], hs.velocity[2]),
                                 ent_id,
                             );
                         }
@@ -800,6 +848,10 @@ pub fn restore_players_on_rollback(
         if policy.player_abilities {
             game.set_mode_id(gs.game_mode);
         }
+        if policy.player_cooldowns {
+            game.shield_cooldown = gs.shield_cooldown;
+            game.cooldowns = gs.cooldowns.clone();
+        }
         if let Some(p) = game.player.as_mut() {
             restore_player_motion(p, gs, policy, snap.game_time);
             p.client_side = true;
@@ -829,6 +881,7 @@ pub fn restore_players_on_rollback(
     game.screen = super::super::Screen::Playing;
     game.boss_overlay.reset();
     if policy.server_bossbars {
+        game.bosses.sent.clear();
         game.publish_boss_bars();
     }
     game.using = snap.client_using;

@@ -92,6 +92,44 @@ pub fn hydrate_level_from_disk(
         Vec::new();
     let mut disk_hoppers: HashMap<(i32, i32, i32), super::super::machines::HopperState> =
         HashMap::new();
+    struct DiskTnt {
+        id: u32,
+        pos: Vec3,
+        vel: Vec3,
+        fuse: i32,
+        power: f32,
+        no_gravity: bool,
+        on_ground: bool,
+        fall_distance: f64,
+        rot: [f32; 2],
+    }
+    struct DiskFalling {
+        id: u32,
+        state: BlockStateId,
+        pos: Vec3,
+        vel: Vec3,
+        age: i32,
+        no_gravity: bool,
+        drop_item: bool,
+        on_ground: bool,
+        fall_distance: f64,
+        rot: [f32; 2],
+    }
+    struct DiskProjectile {
+        id: u32,
+        kind: String,
+        pos: Vec3,
+        vel: Vec3,
+        yaw: f32,
+        pitch: f32,
+        age: u32,
+        stuck: bool,
+    }
+    let mut disk_tnts: Vec<DiskTnt> = Vec::new();
+    let mut disk_falling: Vec<DiskFalling> = Vec::new();
+    let mut disk_boat_velocities: HashMap<u32, Vec3> = HashMap::new();
+    let mut disk_cart_velocities: HashMap<u32, Vec3> = HashMap::new();
+    let mut disk_projectiles: Vec<DiskProjectile> = Vec::new();
 
     if let Ok(meta_str) = fs::read_to_string(cp_dir.join("meta.json")) {
         if let Ok(meta) = serde_json::from_str::<serde_json::Value>(&meta_str) {
@@ -467,6 +505,155 @@ pub fn hydrate_level_from_disk(
                     }
                 }
             }
+            if let Some(arr) = rs["tnts"].as_array() {
+                for item in arr {
+                    if let (Some(id), Some(pos), Some(vel), Some(fuse)) = (
+                        item["id"].as_u64(),
+                        item["pos"].as_array(),
+                        item["vel"].as_array(),
+                        item["fuse"].as_i64(),
+                    ) && pos.len() == 3
+                        && vel.len() == 3
+                    {
+                        let rot_arr = item["rot"].as_array();
+                        let rot = if let Some(ra) = rot_arr
+                            && ra.len() == 2
+                        {
+                            [
+                                ra[0].as_f64().unwrap_or(0.0) as f32,
+                                ra[1].as_f64().unwrap_or(0.0) as f32,
+                            ]
+                        } else {
+                            [0.0, 0.0]
+                        };
+                        disk_tnts.push(DiskTnt {
+                            id: id as u32,
+                            pos: Vec3::new(
+                                pos[0].as_f64().unwrap_or(0.0),
+                                pos[1].as_f64().unwrap_or(0.0),
+                                pos[2].as_f64().unwrap_or(0.0),
+                            ),
+                            vel: Vec3::new(
+                                vel[0].as_f64().unwrap_or(0.0),
+                                vel[1].as_f64().unwrap_or(0.0),
+                                vel[2].as_f64().unwrap_or(0.0),
+                            ),
+                            fuse: fuse as i32,
+                            power: item["power"].as_f64().unwrap_or(4.0) as f32,
+                            no_gravity: item["no_gravity"].as_bool().unwrap_or(false),
+                            on_ground: item["on_ground"].as_bool().unwrap_or(false),
+                            fall_distance: item["fall_distance"].as_f64().unwrap_or(0.0),
+                            rot,
+                        });
+                    }
+                }
+            }
+            if let Some(arr) = rs["falling"].as_array() {
+                for item in arr {
+                    if let (Some(id), Some(st), Some(pos), Some(vel), Some(age)) = (
+                        item["id"].as_u64(),
+                        item["state"].as_u64(),
+                        item["pos"].as_array(),
+                        item["vel"].as_array(),
+                        item["age"].as_i64(),
+                    ) && pos.len() == 3
+                        && vel.len() == 3
+                    {
+                        let rot_arr = item["rot"].as_array();
+                        let rot = if let Some(ra) = rot_arr
+                            && ra.len() == 2
+                        {
+                            [
+                                ra[0].as_f64().unwrap_or(0.0) as f32,
+                                ra[1].as_f64().unwrap_or(0.0) as f32,
+                            ]
+                        } else {
+                            [0.0, 0.0]
+                        };
+                        disk_falling.push(DiskFalling {
+                            id: id as u32,
+                            state: BlockStateId(st as u32),
+                            pos: Vec3::new(
+                                pos[0].as_f64().unwrap_or(0.0),
+                                pos[1].as_f64().unwrap_or(0.0),
+                                pos[2].as_f64().unwrap_or(0.0),
+                            ),
+                            vel: Vec3::new(
+                                vel[0].as_f64().unwrap_or(0.0),
+                                vel[1].as_f64().unwrap_or(0.0),
+                                vel[2].as_f64().unwrap_or(0.0),
+                            ),
+                            age: age as i32,
+                            no_gravity: item["no_gravity"].as_bool().unwrap_or(false),
+                            drop_item: item["drop_item"].as_bool().unwrap_or(true),
+                            on_ground: item["on_ground"].as_bool().unwrap_or(false),
+                            fall_distance: item["fall_distance"].as_f64().unwrap_or(0.0),
+                            rot,
+                        });
+                    }
+                }
+            }
+            if let Some(arr) = rs["boat_velocities"].as_array() {
+                for row in arr {
+                    if let Some(a) = row.as_array()
+                        && a.len() == 4
+                        && let (Some(id), Some(vx), Some(vy), Some(vz)) = (
+                            a[0].as_u64(),
+                            a[1].as_f64(),
+                            a[2].as_f64(),
+                            a[3].as_f64(),
+                        )
+                    {
+                        disk_boat_velocities.insert(id as u32, Vec3::new(vx, vy, vz));
+                    }
+                }
+            }
+            if let Some(arr) = rs["cart_velocities"].as_array() {
+                for row in arr {
+                    if let Some(a) = row.as_array()
+                        && a.len() == 4
+                        && let (Some(id), Some(vx), Some(vy), Some(vz)) = (
+                            a[0].as_u64(),
+                            a[1].as_f64(),
+                            a[2].as_f64(),
+                            a[3].as_f64(),
+                        )
+                    {
+                        disk_cart_velocities.insert(id as u32, Vec3::new(vx, vy, vz));
+                    }
+                }
+            }
+            if let Some(arr) = rs["projectiles"].as_array() {
+                for item in arr {
+                    if let (Some(id), Some(kind), Some(pos), Some(vel)) = (
+                        item["id"].as_u64(),
+                        item["kind"].as_str(),
+                        item["pos"].as_array(),
+                        item["vel"].as_array(),
+                    ) && pos.len() == 3
+                        && vel.len() == 3
+                    {
+                        disk_projectiles.push(DiskProjectile {
+                            id: id as u32,
+                            kind: kind.to_owned(),
+                            pos: Vec3::new(
+                                pos[0].as_f64().unwrap_or(0.0),
+                                pos[1].as_f64().unwrap_or(0.0),
+                                pos[2].as_f64().unwrap_or(0.0),
+                            ),
+                            vel: Vec3::new(
+                                vel[0].as_f64().unwrap_or(0.0),
+                                vel[1].as_f64().unwrap_or(0.0),
+                                vel[2].as_f64().unwrap_or(0.0),
+                            ),
+                            yaw: item["yaw"].as_f64().unwrap_or(0.0) as f32,
+                            pitch: item["pitch"].as_f64().unwrap_or(0.0) as f32,
+                            age: item["age"].as_u64().unwrap_or(0) as u32,
+                            stuck: item["stuck"].as_bool().unwrap_or(false),
+                        });
+                    }
+                }
+            }
         }
     }
 
@@ -700,15 +887,120 @@ pub fn hydrate_level_from_disk(
         }
         for b in game.boats.iter_mut() {
             map_id(&mut b.id);
+            if let Some(&vel) = disk_boat_velocities.get(&b.id) {
+                b.velocity = vel;
+            }
         }
         for c in game.carts.iter_mut() {
             map_id(&mut c.id);
+            if let Some(&vel) = disk_cart_velocities.get(&c.id) {
+                c.velocity = vel;
+            }
         }
         for t in game.tnts.iter_mut() {
             map_id(&mut t.id);
         }
         for f in game.falling.iter_mut() {
             map_id(&mut f.id);
+        }
+        for tnt_val in disk_tnts {
+            if game.tnts.iter().all(|t| t.id != tnt_val.id) {
+                game.tnts.push(super::super::tnt::PrimedTnt {
+                    id: tnt_val.id,
+                    position: tnt_val.pos,
+                    previous: tnt_val.pos,
+                    velocity: tnt_val.vel,
+                    fuse: tnt_val.fuse,
+                    power: tnt_val.power,
+                    no_gravity: tnt_val.no_gravity,
+                    on_ground: tnt_val.on_ground,
+                    fall_distance: tnt_val.fall_distance,
+                    rotation: tnt_val.rot,
+                    used_portal: false,
+                    join: Default::default(),
+                    stuck: Vec3::ZERO,
+                    in_water: false,
+                    owner: None,
+                    guest: None,
+                    block_state: None,
+                });
+            }
+        }
+        for fb in disk_falling {
+            if game.falling.iter().all(|f| f.id != fb.id) {
+                let block_name = game
+                    .pack
+                    .assets
+                    .registry
+                    .block(fb.state)
+                    .unwrap_or("minecraft:sand");
+                let tag = Tag::compound([
+                    ("id", Tag::String("minecraft:falling_block".into())),
+                    (
+                        "Pos",
+                        Tag::List(vec![
+                            Tag::Double(fb.pos.x),
+                            Tag::Double(fb.pos.y),
+                            Tag::Double(fb.pos.z),
+                        ]),
+                    ),
+                    (
+                        "Motion",
+                        Tag::List(vec![
+                            Tag::Double(fb.vel.x),
+                            Tag::Double(fb.vel.y),
+                            Tag::Double(fb.vel.z),
+                        ]),
+                    ),
+                    ("Time", Tag::Int(fb.age)),
+                    (
+                        "BlockState",
+                        Tag::compound([("Name", Tag::String(block_name.into()))]),
+                    ),
+                    ("DropItem", Tag::Byte(if fb.drop_item { 1 } else { 0 })),
+                    ("NoGravity", Tag::Byte(if fb.no_gravity { 1 } else { 0 })),
+                    ("FallDistance", Tag::Float(fb.fall_distance as f32)),
+                    ("OnGround", Tag::Byte(if fb.on_ground { 1 } else { 0 })),
+                ]);
+                game.load_falling(tag, None);
+                if let Some(last) = game.falling.last_mut() {
+                    last.id = fb.id;
+                    last.rotation = fb.rot;
+                }
+            }
+        }
+        for pr in disk_projectiles {
+            if game.creatures.projectiles.iter().all(|p| p.id != pr.id) {
+                let tag = Tag::compound([
+                    ("id", Tag::String(pr.kind.clone().into())),
+                    (
+                        "Pos",
+                        Tag::List(vec![
+                            Tag::Double(pr.pos.x),
+                            Tag::Double(pr.pos.y),
+                            Tag::Double(pr.pos.z),
+                        ]),
+                    ),
+                    (
+                        "Motion",
+                        Tag::List(vec![
+                            Tag::Double(pr.vel.x),
+                            Tag::Double(pr.vel.y),
+                            Tag::Double(pr.vel.z),
+                        ]),
+                    ),
+                    (
+                        "Rotation",
+                        Tag::List(vec![Tag::Float(pr.yaw), Tag::Float(pr.pitch)]),
+                    ),
+                    ("Age", Tag::Int(pr.age as i32)),
+                    ("inGround", Tag::Byte(if pr.stuck { 1 } else { 0 })),
+                ]);
+                let _ = game.load_listed(&pr.kind, None, None, tag);
+                if let Some(last) = game.creatures.projectiles.last_mut() {
+                    last.id = pr.id;
+                }
+            }
         }
         for p in &mut game.paintings {
             map_id(&mut p.id);

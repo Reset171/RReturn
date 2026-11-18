@@ -235,11 +235,27 @@ pub fn save_slot_to_disk(world_root: &Path, slot: &str, snap: &TimelineSnapshot)
             g_obj.insert("stats".to_owned(), serde_json::json!(g.stats));
             let hook_val = match &g.hook {
                 Some(h) => {
-                    let mut hm = serde_json::Map::with_capacity(4);
+                    let mut hm = serde_json::Map::with_capacity(11);
                     hm.insert("id".to_owned(), serde_json::json!(h.id));
                     hm.insert("position".to_owned(), serde_json::json!(h.position));
                     hm.insert("previous".to_owned(), serde_json::json!(h.previous));
+                    hm.insert("velocity".to_owned(), serde_json::json!(h.velocity));
                     hm.insert("rng_state".to_owned(), serde_json::json!(h.rng_state));
+                    hm.insert("nibble".to_owned(), serde_json::json!(h.nibble));
+                    hm.insert(
+                        "time_until_lured".to_owned(),
+                        serde_json::json!(h.time_until_lured),
+                    );
+                    hm.insert(
+                        "time_until_hooked".to_owned(),
+                        serde_json::json!(h.time_until_hooked),
+                    );
+                    hm.insert("fish_angle".to_owned(), serde_json::json!(h.fish_angle));
+                    hm.insert("open_water".to_owned(), serde_json::json!(h.open_water));
+                    hm.insert(
+                        "state_bobbing".to_owned(),
+                        serde_json::json!(h.state_bobbing),
+                    );
                     serde_json::Value::Object(hm)
                 }
                 None => serde_json::Value::Null,
@@ -435,7 +451,68 @@ pub fn save_slot_to_disk(world_root: &Path, slot: &str, snap: &TimelineSnapshot)
                 .iter()
                 .map(|(&(x, y, z), h)| serde_json::json!([x, y, z, h.cooldown]))
                 .collect();
-            let mut rs_obj = serde_json::Map::with_capacity(17);
+            let tnts_rt: Vec<serde_json::Value> = lsnap
+                .tnts
+                .iter()
+                .map(|t| {
+                    serde_json::json!({
+                        "id": t.id,
+                        "pos": [t.position.x, t.position.y, t.position.z],
+                        "vel": [t.velocity.x, t.velocity.y, t.velocity.z],
+                        "fuse": t.fuse,
+                        "power": t.power,
+                        "no_gravity": t.no_gravity,
+                        "on_ground": t.on_ground,
+                        "fall_distance": t.fall_distance,
+                        "rot": [t.rotation[0], t.rotation[1]],
+                    })
+                })
+                .collect();
+            let falling_rt: Vec<serde_json::Value> = lsnap
+                .falling
+                .iter()
+                .map(|f| {
+                    serde_json::json!({
+                        "id": f.id,
+                        "state": f.state.0,
+                        "pos": [f.position.x, f.position.y, f.position.z],
+                        "vel": [f.velocity.x, f.velocity.y, f.velocity.z],
+                        "age": f.age,
+                        "no_gravity": f.no_gravity,
+                        "drop_item": f.drop_item,
+                        "on_ground": f.on_ground,
+                        "fall_distance": f.fall_distance,
+                        "rot": [f.rotation[0], f.rotation[1]],
+                    })
+                })
+                .collect();
+            let boat_vels: Vec<serde_json::Value> = lsnap
+                .boats
+                .iter()
+                .map(|b| serde_json::json!([b.id, b.velocity.x, b.velocity.y, b.velocity.z]))
+                .collect();
+            let cart_vels: Vec<serde_json::Value> = lsnap
+                .carts
+                .iter()
+                .map(|c| serde_json::json!([c.id, c.velocity.x, c.velocity.y, c.velocity.z]))
+                .collect();
+            let projectiles_rt: Vec<serde_json::Value> = lsnap
+                .projectiles
+                .iter()
+                .map(|p| {
+                    serde_json::json!({
+                        "id": p.id,
+                        "kind": p.kind.id(),
+                        "pos": [p.position.x, p.position.y, p.position.z],
+                        "vel": [p.velocity.x, p.velocity.y, p.velocity.z],
+                        "yaw": p.yaw,
+                        "pitch": p.pitch,
+                        "age": p.age,
+                        "stuck": p.stuck,
+                    })
+                })
+                .collect();
+            let mut rs_obj = serde_json::Map::with_capacity(22);
             rs_obj.insert("comparator_outputs".to_owned(), serde_json::Value::Array(comps));
             rs_obj.insert("torch_toggles".to_owned(), serde_json::Value::Array(torches));
             rs_obj.insert("moving_pistons".to_owned(), serde_json::Value::Array(moving));
@@ -453,6 +530,11 @@ pub fn save_slot_to_disk(world_root: &Path, slot: &str, snap: &TimelineSnapshot)
             rs_obj.insert("portals_entities".to_owned(), serde_json::Value::Array(portals_rt));
             rs_obj.insert("gateway_anims".to_owned(), serde_json::Value::Array(gateways_rt));
             rs_obj.insert("hoppers".to_owned(), serde_json::Value::Array(hoppers_rt));
+            rs_obj.insert("tnts".to_owned(), serde_json::Value::Array(tnts_rt));
+            rs_obj.insert("falling".to_owned(), serde_json::Value::Array(falling_rt));
+            rs_obj.insert("boat_velocities".to_owned(), serde_json::Value::Array(boat_vels));
+            rs_obj.insert("cart_velocities".to_owned(), serde_json::Value::Array(cart_vels));
+            rs_obj.insert("projectiles".to_owned(), serde_json::Value::Array(projectiles_rt));
             level_redstone_json.insert(dim.id().to_owned(), serde_json::Value::Object(rs_obj));
         }
 

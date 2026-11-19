@@ -245,9 +245,13 @@ pub fn hydrate_level_from_disk(
                         && a.len() == 2
                         && let Some(k) = a[0].as_u64()
                     {
+                        let cred = a[1]
+                            .as_str()
+                            .and_then(|s| s.parse::<u128>().ok())
+                            .unwrap_or_else(|| a[1].as_u64().unwrap_or(0) as u128);
                         disk_last_hurt_by_player.insert(
                             k as u32,
-                            super::super::combat::PlayerCredit(a[1].as_u64().unwrap_or(0) as u128),
+                            super::super::combat::PlayerCredit(cred),
                         );
                     }
                 }
@@ -909,7 +913,7 @@ pub fn hydrate_level_from_disk(
         });
         for tnt_val in disk_tnts {
             if game.tnts.iter().all(|t| t.id != tnt_val.id) {
-                game.tnts.push(super::super::tnt::PrimedTnt {
+                game.tnts.push(horizon_gameplay::tnt::PrimedTnt {
                     attachment_lifetime: Default::default(),
                     id: tnt_val.id,
                     position: tnt_val.pos,

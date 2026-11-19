@@ -190,7 +190,7 @@ pub fn apply_level_snapshot_in_place(
         let mut by_chunk: BTreeMap<(i32, i32), Vec<((i32, i32, i32), BlockEntity)>> =
             BTreeMap::new();
         for (&pos, be) in &snap.block_entities {
-            if pos.1 == super::super::minecarts::CART_KEY_Y {
+            if pos.1 == horizon_gameplay::minecarts::CART_KEY_Y {
                 continue;
             }
             by_chunk
@@ -360,7 +360,7 @@ pub fn apply_level_snapshot_in_place(
         let registry = game.pack.assets.registry;
         for ts in &snap.tridents {
             if let Some(n) = horizon_client::entity_nbt::trident_from_nbt(&ts.nbt) {
-                let mut t = super::super::trident::ThrownTrident::from_nbt(n, &ts.nbt, registry);
+                let mut t = horizon_gameplay::trident::ThrownTrident::from_nbt(n, &ts.nbt, registry);
                 t.id = ts.id;
                 t.previous = ts.previous;
                 t.in_ground_time = ts.in_ground_time;
@@ -378,7 +378,7 @@ pub fn apply_level_snapshot_in_place(
         game.rockets.clear();
         for rs in &snap.rockets {
             if let Some(rn) = horizon_client::entity_nbt::firework_rocket_from_nbt(&rs.nbt, None) {
-                let mut r = super::super::fireworks::Rocket::from_nbt(rn);
+                let mut r = horizon_gameplay::fireworks::Rocket::from_nbt(rn);
                 r.id = rs.id;
                 r.attached = rs.attached;
                 r.guest = rs.guest;

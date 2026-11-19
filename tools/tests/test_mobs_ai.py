@@ -99,7 +99,9 @@ def test_8_spawner_determinism(h):
     h.tp(800.5, 65.0, 804.5)
     h.command("kill @e[type=pig]")
     h.command("fill 795 64 795 805 64 805 minecraft:grass_block")
-    h.command("fill 795 65 795 805 68 805 minecraft:air")
+    h.command("fill 795 65 795 805 100 805 minecraft:air")
+    h.command("setblock 802 65 802 minecraft:torch")
+    h.command("setblock 798 65 798 minecraft:torch")
     h.command(
         'setblock 800 65 800 minecraft:spawner{Delay:15s,MinSpawnDelay:40s,MaxSpawnDelay:40s,SpawnCount:1s,SpawnData:{entity:{id:"minecraft:pig"}}}'
     )

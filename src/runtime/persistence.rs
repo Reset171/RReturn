@@ -352,7 +352,7 @@ pub fn save_slot_to_disk(world_root: &Path, slot: &str, snap: &TimelineSnapshot)
             let hurt_by: Vec<serde_json::Value> = lsnap
                 .last_hurt_by_player
                 .iter()
-                .map(|(k, v)| serde_json::json!([k, v.0]))
+                .map(|(k, v)| serde_json::json!([k, v.0.to_string()]))
                 .collect();
             let love: Vec<serde_json::Value> = lsnap
                 .love_cause

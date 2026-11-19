@@ -196,7 +196,7 @@ pub fn rollback_slot_checkpoint_on_server(game: &mut Game<'_>, slot: &str) -> bo
     game.next_entity = snap.next_entity;
     game.ticked_entities_through = snap.ticked_entities_through;
     game.ordered.announced = snap.ordered_announced;
-    game.creatures.cat_tick = snap.cat_tick;
+    game.creatures.cat.next_tick = snap.cat_tick;
     game.stats.rreturn_set_phantom_tick(snap.phantom_tick);
     game.level.player_extra = snap.player_extra.clone();
     game.creatures.shoulder_time = snap.shoulder_time.clone();

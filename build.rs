@@ -24,6 +24,9 @@ const RUNTIME_FILES: &[&str] = &[
     "commands.rs",
     "ui.rs",
     "tracker.rs",
+    "scrub_timeline.rs",
+    "scrub_interpolate.rs",
+    "scrub.rs",
     "hooks.rs",
 ];
 
@@ -82,7 +85,7 @@ use horizon_gameplay::{
     minecarts::Minecart,
     tnt::PrimedTnt,
 };
-use mod_api::WorldPhase;
+use mod_api::{KeyAction, WorldPhase};
 use crate::game::dragon::rreturn_dragon::{DragonExt, FightExt};
 use crate::game::end::rreturn_end::EndExt;
 use crate::game::fishing::rreturn_fishing::{GameFishingExt, HookExt};

@@ -77,6 +77,7 @@ pub fn execute_rreturn_command(
             }
         }
         "trigger" => handle_trigger_subcommand(game, &words[2..], requester),
+        "scrub" => handle_scrub_subcommand(game, &words[2..], requester),
         "purge_memory" => {
             clear_all_slots();
             clear_client_snapshots();
@@ -510,6 +511,53 @@ pub fn intercept_owner_console_command(
         }
     }
     ControlFlow::Break(lines)
+}
+
+fn handle_scrub_subcommand(game: &mut Game<'_>, args: &[&str], requester: Option<u128>) -> String {
+    if !has_cheat_permission(game, requester) {
+        return tr("command.rreturn.no_permission");
+    }
+    let sub = args.first().copied().unwrap_or("status");
+    match sub {
+        "start" => {
+            start_scrub(game);
+            "[RReturn] Scrub mode started. Rotate mouse wheel to rewind/advance.".to_owned()
+        }
+        "step" => {
+            let val: f64 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(-1.0);
+            on_mouse_scroll(game, [0.0, val], [0, val.round() as i32]);
+            if let Some((curr, min_t, max_t)) = get_scrub_info() {
+                format!("[RReturn] Scrub cursor at tick {:.2} (range: {}..{})", curr, min_t, max_t)
+            } else {
+                "[RReturn] Scrub mode not active.".to_owned()
+            }
+        }
+        "commit" => {
+            commit_scrub(game);
+            "[RReturn] Scrub committed.".to_owned()
+        }
+        "cancel" => {
+            cancel_scrub(game);
+            "[RReturn] Scrub cancelled.".to_owned()
+        }
+        "status" => {
+            if let Some((curr, min_t, max_t)) = get_scrub_info() {
+                format!(r#"{{"active":true,"current_time":{:.2},"min_tick":{},"anchor_tick":{}}}"#, curr, min_t, max_t)
+            } else {
+                let range = with_scrub_ring(|r| r.time_range()).unwrap_or((0, 0));
+                format!(r#"{{"active":false,"min_tick":{},"max_tick":{}}}"#, range.0, range.1)
+            }
+        }
+        "rewind" => {
+            let secs: f64 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(5.0);
+            start_scrub(game);
+            let ticks = secs * 20.0;
+            on_mouse_scroll(game, [0.0, -ticks], [0, (-ticks).round() as i32]);
+            commit_scrub(game);
+            format!("[RReturn] Scrubbed back by {:.1} seconds.", secs)
+        }
+        _ => "[RReturn] Usage: /rreturn scrub [start|step <N>|commit|cancel|status|rewind <sec>]".to_owned(),
+    }
 }
 
 pub fn intercept_guest_command(

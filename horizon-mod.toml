@@ -132,3 +132,37 @@ bindings = [
   { name = "game", ty = "&Game<'_>", value = "&*self" },
   { name = "lines", ty = "&mut Vec<horizon_client::gizmos::Line>", value = "&mut *lines" },
 ]
+
+[[native.mixin]]
+id = "native-mouse-scrolling"
+target = "horizon_client::game::native_hooks::base::Game<'_>::native_mouse_scrolling"
+kind = "HEAD"
+helper = "src/hooks/hook_mouse_scrolling.rs"
+bindings = [
+  { name = "game", ty = "&mut Game<'_>", value = "&mut *self" },
+  { name = "scroll", ty = "[f64; 2]", value = "scroll" },
+  { name = "accumulated", ty = "[i32; 2]", value = "accumulated" },
+  { name = "canceled", ty = "&mut bool", value = "&mut *canceled" },
+]
+
+[[native.mixin]]
+id = "render-frame-pre"
+target = "horizon_client::game::native_hooks::render_frame_pre::Game<'_>::native_render_frame_pre"
+kind = "HEAD"
+helper = "src/hooks/hook_render_frame_pre.rs"
+bindings = [
+  { name = "game", ty = "&mut Game<'_>", value = "&mut *self" },
+  { name = "world_partial", ty = "f32", value = "world_partial_tick" },
+  { name = "partial", ty = "f32", value = "partial_tick" },
+]
+
+[[native.mixin]]
+id = "render-gui-post"
+target = "horizon_client::game::native_hooks::render_gui_post::Game<'_>::native_render_gui_post"
+kind = "HEAD"
+helper = "src/hooks/hook_render_gui_post.rs"
+bindings = [
+  { name = "game", ty = "&Game<'_>", value = "&*self" },
+  { name = "draw", ty = "&mut horizon_client::hud::HudBatch", value = "&mut *draw" },
+]
+

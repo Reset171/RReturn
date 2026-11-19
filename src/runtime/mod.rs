@@ -18,6 +18,9 @@ pub mod telemetry;
 pub mod commands;
 pub mod ui;
 pub mod tracker;
+pub mod scrub_timeline;
+pub mod scrub_interpolate;
+pub mod scrub;
 pub mod hooks;
 
 pub use types::*;
@@ -40,4 +43,7 @@ pub use telemetry::*;
 pub use commands::*;
 pub use ui::*;
 pub use tracker::*;
+pub use scrub_timeline::*;
+pub use scrub_interpolate::*;
+pub use scrub::*;
 pub use hooks::*;

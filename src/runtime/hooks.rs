@@ -14,8 +14,39 @@ use super::types::*;
 use super::ui::{load_saved_settings, save_current_settings};
 use std::ops::ControlFlow;
 
-pub fn handle_key(game: &mut Game<'_>, key: &str, pressed: bool) {
-    if !pressed || !game.playing() {
+pub fn handle_key(game: &mut Game<'_>, key: &str, action: mod_api::KeyAction) {
+    if !game.playing() {
+        return;
+    }
+
+    let scrub_key = game
+        .mod_key(MOD_ID, "scrub")
+        .map(|(k, _)| k)
+        .unwrap_or_else(|| "key.keyboard.u".to_owned());
+
+    if key == scrub_key {
+        match action {
+            mod_api::KeyAction::Press => {
+                start_scrub(game);
+                return;
+            }
+            mod_api::KeyAction::Release => {
+                commit_scrub(game);
+                return;
+            }
+            _ => return,
+        }
+    }
+
+    if key == "key.keyboard.escape" && matches!(action, mod_api::KeyAction::Press) {
+        if is_scrubbing() {
+            cancel_scrub(game);
+            return;
+        }
+    }
+
+    let pressed = matches!(action, mod_api::KeyAction::Press);
+    if !pressed {
         return;
     }
     let save_key = game
@@ -241,6 +272,12 @@ pub fn handle_tick(game: &mut Game<'_>) {
         }
     }
 
+    if !is_scrubbing() {
+        with_scrub_ring_mut(|r| {
+            r.record_tick(game);
+        });
+    }
+
     tick_autosave_on_server(game);
 }
 
@@ -325,3 +362,27 @@ pub fn intercept_guest_die(
     });
     ControlFlow::Break(())
 }
+
+pub fn handle_mouse_scrolling(
+    game: &mut Game<'_>,
+    scroll: [f64; 2],
+    accumulated: [i32; 2],
+) -> bool {
+    on_mouse_scroll(game, scroll, accumulated)
+}
+
+pub fn handle_frame_render_pre(
+    game: &mut Game<'_>,
+    world_partial: f32,
+    partial: f32,
+) {
+    on_frame_render_pre(game, world_partial, partial);
+}
+
+pub fn handle_render_gui_post(
+    game: &Game<'_>,
+    draw: &mut horizon_client::hud::HudBatch,
+) {
+    render_hud(game, draw);
+}
+

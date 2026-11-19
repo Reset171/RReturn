@@ -100,6 +100,17 @@ bindings = [
 ]
 
 [[native.mixin]]
+id = "native-setting-changed"
+target = "horizon_client::game::native_hooks::base::Game<'_>::native_setting_changed"
+kind = "HEAD"
+helper = "src/hooks/hook_setting_changed.rs"
+bindings = [
+  { name = "game", ty = "&mut Game<'_>", value = "&mut *self" },
+  { name = "mod_id", ty = "&str", value = "mod_id" },
+  { name = "key", ty = "&str", value = "key" },
+]
+
+[[native.mixin]]
 id = "guest-die"
 target = "horizon_client::game::lan_actions::death_state::Game<'_>::guest_death_canceled"
 kind = "HEAD"

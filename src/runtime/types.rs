@@ -69,13 +69,13 @@ fn is_local_dev_allowed(game: &Game<'_>, requester: Option<u128>) -> bool {
 }
 
 pub fn has_cheat_permission(game: &Game<'_>, requester: Option<u128>) -> bool {
-    if is_local_dev_allowed(game, requester) {
+    let Some(req) = requester else {
+        return true;
+    };
+    if is_local_dev_allowed(game, Some(req)) {
         return true;
     }
     if game.allow_commands() {
-        let Some(req) = requester else {
-            return true;
-        };
         if let Some(host) = &game.lan {
             if host.owner.as_ref().is_some_and(|o| o.uuid == req) {
                 return true;
@@ -93,30 +93,25 @@ pub fn has_cheat_permission(game: &Game<'_>, requester: Option<u128>) -> bool {
         return true;
     }
     if let Some(host) = &game.lan {
-        if let Some(req) = requester {
-            return host.hub.ops.get(&req).copied().unwrap_or(0) >= 2
-                || host
-                    .hub
-                    .guests
-                    .iter()
-                    .find(|g| g.uuid == req)
-                    .is_some_and(|g| g.permission >= 2);
-        }
-        if let Some(owner) = &host.owner {
-            return host.hub.ops.get(&owner.uuid).copied().unwrap_or(0) >= 2;
-        }
+        return host.hub.ops.get(&req).copied().unwrap_or(0) >= 2
+            || host
+                .hub
+                .guests
+                .iter()
+                .find(|g| g.uuid == req)
+                .is_some_and(|g| g.permission >= 2);
     }
     false
 }
 
 pub fn has_level_4_permission(game: &Game<'_>, requester: Option<u128>) -> bool {
-    if is_local_dev_allowed(game, requester) {
+    let Some(req) = requester else {
+        return true;
+    };
+    if is_local_dev_allowed(game, Some(req)) {
         return true;
     }
     if game.allow_commands() {
-        let Some(req) = requester else {
-            return true;
-        };
         if let Some(host) = &game.lan {
             if host.owner.as_ref().is_some_and(|o| o.uuid == req) {
                 return true;
@@ -134,18 +129,13 @@ pub fn has_level_4_permission(game: &Game<'_>, requester: Option<u128>) -> bool 
         return true;
     }
     if let Some(host) = &game.lan {
-        if let Some(req) = requester {
-            return host.hub.ops.get(&req).copied().unwrap_or(0) >= 4
-                || host
-                    .hub
-                    .guests
-                    .iter()
-                    .find(|g| g.uuid == req)
-                    .is_some_and(|g| g.permission >= 4);
-        }
-        if let Some(owner) = &host.owner {
-            return host.hub.ops.get(&owner.uuid).copied().unwrap_or(0) >= 4;
-        }
+        return host.hub.ops.get(&req).copied().unwrap_or(0) >= 4
+            || host
+                .hub
+                .guests
+                .iter()
+                .find(|g| g.uuid == req)
+                .is_some_and(|g| g.permission >= 4);
     }
     false
 }
@@ -179,9 +169,9 @@ impl AnchorMode {
 
     pub fn by_id(s: &str) -> Self {
         match s.trim().to_ascii_lowercase().as_str() {
-            "multi" => Self::Multi,
-            "everyone" => Self::Everyone,
-            "rotating" => Self::Rotating,
+            "1" | "multi" => Self::Multi,
+            "2" | "everyone" => Self::Everyone,
+            "3" | "rotating" => Self::Rotating,
             _ => Self::Fixed,
         }
     }

@@ -161,14 +161,117 @@ def build_package(
     if "src/lib.rs" in files:
         lib_text = files["src/lib.rs"].decode("utf-8")
         if "pub fn hooks" not in lib_text:
-            lib_text += (
-                "\n\n"
-                "extern crate mod_api;\n\n"
-                "#[derive(Default)]\n"
-                "struct Mod;\n\n"
-                "#[mod_api::horizon_mod]\n"
-                "impl mod_api::Hooks for Mod {}\n"
+            lib_text += """
+
+extern crate mod_api;
+
+#[derive(Default)]
+struct Mod;
+
+#[mod_api::horizon_mod]
+impl mod_api::Hooks for Mod {
+    fn register(&self, r: &mut dyn mod_api::Registrar, _: &mod_api::RegistrationContext) {
+        use mod_api::{
+            KeyConflictContext, KeyMappingsRegistrar, KeyRegistration, SettingSpec,
+            SettingsRegistrar,
+        };
+
+        r.register_key_mapping(
+            KeyRegistration::new("scrub", "key.keyboard.u")
+                .label("key.rreturn.scrub")
+                .category("key.category.rreturn")
+                .context(KeyConflictContext::InGame),
+        );
+        r.register_key_mapping(
+            KeyRegistration::new("save", "key.keyboard.f6")
+                .label("key.rreturn.save")
+                .category("key.category.rreturn")
+                .context(KeyConflictContext::InGame),
+        );
+        r.register_key_mapping(
+            KeyRegistration::new("load", "key.keyboard.f7")
+                .label("key.rreturn.load")
+                .category("key.category.rreturn")
+                .context(KeyConflictContext::InGame),
+        );
+        r.register_key_mapping(
+            KeyRegistration::new("anchor_menu", "key.keyboard.f8")
+                .label("key.rreturn.anchor_menu")
+                .category("key.category.rreturn")
+                .context(KeyConflictContext::InGame),
+        );
+
+        let _ = r.register_setting(
+            SettingSpec::toggle("auto_save", "rreturn.setting.auto_save", true)
+                .tooltip("rreturn.setting.auto_save.tooltip"),
+        );
+        let _ = r.register_setting(
+            SettingSpec::toggle("adaptive_mode", "rreturn.setting.adaptive_mode", true)
+                .tooltip("rreturn.setting.adaptive_mode.tooltip"),
+        );
+        let _ = r.register_setting(
+            SettingSpec::range(
+                "fixed_interval_sec",
+                "rreturn.setting.fixed_interval_sec",
+                5.0,
+                600.0,
+                5.0,
+                60.0,
             )
+            .tooltip("rreturn.setting.fixed_interval_sec.tooltip"),
+        );
+        let _ = r.register_setting(
+            SettingSpec::choice(
+                "anchor_mode",
+                "rreturn.setting.anchor_mode",
+                [
+                    "config.rreturn.anchorMode.fixed",
+                    "config.rreturn.anchorMode.multi",
+                    "config.rreturn.anchorMode.everyone",
+                    "config.rreturn.anchorMode.rotating",
+                ],
+                0,
+            )
+            .tooltip("rreturn.setting.anchor_mode.tooltip"),
+        );
+        let _ = r.register_setting(
+            SettingSpec::range(
+                "rollback_cooldown_sec",
+                "rreturn.setting.rollback_cooldown_sec",
+                0.0,
+                60.0,
+                1.0,
+                0.0,
+            )
+            .tooltip("rreturn.setting.rollback_cooldown_sec.tooltip"),
+        );
+        let _ = r.register_setting(
+            SettingSpec::toggle(
+                "save_on_boss_defeat",
+                "rreturn.setting.save_on_boss_defeat",
+                true,
+            )
+            .tooltip("rreturn.setting.save_on_boss_defeat.tooltip"),
+        );
+        let _ = r.register_setting(
+            SettingSpec::toggle(
+                "f3_loop_hitboxes",
+                "rreturn.setting.f3_loop_hitboxes",
+                true,
+            )
+            .tooltip("rreturn.setting.f3_loop_hitboxes.tooltip"),
+        );
+        let _ = r.register_setting(
+            SettingSpec::toggle("logs", "rreturn.setting.logs", false)
+                .tooltip("rreturn.setting.logs.tooltip"),
+        );
+        let _ = r.register_setting(
+            SettingSpec::toggle("dev_mode", "rreturn.setting.dev_mode", false)
+                .tooltip("rreturn.setting.dev_mode.tooltip"),
+        );
+    }
+}
+"""
             files["src/lib.rs"] = lib_text.encode("utf-8")
 
     # Validate against forbidden paths

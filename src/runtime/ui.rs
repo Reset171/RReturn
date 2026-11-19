@@ -6,6 +6,9 @@ use std::{
 };
 
 pub fn load_saved_settings(game: &Game<'_>) {
+    let parse_num = |s: &str| -> Option<i32> {
+        s.parse::<f64>().ok().map(|v| v as i32).or_else(|| s.parse::<i32>().ok())
+    };
     let auto_save = game
         .setting(MOD_ID, "auto_save")
         .map(|v| v != "false");
@@ -14,13 +17,13 @@ pub fn load_saved_settings(game: &Game<'_>) {
         .map(|v| v != "false");
     let interval = game
         .setting(MOD_ID, "fixed_interval_sec")
-        .and_then(|v| v.parse::<i32>().ok());
+        .and_then(|v| parse_num(&v));
     let mode = game
         .setting(MOD_ID, "anchor_mode")
         .map(|v| AnchorMode::by_id(&v));
     let cooldown = game
         .setting(MOD_ID, "rollback_cooldown_sec")
-        .and_then(|v| v.parse::<i32>().ok());
+        .and_then(|v| parse_num(&v));
     let boss_save = game
         .setting(MOD_ID, "save_on_boss_defeat")
         .map(|v| v != "false");
@@ -154,7 +157,13 @@ pub fn save_current_settings(game: &Game<'_>) {
             "fixed_interval_sec",
             &st.fixed_interval_sec.to_string(),
         );
-        game.set_setting(MOD_ID, "anchor_mode", st.anchor.mode.id());
+        let mode_idx = match st.anchor.mode {
+            AnchorMode::Fixed => "0",
+            AnchorMode::Multi => "1",
+            AnchorMode::Everyone => "2",
+            AnchorMode::Rotating => "3",
+        };
+        game.set_setting(MOD_ID, "anchor_mode", mode_idx);
         game.set_setting(
             MOD_ID,
             "rollback_cooldown_sec",

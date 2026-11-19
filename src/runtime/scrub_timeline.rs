@@ -1,12 +1,30 @@
 use super::super::{Game, Mob};
 use super::capture::capture_level_snapshot;
 use super::snapshots::*;
+use horizon_client::{chunk::Chunk, fast_hash::FxHashMap};
 use std::cell::RefCell;
 use std::collections::VecDeque;
+use std::sync::Arc;
 
 pub const MAX_SCRUB_TICKS: usize = 24_000; // 20 minutes at 20 TPS
 pub const KEYFRAME_INTERVAL_TICKS: i64 = 100; // 5 seconds per keyframe
 pub const MAX_KEYFRAMES: usize = 240; // 240 * 100 = 24,000 ticks
+
+#[derive(Clone, Copy, Debug)]
+pub struct BlockDeltaRecord {
+    pub x: i32,
+    pub y: i32,
+    pub z: i32,
+    pub old_state: u32,
+    pub new_state: u32,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct BreakProgressRecord {
+    pub breaker: i32,
+    pub pos: [i32; 3],
+    pub stage: u8,
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct MobPoseRecord {
@@ -46,12 +64,70 @@ pub struct TickHistoryFrame {
     pub mobs: Vec<MobPoseRecord>,
     pub items: Vec<ItemPoseRecord>,
     pub projectiles: Vec<ProjectilePoseRecord>,
+    pub block_deltas: Vec<BlockDeltaRecord>,
+    pub break_progress: Vec<BreakProgressRecord>,
 }
 
 pub struct ScrubHistoryRing {
     pub frames: VecDeque<TickHistoryFrame>,
     pub keyframes: VecDeque<(i64, LevelSnapshot)>,
     pub last_keyframe_tick: i64,
+    pub last_world_revision: u64,
+    pub reference_chunks: FxHashMap<(i32, i32), Arc<Chunk>>,
+}
+
+pub fn extract_chunk_block_deltas(
+    old_chunks: &FxHashMap<(i32, i32), Arc<Chunk>>,
+    new_chunks: &FxHashMap<(i32, i32), Arc<Chunk>>,
+) -> Vec<BlockDeltaRecord> {
+    let mut deltas = Vec::new();
+    for (&(cx, cz), live_chunk) in new_chunks.iter() {
+        let Some(old_chunk) = old_chunks.get(&(cx, cz)) else {
+            continue;
+        };
+        if Arc::ptr_eq(live_chunk, old_chunk) {
+            continue;
+        }
+        let min_y = live_chunk.min_y();
+        for (s_idx, live_sec) in live_chunk.sections.iter().enumerate() {
+            let Some(old_sec) = old_chunk.sections.get(s_idx) else {
+                continue;
+            };
+            if Arc::ptr_eq(live_sec, old_sec) {
+                continue;
+            }
+            if let (Some(u1), Some(u2)) = (old_sec.blocks.uniform(), live_sec.blocks.uniform()) {
+                if u1 == u2 {
+                    continue;
+                }
+            }
+            if old_sec.blocks == live_sec.blocks {
+                continue;
+            }
+            let y_base = min_y + (s_idx as i32) * 16;
+            let x_base = cx * 16;
+            let z_base = cz * 16;
+            for sy in 0..16 {
+                for sz in 0..16 {
+                    for sx in 0..16 {
+                        let idx = ((sy << 8) | (sz << 4) | sx) as usize;
+                        let want = live_sec.get(idx);
+                        let prev = old_sec.get(idx);
+                        if prev != want {
+                            deltas.push(BlockDeltaRecord {
+                                x: x_base + sx,
+                                y: y_base + sy,
+                                z: z_base + sz,
+                                old_state: prev,
+                                new_state: want,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+    deltas
 }
 
 impl ScrubHistoryRing {
@@ -60,6 +136,8 @@ impl ScrubHistoryRing {
             frames: VecDeque::with_capacity(1200),
             keyframes: VecDeque::with_capacity(MAX_KEYFRAMES),
             last_keyframe_tick: -99999,
+            last_world_revision: 0,
+            reference_chunks: FxHashMap::default(),
         }
     }
 
@@ -67,6 +145,8 @@ impl ScrubHistoryRing {
         self.frames.clear();
         self.keyframes.clear();
         self.last_keyframe_tick = -99999;
+        self.last_world_revision = 0;
+        self.reference_chunks.clear();
     }
 
     pub fn time_range(&self) -> Option<(i64, i64)> {
@@ -83,7 +163,31 @@ impl ScrubHistoryRing {
             if now <= back.game_time {
                 self.frames.retain(|f| f.game_time < now);
                 self.keyframes.retain(|(t, _)| *t < now);
+                self.reference_chunks = (&*game.world.chunks).clone();
+                self.last_world_revision = game.world.revision;
             }
+        }
+
+        // Detect block changes since last tick
+        let mut block_deltas = Vec::new();
+        if self.reference_chunks.is_empty() {
+            self.reference_chunks = (&*game.world.chunks).clone();
+            self.last_world_revision = game.world.revision;
+        } else if game.world.revision != self.last_world_revision {
+            let live_chunks = (&*game.world.chunks).clone();
+            block_deltas = extract_chunk_block_deltas(&self.reference_chunks, &live_chunks);
+            self.reference_chunks = live_chunks;
+            self.last_world_revision = game.world.revision;
+        }
+
+        // Record any active block breaking progress
+        let mut break_progress = Vec::new();
+        for (&breaker, &(pos, stage, _)) in game.destroying.iter() {
+            break_progress.push(BreakProgressRecord {
+                breaker,
+                pos,
+                stage,
+            });
         }
 
         let p_pos = game.player.as_ref().map(|p| [p.position.x, p.position.y, p.position.z]).unwrap_or([0.0; 3]);
@@ -140,6 +244,8 @@ impl ScrubHistoryRing {
             mobs,
             items,
             projectiles,
+            block_deltas,
+            break_progress,
         });
 
         // Periodic in-memory keyframe snapshot (every 5 seconds)

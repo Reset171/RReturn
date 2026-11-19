@@ -37,6 +37,11 @@ def test_83_interactive_time_scrubbing_and_rewind(h):
     assert h.has_entity("@e[tag=scrub_zombie]"), "Zombie did not spawn"
     assert "diamond_block" in h.block(0, 65, 2).get("block", ""), "Diamond block not set"
 
+    # Break diamond block
+    h.command("setblock 0 65 2 minecraft:air")
+    h.wait(10)
+    assert "air" in h.block(0, 65, 2).get("block", ""), "Diamond block was not removed"
+
     # Start interactive scrub mode
     res = h.rreturn("scrub start")
     res_str = str(res)
@@ -46,12 +51,18 @@ def test_83_interactive_time_scrubbing_and_rewind(h):
     assert st.get("active", False), f"Scrub should be active after start: {st}"
     anchor_t = st.get("anchor_tick", 0)
 
-    # Step wheel backward
-    h.rreturn("scrub step -15.0")
+    # Step wheel backward past the break: diamond block should reappear in real time!
+    h.rreturn("scrub step -12.0")
     st = _parse_res(h.rreturn("scrub status"))
     assert st.get("current_time", anchor_t) <= anchor_t, f"Cursor did not move back: {st}"
+    assert "diamond_block" in h.block(0, 65, 2).get("block", ""), "Diamond block did not reappear in real-time scrubbing!"
 
-    # Commit scrub
+    # Step forward: diamond block should disappear again in real time!
+    h.rreturn("scrub step 12.0")
+    assert "air" in h.block(0, 65, 2).get("block", ""), "Diamond block did not disappear on forward scrubbing!"
+
+    # Step backward again and commit
+    h.rreturn("scrub step -15.0")
     res_commit = str(h.rreturn("scrub commit"))
     assert "committed" in res_commit.lower(), f"Unexpected scrub commit response: {res_commit}"
 

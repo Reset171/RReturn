@@ -426,6 +426,20 @@ pub fn handle_client_command(game: &mut Game<'_>, command: &str, ran: &mut bool)
         return;
     }
     *ran = true;
+
+    if trimmed.starts_with("rreturn scrub") {
+        let permitted = has_cheat_permission(game, None);
+        if !permitted {
+            game.native_chat(&tr("command.rreturn.no_permission"));
+            return;
+        }
+        let lines = execute_rreturn_command(game, None, trimmed);
+        for line in lines {
+            game.native_chat(&line);
+        }
+        return;
+    }
+
     let is_rollback = trimmed == "rreturn load"
         || trimmed.starts_with("rreturn load ")
         || trimmed == "rreturn rollback"
@@ -526,6 +540,8 @@ fn handle_scrub_subcommand(game: &mut Game<'_>, args: &[&str], requester: Option
         "step" => {
             let val: f64 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(-1.0);
             on_mouse_scroll(game, [0.0, val], [0, val.round() as i32]);
+            snap_scrub_time_to_target();
+            on_frame_render_pre(game, 0.0, 0.0);
             if let Some((curr, min_t, max_t)) = get_scrub_info() {
                 format!("[RReturn] Scrub cursor at tick {:.2} (range: {}..{})", curr, min_t, max_t)
             } else {

@@ -1,8 +1,8 @@
 use super::super::Game;
 use super::restore::rollback_slot_checkpoint_on_server;
 use super::restore_client::apply_client_level_rollback;
-use super::scrub_interpolate::apply_interpolated_poses_to_game;
-use super::scrub_timeline::with_scrub_ring;
+use super::scrub_interpolate::{apply_block_rewind_to_game, apply_interpolated_poses_to_game};
+use super::scrub_timeline::{with_scrub_ring, with_scrub_ring_mut};
 use super::types::*;
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
@@ -16,6 +16,7 @@ pub struct ScrubSession {
     pub last_scroll_time: Option<Instant>,
     pub jog_accel: f64,
     pub start_time: Option<Instant>,
+    pub applied_block_tick: i64,
 }
 
 impl Default for ScrubSession {
@@ -29,6 +30,7 @@ impl Default for ScrubSession {
             last_scroll_time: None,
             jog_accel: 1.0,
             start_time: None,
+            applied_block_tick: 0,
         }
     }
 }
@@ -41,6 +43,12 @@ fn session_lock() -> &'static Mutex<ScrubSession> {
 
 pub fn is_scrubbing() -> bool {
     session_lock().lock().map(|s| s.active).unwrap_or(false)
+}
+
+pub fn snap_scrub_time_to_target() {
+    if let Ok(mut s) = session_lock().lock() {
+        s.current_time = s.target_time;
+    }
 }
 
 pub fn is_held_scrub(min_ms: u128) -> bool {
@@ -88,6 +96,14 @@ pub fn start_scrub(game: &mut Game<'_>) {
     s.last_scroll_time = None;
     s.jog_accel = 1.0;
     s.start_time = Some(Instant::now());
+    s.applied_block_tick = s.anchor_tick;
+
+    with_scrub_ring_mut(|r| {
+        if r.reference_chunks.is_empty() {
+            r.reference_chunks = (&*game.world.chunks).clone();
+            r.last_world_revision = game.world.revision;
+        }
+    });
 
     // Stop any ongoing mining / block breaking
     game.stop_mining();
@@ -149,9 +165,15 @@ pub fn on_frame_render_pre(game: &mut Game<'_>, _world_partial: f32, _partial: f
     }
 
     let target_t = s.current_time;
+    let old_applied = s.applied_block_tick;
+    let new_applied = target_t.round() as i64;
+    s.applied_block_tick = new_applied;
     drop(s);
 
     apply_interpolated_poses_to_game(game, target_t);
+    if old_applied != new_applied {
+        apply_block_rewind_to_game(game, old_applied, new_applied);
+    }
 }
 
 pub fn commit_scrub(game: &mut Game<'_>) {
@@ -169,6 +191,7 @@ pub fn commit_scrub(game: &mut Game<'_>) {
     s.active = false;
     s.start_time = None;
     s.jog_accel = 1.0;
+    s.applied_block_tick = final_tick;
     drop(s);
 
     if final_tick < anchor {
@@ -205,6 +228,15 @@ pub fn commit_scrub(game: &mut Game<'_>) {
         }
     }
 
+    with_scrub_ring_mut(|r| {
+        if final_tick < anchor {
+            r.frames.retain(|f| f.game_time <= final_tick);
+            r.keyframes.retain(|(t, _)| *t <= final_tick);
+        }
+        r.reference_chunks = (&*game.world.chunks).clone();
+        r.last_world_revision = game.world.revision;
+    });
+
     game.clock.set_frozen(false);
 }
 
@@ -218,12 +250,17 @@ pub fn cancel_scrub(game: &mut Game<'_>) {
     }
 
     let anchor = s.anchor_tick;
+    let applied = s.applied_block_tick;
     s.active = false;
     s.start_time = None;
     s.current_time = anchor as f64;
     s.target_time = anchor as f64;
+    s.applied_block_tick = anchor;
     drop(s);
 
+    if applied != anchor {
+        apply_block_rewind_to_game(game, applied, anchor);
+    }
     apply_interpolated_poses_to_game(game, anchor as f64);
     let player_sync = game.player.as_ref().map(|p| (p.position, game.yaw, game.pitch));
     if let Some((pos, yaw, pitch)) = player_sync {
@@ -243,6 +280,12 @@ pub fn cancel_scrub(game: &mut Game<'_>) {
             });
         }
     }
+
+    with_scrub_ring_mut(|r| {
+        r.reference_chunks = (&*game.world.chunks).clone();
+        r.last_world_revision = game.world.revision;
+    });
+
     game.clock.set_frozen(false);
     game.native_chat(&tr("message.rreturn.scrub.cancel"));
 }

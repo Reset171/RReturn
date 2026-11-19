@@ -55,7 +55,7 @@ pub fn is_valid_slot_name(name: &str) -> bool {
 }
 
 fn is_local_dev_allowed(game: &Game<'_>, requester: Option<u128>) -> bool {
-    if game.remote.is_some() {
+    if game.remote.is_some() && game.integrated.is_none() {
         return false;
     }
     let is_local_or_owner = match (requester, &game.lan) {

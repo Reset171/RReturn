@@ -162,4 +162,59 @@ pub fn apply_interpolated_poses_to_game(game: &mut Game<'_>, target_time: f64) {
             live_mob.health = pose.health;
         }
     }
+
+    // Restore block breaking crack stages for target time
+    game.destroying.clear();
+    let chosen_frame = if alpha > 0.5 { &right_frame } else { &left_frame };
+    for bp in &chosen_frame.break_progress {
+        game.destroying.insert(bp.breaker, (bp.pos, bp.stage, chosen_frame.game_time));
+    }
+}
+
+pub fn apply_block_rewind_to_game(game: &mut Game<'_>, from_tick: i64, to_tick: i64) {
+    if from_tick == to_tick {
+        return;
+    }
+
+    with_scrub_ring(|ring| {
+        if ring.frames.is_empty() {
+            return;
+        }
+
+        if to_tick < from_tick {
+            // Rewinding backwards in time: apply old_state in reverse chronological order
+            for frame in ring.frames.iter().rev() {
+                if frame.game_time <= to_tick {
+                    break;
+                }
+                if frame.game_time <= from_tick {
+                    for delta in frame.block_deltas.iter().rev() {
+                        let _ = game.world.set(
+                            delta.x,
+                            delta.y,
+                            delta.z,
+                            horizon_world::registry::BlockStateId(delta.old_state),
+                        );
+                    }
+                }
+            }
+        } else {
+            // Scrubbing forwards in time: apply new_state in forward chronological order
+            for frame in ring.frames.iter() {
+                if frame.game_time > to_tick {
+                    break;
+                }
+                if frame.game_time > from_tick {
+                    for delta in frame.block_deltas.iter() {
+                        let _ = game.world.set(
+                            delta.x,
+                            delta.y,
+                            delta.z,
+                            horizon_world::registry::BlockStateId(delta.new_state),
+                        );
+                    }
+                }
+            }
+        }
+    });
 }

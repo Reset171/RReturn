@@ -17,7 +17,64 @@ PIN_HORIZON = "dd67b76ff23e28c6d8e21859df600d31572f81a0"
 PIN_MIXINS = "e59da9094f0c2fdda6c627fe9eff22dec6a906f0"
 
 
-def build_package(target_dir: Path, skip_check: bool = False, quiet: bool = False) -> dict:
+def deploy_to_instance(
+    out_path: Path, mod_id: str, mod_version: str, instance: str | None = None
+) -> list[Path]:
+    data_home = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share"))
+    targets: list[Path] = []
+    if instance:
+        if instance == "horizon":
+            targets.append(data_home / "horizon" / "horizon-native-mods")
+        else:
+            targets.append(data_home / "horizon" / "instances" / instance / "horizon-native-mods")
+    else:
+        # Check launcher's selected instance or global
+        selected_dir = None
+        try:
+            out = subprocess.check_output(
+                ["horizon-launcher", "--json", "instance", "list"],
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=5,
+            )
+            for item in json.loads(out):
+                if item.get("selected") and item.get("home"):
+                    selected_dir = Path(item["home"]) / "horizon-native-mods"
+                    break
+        except Exception:
+            pass
+        if selected_dir and selected_dir.parent.is_dir():
+            targets.append(selected_dir)
+        else:
+            targets.append(data_home / "horizon" / "horizon-native-mods")
+
+    deployed: list[Path] = []
+    for d in targets:
+        d.mkdir(parents=True, exist_ok=True)
+        # Clean retired formats and old versions
+        for old in d.glob(f"{mod_id}*.hnmod"):
+            try:
+                old.unlink()
+            except OSError:
+                pass
+        for old in d.glob(f"{mod_id}*.hmod"):
+            if old.name != f"{mod_id}-{mod_version}.hmod":
+                try:
+                    old.unlink()
+                except OSError:
+                    pass
+        dest = d / f"{mod_id}-{mod_version}.hmod"
+        shutil.copy2(out_path, dest)
+        deployed.append(dest)
+    return deployed
+
+
+def build_package(
+    target_dir: Path,
+    skip_check: bool = False,
+    quiet: bool = False,
+    deploy: str | None = None,
+) -> dict:
     cargo = tomllib.loads((ROOT / "Cargo.toml").read_text(encoding="utf-8"))
     cargo_version = cargo["package"]["version"]
 
@@ -149,11 +206,18 @@ def build_package(target_dir: Path, skip_check: bool = False, quiet: bool = Fals
         tmp_path.write_bytes(zip_bytes)
         os.replace(tmp_path, out_path)
 
+    deployed_paths: list[str] = []
+    if deploy is not None:
+        target_instance = deploy if deploy else None
+        deployed = deploy_to_instance(out_path, mod_id, mod_version, target_instance)
+        deployed_paths = [str(p) for p in deployed]
     result = {
         "file": str(out_path),
         "size": len(zip_bytes),
         "sha256": hashlib.sha256(zip_bytes).hexdigest(),
     }
+    if deployed_paths:
+        result["deployed"] = deployed_paths
     if not quiet:
         print(json.dumps(result, indent=2))
     return result
@@ -164,8 +228,20 @@ def main():
     parser.add_argument("--target-dir", type=Path, default=ROOT / "target")
     parser.add_argument("--skip-check", action="store_true")
     parser.add_argument("--quiet", action="store_true")
+    parser.add_argument(
+        "--deploy",
+        nargs="?",
+        const="",
+        metavar="INSTANCE",
+        help="Deploy packaged .hmod to instance horizon-native-mods (default: active instance or global)",
+    )
     args = parser.parse_args()
-    build_package(args.target_dir, skip_check=args.skip_check, quiet=args.quiet)
+    build_package(
+        args.target_dir,
+        skip_check=args.skip_check,
+        quiet=args.quiet,
+        deploy=args.deploy,
+    )
 
 
 if __name__ == "__main__":

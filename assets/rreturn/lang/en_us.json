@@ -31,5 +31,7 @@
   "command.rreturn.load.slot_failed": "[RReturn] Rollback aborted: No timeline origin found for slot '%s'.",
   "command.rreturn.anchor.mode": "[RReturn] Key player mode: %s",
   "command.rreturn.f3.status": "[RReturn] F3 loop hitboxes: %s",
-  "command.rreturn.dev.status": "[RReturn] Developer Mode: %s"
+  "command.rreturn.dev.status": "[RReturn] Developer Mode: %s",
+  "message.rreturn.scrub.commit": "[RReturn] Timeline successfully rewound by %s s.",
+  "message.rreturn.scrub.cancel": "[RReturn] Timeline rewind cancelled."
 }

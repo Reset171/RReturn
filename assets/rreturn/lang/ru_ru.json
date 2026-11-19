@@ -31,5 +31,7 @@
   "command.rreturn.load.slot_failed": "[RReturn] Откат отменён: точка сохранения для слота '%s' не найдена.",
   "command.rreturn.anchor.mode": "[RReturn] Режим ключевого игрока: %s",
   "command.rreturn.f3.status": "[RReturn] Подсветка петель F3+B: %s",
-  "command.rreturn.dev.status": "[RReturn] Режим разработчика: %s"
+  "command.rreturn.dev.status": "[RReturn] Режим разработчика: %s",
+  "message.rreturn.scrub.commit": "[RReturn] Время успешно перемотано на %sс назад.",
+  "message.rreturn.scrub.cancel": "[RReturn] Перемотка времени отменена."
 }

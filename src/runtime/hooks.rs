@@ -24,22 +24,38 @@ pub fn handle_key(game: &mut Game<'_>, key: &str, action: mod_api::KeyAction) {
         .map(|(k, _)| k)
         .unwrap_or_else(|| "key.keyboard.u".to_owned());
 
-    if key == scrub_key {
+    let is_scrub_key = key == scrub_key
+        || key.eq_ignore_ascii_case("key.keyboard.u")
+        || key.eq_ignore_ascii_case("u");
+
+    if is_scrub_key {
         match action {
             mod_api::KeyAction::Press => {
-                start_scrub(game);
+                if is_scrubbing() {
+                    commit_scrub(game);
+                } else {
+                    start_scrub(game);
+                }
                 return;
             }
             mod_api::KeyAction::Release => {
-                commit_scrub(game);
+                if is_held_scrub(300) {
+                    commit_scrub(game);
+                }
                 return;
             }
             _ => return,
         }
     }
 
-    if key == "key.keyboard.escape" && matches!(action, mod_api::KeyAction::Press) {
-        if is_scrubbing() {
+    if is_scrubbing() {
+        if (key == "key.keyboard.enter" || key == "key.keyboard.keypad_enter")
+            && matches!(action, mod_api::KeyAction::Press)
+        {
+            commit_scrub(game);
+            return;
+        }
+        if key == "key.keyboard.escape" && matches!(action, mod_api::KeyAction::Press) {
             cancel_scrub(game);
             return;
         }

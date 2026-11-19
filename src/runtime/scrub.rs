@@ -15,6 +15,7 @@ pub struct ScrubSession {
     pub target_time: f64,
     pub last_scroll_time: Option<Instant>,
     pub jog_accel: f64,
+    pub start_time: Option<Instant>,
 }
 
 impl Default for ScrubSession {
@@ -27,6 +28,7 @@ impl Default for ScrubSession {
             target_time: 0.0,
             last_scroll_time: None,
             jog_accel: 1.0,
+            start_time: None,
         }
     }
 }
@@ -41,6 +43,19 @@ pub fn is_scrubbing() -> bool {
     session_lock().lock().map(|s| s.active).unwrap_or(false)
 }
 
+pub fn is_held_scrub(min_ms: u128) -> bool {
+    let s = match session_lock().lock() {
+        Ok(guard) => guard,
+        Err(_) => return false,
+    };
+    if !s.active {
+        return false;
+    }
+    s.start_time
+        .map(|t| t.elapsed().as_millis() >= min_ms)
+        .unwrap_or(false)
+}
+
 pub fn get_scrub_info() -> Option<(f64, i64, i64)> {
     let s = session_lock().lock().ok()?;
     if !s.active {
@@ -51,6 +66,7 @@ pub fn get_scrub_info() -> Option<(f64, i64, i64)> {
 
 pub fn start_scrub(game: &mut Game<'_>) {
     if !has_cheat_permission(game, None) {
+        game.native_chat(&tr("command.rreturn.no_permission"));
         return;
     }
     let mut s = match session_lock().lock() {
@@ -71,6 +87,7 @@ pub fn start_scrub(game: &mut Game<'_>) {
     s.target_time = s.current_time;
     s.last_scroll_time = None;
     s.jog_accel = 1.0;
+    s.start_time = Some(Instant::now());
 
     // Freeze game clock so physics and mob ticking pause during scrub
     game.clock.set_frozen(true);
@@ -146,6 +163,7 @@ pub fn commit_scrub(game: &mut Game<'_>) {
     let final_tick = s.current_time.round() as i64;
     let anchor = s.anchor_tick;
     s.active = false;
+    s.start_time = None;
     s.jog_accel = 1.0;
     drop(s);
 
@@ -158,6 +176,9 @@ pub fn commit_scrub(game: &mut Game<'_>) {
         if rolled_back {
             let active_slot = with_state(|st| st.current_slot.clone());
             apply_client_level_rollback(game, &active_slot);
+            let dt = (anchor - final_tick) as f64 / 20.0;
+            let dt_str = format!("{:.1}", dt);
+            game.native_chat(&tr_args("message.rreturn.scrub.commit", &[&dt_str]));
         }
     }
 
@@ -175,12 +196,14 @@ pub fn cancel_scrub(game: &mut Game<'_>) {
 
     let anchor = s.anchor_tick;
     s.active = false;
+    s.start_time = None;
     s.current_time = anchor as f64;
     s.target_time = anchor as f64;
     drop(s);
 
     apply_interpolated_poses_to_game(game, anchor as f64);
     game.clock.set_frozen(false);
+    game.native_chat(&tr("message.rreturn.scrub.cancel"));
 }
 
 pub fn render_hud(game: &Game<'_>, draw: &mut horizon_client::hud::HudBatch) {
@@ -222,7 +245,7 @@ pub fn render_hud(game: &Game<'_>, draw: &mut horizon_client::hud::HudBatch) {
     let secs = abs_sec % 60.0;
 
     let time_str = format!("{} {:02}:{:04.1}s", if delta_ticks < 0 { "REWIND" } else { "LIVE" }, mins, secs);
-    let hint_str = "[Wheel] Scrub  [Release U] Apply  [Esc] Cancel";
+    let hint_str = "[Wheel] Scrub  [U / Enter] Apply  [Esc] Cancel";
 
     game.native_text(draw, &time_str, [x + 12.0, y + 8.0], 0xFFFFFFFF, true);
     game.native_text(draw, hint_str, [x + 120.0, y + 8.0], 0xFFAAAAAA, false);

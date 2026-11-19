@@ -14,7 +14,9 @@ Native timeline-rewind mod for **Horizon** (Minecraft: Java Edition **26.3**).
   - `storage.rs` — Slot directories, atomic/incremental file copying, and pruning of extra disk files.
   - `persistence.rs` — Atomic checkpoint serialization to `saves/<World>/rreturn/` (`save_slot_to_disk`).
   - `load_disk.rs` — Deserialization of `meta.json`, `rreturn_globals.dat`, and player NBT from disk (`load_slot_from_disk`).
-  - `hydration.rs` — Lazy chunk, block entity, and entity hydration from disk (`hydrate_slot_from_disk_on_server`).
+  - `hydration_chunks.rs` — Lazy chunk, section, and block entity hydration from disk (`hydrate_chunks_from_disk`).
+  - `hydration_entities.rs` — Entity spawning, ID remapping, and runtime state hydration from disk (`hydrate_entities_from_disk`).
+  - `hydration.rs` — Level and slot hydration coordinator (`hydrate_level_from_disk`, `hydrate_slot_from_disk_on_server`).
   - `restore_level.rs` — In-place server level restoration (`apply_level_snapshot_in_place`).
   - `restore_players.rs` — Player motion, offline files, and LAN guest state restoration (`restore_players_on_rollback`).
   - `restore_client.rs` — Client `nearest-first` section diffing and mesher invalidation (`apply_client_level_rollback`).

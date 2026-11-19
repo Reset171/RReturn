@@ -13,6 +13,8 @@ const RUNTIME_FILES: &[&str] = &[
     "storage.rs",
     "persistence.rs",
     "load_disk.rs",
+    "hydration_chunks.rs",
+    "hydration_entities.rs",
     "hydration.rs",
     "restore_level.rs",
     "restore_players.rs",

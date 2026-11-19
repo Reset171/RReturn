@@ -73,6 +73,32 @@ pub fn apply_interpolated_poses_to_game(game: &mut Game<'_>, target_time: f64) {
         return;
     };
 
+    let a64 = f64::from(alpha);
+    let interp_p_pos = [
+        lerp_f64(left_frame.player_pos[0], right_frame.player_pos[0], a64),
+        lerp_f64(left_frame.player_pos[1], right_frame.player_pos[1], a64),
+        lerp_f64(left_frame.player_pos[2], right_frame.player_pos[2], a64),
+    ];
+    let interp_p_yaw = lerp_angle(left_frame.player_yaw, right_frame.player_yaw, alpha);
+    let interp_p_pitch = lerp_f32(left_frame.player_pitch, right_frame.player_pitch, alpha);
+
+    if let Some(p) = game.player.as_mut() {
+        p.position.x = interp_p_pos[0];
+        p.position.y = interp_p_pos[1];
+        p.position.z = interp_p_pos[2];
+        p.old_position = p.position;
+        p.velocity = Default::default();
+        p.yaw = interp_p_yaw;
+        p.head_yaw = interp_p_yaw;
+        p.pitch = interp_p_pitch;
+        p.teleported = true;
+        p.teleported_delta = [false; 3];
+        game.previous_position = p.position;
+    }
+    game.yaw = interp_p_yaw;
+    game.pitch = interp_p_pitch;
+    game.snap_player_model_pitch();
+
     let mut right_mobs_by_id: FxHashMap<u32, &MobPoseRecord> = FxHashMap::default();
     for m in &right_frame.mobs {
         right_mobs_by_id.insert(m.id, m);

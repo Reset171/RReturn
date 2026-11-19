@@ -89,6 +89,9 @@ pub fn start_scrub(game: &mut Game<'_>) {
     s.jog_accel = 1.0;
     s.start_time = Some(Instant::now());
 
+    // Stop any ongoing mining / block breaking
+    game.stop_mining();
+
     // Freeze game clock so physics and mob ticking pause during scrub
     game.clock.set_frozen(true);
 }
@@ -162,6 +165,7 @@ pub fn commit_scrub(game: &mut Game<'_>) {
 
     let final_tick = s.current_time.round() as i64;
     let anchor = s.anchor_tick;
+    let final_time = s.current_time;
     s.active = false;
     s.start_time = None;
     s.jog_accel = 1.0;
@@ -173,6 +177,25 @@ pub fn commit_scrub(game: &mut Game<'_>) {
         } else {
             rollback_slot_checkpoint_on_server(game, "default")
         };
+        apply_interpolated_poses_to_game(game, final_time);
+        let player_sync = game.player.as_ref().map(|p| (p.position, game.yaw, game.pitch));
+        if let Some((pos, yaw, pitch)) = player_sync {
+            if let Some(server) = &game.integrated {
+                server.call(move |srv| {
+                    if let Some(sp) = srv.player.as_mut() {
+                        sp.position = pos;
+                        sp.old_position = pos;
+                        sp.velocity = Default::default();
+                        sp.yaw = yaw;
+                        sp.head_yaw = yaw;
+                        sp.pitch = pitch;
+                        sp.teleported = true;
+                    }
+                    srv.yaw = yaw;
+                    srv.pitch = pitch;
+                });
+            }
+        }
         if rolled_back {
             let active_slot = with_state(|st| st.current_slot.clone());
             apply_client_level_rollback(game, &active_slot);
@@ -202,6 +225,24 @@ pub fn cancel_scrub(game: &mut Game<'_>) {
     drop(s);
 
     apply_interpolated_poses_to_game(game, anchor as f64);
+    let player_sync = game.player.as_ref().map(|p| (p.position, game.yaw, game.pitch));
+    if let Some((pos, yaw, pitch)) = player_sync {
+        if let Some(server) = &game.integrated {
+            server.call(move |srv| {
+                if let Some(sp) = srv.player.as_mut() {
+                    sp.position = pos;
+                    sp.old_position = pos;
+                    sp.velocity = Default::default();
+                    sp.yaw = yaw;
+                    sp.head_yaw = yaw;
+                    sp.pitch = pitch;
+                    sp.teleported = true;
+                }
+                srv.yaw = yaw;
+                srv.pitch = pitch;
+            });
+        }
+    }
     game.clock.set_frozen(false);
     game.native_chat(&tr("message.rreturn.scrub.cancel"));
 }

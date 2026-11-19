@@ -68,76 +68,83 @@ fn is_local_dev_allowed(game: &Game<'_>, requester: Option<u128>) -> bool {
             || std::env::var_os("RRETURN_DEV").is_some_and(|v| v == "1" || v == "true"))
 }
 
-pub fn has_cheat_permission(game: &Game<'_>, requester: Option<u128>) -> bool {
-    let Some(req) = requester else {
-        return true;
-    };
-    if is_local_dev_allowed(game, Some(req)) {
+fn is_cheats_allowed_in_world(game: &Game<'_>) -> bool {
+    if game.allow_commands() {
         return true;
     }
-    if game.allow_commands() {
-        if let Some(host) = &game.lan {
-            if host.owner.as_ref().is_some_and(|o| o.uuid == req) {
-                return true;
-            }
-            if host.hub.ops.get(&req).copied().unwrap_or(0) >= 2 {
-                return true;
-            }
-            return host
-                .hub
-                .guests
-                .iter()
-                .find(|g| g.uuid == req)
-                .is_some_and(|g| g.permission >= 2);
-        }
+    if game.ui.registries.permission >= 2 {
         return true;
+    }
+    if let Some(srv) = &game.integrated {
+        if srv
+            .call(|s| s.allow_commands() || s.ui.registries.permission >= 2)
+            .unwrap_or(false)
+        {
+            return true;
+        }
     }
     if let Some(host) = &game.lan {
-        return host.hub.ops.get(&req).copied().unwrap_or(0) >= 2
-            || host
-                .hub
-                .guests
-                .iter()
-                .find(|g| g.uuid == req)
-                .is_some_and(|g| g.permission >= 2);
+        if let Some(owner) = &host.owner {
+            if host.hub.ops.get(&owner.uuid).copied().unwrap_or(0) >= 2 {
+                return true;
+            }
+        }
     }
     false
 }
 
-pub fn has_level_4_permission(game: &Game<'_>, requester: Option<u128>) -> bool {
+pub fn has_cheat_permission(game: &Game<'_>, requester: Option<u128>) -> bool {
+    if is_local_dev_allowed(game, requester) {
+        return true;
+    }
+    if !is_cheats_allowed_in_world(game) {
+        return false;
+    }
     let Some(req) = requester else {
         return true;
     };
-    if is_local_dev_allowed(game, Some(req)) {
-        return true;
-    }
-    if game.allow_commands() {
-        if let Some(host) = &game.lan {
-            if host.owner.as_ref().is_some_and(|o| o.uuid == req) {
-                return true;
-            }
-            if host.hub.ops.get(&req).copied().unwrap_or(0) >= 4 {
-                return true;
-            }
-            return host
-                .hub
-                .guests
-                .iter()
-                .find(|g| g.uuid == req)
-                .is_some_and(|g| g.permission >= 4);
-        }
-        return true;
-    }
     if let Some(host) = &game.lan {
-        return host.hub.ops.get(&req).copied().unwrap_or(0) >= 4
-            || host
-                .hub
-                .guests
-                .iter()
-                .find(|g| g.uuid == req)
-                .is_some_and(|g| g.permission >= 4);
+        if host.owner.as_ref().is_some_and(|o| o.uuid == req) {
+            return true;
+        }
+        if host.hub.ops.get(&req).copied().unwrap_or(0) >= 2 {
+            return true;
+        }
+        return host
+            .hub
+            .guests
+            .iter()
+            .find(|g| g.uuid == req)
+            .is_some_and(|g| g.permission >= 2);
     }
-    false
+    true
+}
+
+pub fn has_level_4_permission(game: &Game<'_>, requester: Option<u128>) -> bool {
+    if is_local_dev_allowed(game, requester) {
+        return true;
+    }
+    if !is_cheats_allowed_in_world(game) {
+        return false;
+    }
+    let Some(req) = requester else {
+        return true;
+    };
+    if let Some(host) = &game.lan {
+        if host.owner.as_ref().is_some_and(|o| o.uuid == req) {
+            return true;
+        }
+        if host.hub.ops.get(&req).copied().unwrap_or(0) >= 4 {
+            return true;
+        }
+        return host
+            .hub
+            .guests
+            .iter()
+            .find(|g| g.uuid == req)
+            .is_some_and(|g| g.permission >= 4);
+    }
+    true
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

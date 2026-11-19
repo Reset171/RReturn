@@ -205,6 +205,12 @@ pub fn handle_lifecycle(_game: &mut Game<'_>, phase: WorldPhase) {
 }
 
 pub fn handle_tick(game: &mut Game<'_>) {
+    if !is_scrubbing() && game.screen == super::super::Screen::Playing {
+        with_scrub_ring_mut(|r| {
+            r.record_tick(game);
+        });
+    }
+
     if game.screen == super::super::Screen::Dead {
         let has_cp = with_state(|st| st.has_checkpoint);
         if has_cp {
@@ -286,12 +292,6 @@ pub fn handle_tick(game: &mut Game<'_>) {
         if let Ok(mut tr) = loop_tracker().write() {
             tr.record_tick(game.world.game_time, &game.mobs);
         }
-    }
-
-    if !is_scrubbing() {
-        with_scrub_ring_mut(|r| {
-            r.record_tick(game);
-        });
     }
 
     tick_autosave_on_server(game);

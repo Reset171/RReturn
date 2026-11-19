@@ -8,7 +8,7 @@ def test_37_raid_determinism_and_coords(h):
     h.rreturn("set")
     h.wait(2)
 
-    h.command("effect give @s bad_omen 60 1")
+    h.command("effect give @s minecraft:bad_omen 60 1")
     h.wait(3)
     eff_chat = h.data_get_entity("@s", "active_effects")
     assert "bad_omen" in eff_chat, f"Bad omen effect was not applied: {eff_chat}"

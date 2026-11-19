@@ -390,7 +390,7 @@ pub fn create_slot_checkpoint_on_server(
         .block_entities
         .keys()
         .copied()
-        .filter(|k| k.1 == super::super::minecarts::CART_KEY_Y)
+        .filter(|k| k.1 == horizon_gameplay::minecarts::CART_KEY_Y)
         .collect();
     for key in open_cart_keys {
         game.store_cart_items(key);
@@ -534,20 +534,14 @@ pub fn create_slot_checkpoint_on_server(
                     None
                 }
             });
-            let (effects, effects_tick_count, effects_changes) =
-                if !g.effects.list.is_empty() || !is_owner || game.potions.effects.list.is_empty() {
-                    (
-                        g.effects.list.clone(),
-                        g.effects.tick_count,
-                        g.effects.changes,
-                    )
-                } else {
-                    (
-                        game.potions.effects.list.clone(),
-                        game.potions.effects.tick_count,
-                        game.potions.effects.changes,
-                    )
-                };
+            let effects = g.effects.list.clone();
+            let effects_tick_count = g.effects.tick_count;
+            let effects_changes = g.effects.changes;
+            if is_owner {
+                game.potions.effects.list = effects.clone();
+                game.potions.effects.tick_count = effects_tick_count;
+                game.potions.effects.changes = effects_changes;
+            }
             guests.insert(
                 g.uuid,
                 GuestSnapshot {
@@ -711,7 +705,7 @@ pub fn create_slot_checkpoint_on_server(
         next_entity: game.next_entity,
         ticked_entities_through: game.ticked_entities_through,
         ordered_announced: game.ordered.announced,
-        cat_tick: game.creatures.cat_tick,
+        cat_tick: game.creatures.cat.next_tick,
         phantom_tick: game.stats.rreturn_phantom_tick(),
         player_extra: game.level.player_extra.clone(),
         shoulder_time: game.creatures.shoulder_time.clone(),

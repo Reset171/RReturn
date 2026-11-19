@@ -1,11 +1,13 @@
 use super::super::{
     Dim, ExperienceOrb, FallingBlock, Game, ItemEntity, Mob,
-    boats::Boat,
     commands::OtherEntity,
     dragon::{Crystal, Dragon},
     fishing,
     lan::LanHost,
     machines::HopperState,
+};
+use horizon_gameplay::{
+    boats::Boat,
     minecarts::Minecart,
     tnt::PrimedTnt,
 };
@@ -2122,7 +2124,7 @@ pub fn create_slot_checkpoint_on_server(
         .block_entities
         .keys()
         .copied()
-        .filter(|k| k.1 == super::super::minecarts::CART_KEY_Y)
+        .filter(|k| k.1 == horizon_gameplay::minecarts::CART_KEY_Y)
         .collect();
     for key in open_cart_keys {
         game.store_cart_items(key);
@@ -2266,20 +2268,14 @@ pub fn create_slot_checkpoint_on_server(
                     None
                 }
             });
-            let (effects, effects_tick_count, effects_changes) =
-                if !g.effects.list.is_empty() || !is_owner || game.potions.effects.list.is_empty() {
-                    (
-                        g.effects.list.clone(),
-                        g.effects.tick_count,
-                        g.effects.changes,
-                    )
-                } else {
-                    (
-                        game.potions.effects.list.clone(),
-                        game.potions.effects.tick_count,
-                        game.potions.effects.changes,
-                    )
-                };
+            let effects = g.effects.list.clone();
+            let effects_tick_count = g.effects.tick_count;
+            let effects_changes = g.effects.changes;
+            if is_owner {
+                game.potions.effects.list = effects.clone();
+                game.potions.effects.tick_count = effects_tick_count;
+                game.potions.effects.changes = effects_changes;
+            }
             guests.insert(
                 g.uuid,
                 GuestSnapshot {
@@ -2443,7 +2439,7 @@ pub fn create_slot_checkpoint_on_server(
         next_entity: game.next_entity,
         ticked_entities_through: game.ticked_entities_through,
         ordered_announced: game.ordered.announced,
-        cat_tick: game.creatures.cat_tick,
+        cat_tick: game.creatures.cat.next_tick,
         phantom_tick: game.stats.rreturn_phantom_tick(),
         player_extra: game.level.player_extra.clone(),
         shoulder_time: game.creatures.shoulder_time.clone(),
@@ -3163,7 +3159,7 @@ pub fn save_slot_to_disk(world_root: &Path, slot: &str, snap: &TimelineSnapshot)
             let hurt_by: Vec<serde_json::Value> = lsnap
                 .last_hurt_by_player
                 .iter()
-                .map(|(k, v)| serde_json::json!([k, v.0]))
+                .map(|(k, v)| serde_json::json!([k, v.0.to_string()]))
                 .collect();
             let love: Vec<serde_json::Value> = lsnap
                 .love_cause
@@ -4676,9 +4672,13 @@ pub fn hydrate_level_from_disk(
                         && a.len() == 2
                         && let Some(k) = a[0].as_u64()
                     {
+                        let cred = a[1]
+                            .as_str()
+                            .and_then(|s| s.parse::<u128>().ok())
+                            .unwrap_or_else(|| a[1].as_u64().unwrap_or(0) as u128);
                         disk_last_hurt_by_player.insert(
                             k as u32,
-                            super::super::combat::PlayerCredit(a[1].as_u64().unwrap_or(0) as u128),
+                            super::super::combat::PlayerCredit(cred),
                         );
                     }
                 }
@@ -5340,7 +5340,7 @@ pub fn hydrate_level_from_disk(
         });
         for tnt_val in disk_tnts {
             if game.tnts.iter().all(|t| t.id != tnt_val.id) {
-                game.tnts.push(super::super::tnt::PrimedTnt {
+                game.tnts.push(horizon_gameplay::tnt::PrimedTnt {
                     attachment_lifetime: Default::default(),
                     id: tnt_val.id,
                     position: tnt_val.pos,
@@ -5900,7 +5900,7 @@ pub fn apply_level_snapshot_in_place(
         let mut by_chunk: BTreeMap<(i32, i32), Vec<((i32, i32, i32), BlockEntity)>> =
             BTreeMap::new();
         for (&pos, be) in &snap.block_entities {
-            if pos.1 == super::super::minecarts::CART_KEY_Y {
+            if pos.1 == horizon_gameplay::minecarts::CART_KEY_Y {
                 continue;
             }
             by_chunk
@@ -6070,7 +6070,7 @@ pub fn apply_level_snapshot_in_place(
         let registry = game.pack.assets.registry;
         for ts in &snap.tridents {
             if let Some(n) = horizon_client::entity_nbt::trident_from_nbt(&ts.nbt) {
-                let mut t = super::super::trident::ThrownTrident::from_nbt(n, &ts.nbt, registry);
+                let mut t = horizon_gameplay::trident::ThrownTrident::from_nbt(n, &ts.nbt, registry);
                 t.id = ts.id;
                 t.previous = ts.previous;
                 t.in_ground_time = ts.in_ground_time;
@@ -6088,7 +6088,7 @@ pub fn apply_level_snapshot_in_place(
         game.rockets.clear();
         for rs in &snap.rockets {
             if let Some(rn) = horizon_client::entity_nbt::firework_rocket_from_nbt(&rs.nbt, None) {
-                let mut r = super::super::fireworks::Rocket::from_nbt(rn);
+                let mut r = horizon_gameplay::fireworks::Rocket::from_nbt(rn);
                 r.id = rs.id;
                 r.attached = rs.attached;
                 r.guest = rs.guest;
@@ -7748,7 +7748,7 @@ pub fn rollback_slot_checkpoint_on_server(game: &mut Game<'_>, slot: &str) -> bo
     game.next_entity = snap.next_entity;
     game.ticked_entities_through = snap.ticked_entities_through;
     game.ordered.announced = snap.ordered_announced;
-    game.creatures.cat_tick = snap.cat_tick;
+    game.creatures.cat.next_tick = snap.cat_tick;
     game.stats.rreturn_set_phantom_tick(snap.phantom_tick);
     game.level.player_extra = snap.player_extra.clone();
     game.creatures.shoulder_time = snap.shoulder_time.clone();

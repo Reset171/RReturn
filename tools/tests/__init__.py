@@ -35,13 +35,13 @@ def setup_clean_env(h):
     h.command("time set day")
     h.command("weather clear")
     h.command("effect clear @s")
-    h.command("effect give @s instant_health 1 10 true")
+    h.command("effect give @s minecraft:instant_health 1 10 true")
     h.command("clear @s")
     for _ in range(15):
         p = h.state().get("player", {})
         if p.get("health", 0) >= 19.5 and p.get("on_ground", False):
             break
-        h.command("effect give @s instant_health 1 10 true")
+        h.command("effect give @s minecraft:instant_health 1 10 true")
         h.wait(2)
     h.command("effect clear @s")
     h.wait(2)

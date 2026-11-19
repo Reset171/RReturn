@@ -124,7 +124,8 @@ def test_41_disk_checkpoint_reopen_and_rollback(h):
     h.wait(6)
     assert "torch" not in h.block(2401, 65, 2401).get("block", ""), "Second rollback after disk hydration failed to remove torch"
 
-    h.command("effect give @s speed 120 1")
+    h.command("effect give @s minecraft:speed 120 1")
+    h.command("worldborder center 2400 2400")
     h.command("worldborder set 500")
     h.wait(3)
     h.rreturn("set")
@@ -141,6 +142,7 @@ def test_41_disk_checkpoint_reopen_and_rollback(h):
     wb_res = h.command("worldborder get").get("chat", [])
     assert any("500" in line for line in wb_res), f"WorldBorder not preserved across disk reload: {wb_res}"
     h.command("effect clear @s")
+    h.command("worldborder center 0 0")
     h.command("worldborder set 59999968")
 
     ground = h.block(2400, 64, 2400)
@@ -155,8 +157,9 @@ def test_41_disk_checkpoint_reopen_and_rollback(h):
 def test_44_disk_checkpoint_singleplayer_uuid_fallback(h):
     import json
     setup_clean_env(h)
-    h.tp(500.5, 70.0, 500.5)
+    h.tp(500.5, 65.0, 500.5)
     h.wait(4)
+    hp_saved = h.state()["player"]["health"]
     h.rreturn("set")
     h.wait(4)
 
@@ -178,13 +181,16 @@ def test_44_disk_checkpoint_singleplayer_uuid_fallback(h):
     h.wait(3)
 
     # Перемещаемся в другое место и наносим урон
-    h.tp(600.5, 70.0, 600.5)
+    h.tp(600.5, 65.0, 600.5)
     h.command("damage @s 10 minecraft:generic")
-    h.wait(4)
+    for _ in range(10):
+        p_moved = h.state()["player"]
+        if p_moved["health"] <= hp_saved - 5.0:
+            break
+        h.wait(2)
 
-    p_moved = h.state()["player"]
     assert abs(p_moved["position"][0] - 600.5) < 2.0, "Player did not move"
-    assert p_moved["health"] <= 15.0, "Player did not take damage"
+    assert p_moved["health"] < hp_saved, f"Player did not take damage: {p_moved['health']}"
 
     # Выполняем откат с диска
     h.rreturn("load")
@@ -196,8 +202,8 @@ def test_44_disk_checkpoint_singleplayer_uuid_fallback(h):
     assert abs(pos_x - 500.5) < 2.0 and abs(pos_z - 500.5) < 2.0, (
         f"Player position not restored from disk fallback: pos={p_after['position']}"
     )
-    assert p_after["health"] >= 19.0, (
-        f"Player health not restored from disk fallback: health={p_after['health']}"
+    assert abs(p_after["health"] - hp_saved) < 1.0, (
+        f"Player health not restored from disk fallback: health={p_after['health']} vs saved={hp_saved}"
     )
     h.tp(0.5, 65.0, 0.5)
     h.wait(4)

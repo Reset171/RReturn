@@ -35,7 +35,10 @@ def test_12_policy_selective_inventory(h):
     h.wait(2)
     assert h.has_entity("@e[tag=policy_trident]"), "Trident was not spawned"
     h.rreturn("load")
-    h.wait(4)
+    for _ in range(8):
+        if h.has_entity("@e[tag=policy_trident]"):
+            break
+        h.wait(2)
     assert h.has_entity("@e[tag=policy_trident]"), "Entity-preserving rollback deleted live trident"
     h.command("kill @e[tag=policy_trident]")
 

@@ -484,6 +484,8 @@ def test_62_fire_ticks_and_visual_flame_restoration(h):
     h.tp(0.5, 65.0, 0.5)
 
     # Checkpoint without fire
+    h.wait(2)
+    hp_initial = h.state().get("player", {}).get("health", 20.0)
     h.rreturn("set")
     h.wait(2)
 
@@ -502,7 +504,7 @@ def test_62_fire_ticks_and_visual_flame_restoration(h):
     # Check if fire was extinguished
     st_after = h.state().get("player", {})
     health_after = st_after.get("health", 20.0)
-    assert health_after >= 18.0, f"Player took unexpected fire damage after clean rollback: {health_after}"
+    assert health_after >= hp_initial - 2.0, f"Player took unexpected fire damage after clean rollback: {health_after} vs initial {hp_initial}"
 
 
 def test_63_fishing_hook_velocity_preservation(h):
@@ -752,6 +754,7 @@ def test_77_creaking_heart_connection(h):
     h.wait(2)
     h.rreturn("load")
     h.wait(4)
+    h.ensure_loaded(0, 65, 3)
     blk = h.block(0, 65, 3).get("block", "")
     h.command("setblock 0 65 3 minecraft:air")
     assert "creaking_heart" in blk, f"Creaking heart block not restored: {blk}"
@@ -784,6 +787,7 @@ def test_79_trial_spawner_tick_cleared(h):
     h.wait(2)
     h.rreturn("load")
     h.wait(4)
+    h.ensure_loaded(0, 65, 2)
     blk = h.block(0, 65, 2).get("block", "")
     h.command("setblock 0 65 2 minecraft:air")
     assert "trial_spawner" in blk, f"Trial spawner not restored: {blk}"
@@ -824,7 +828,7 @@ def test_81_wither_client_bossbar_sync(h):
     assert h.has_entity("@e[tag=boss_sync]"), "Wither lost after rollback"
     hp = h.data_get_entity("@e[tag=boss_sync,limit=1]", "Health")
     h.command("kill @e[tag=boss_sync]")
-    assert "300" in hp or "300.0" in hp, f"Wither health not restored: {hp}"
+    assert "300" in hp, f"Wither health not restored: {hp}"
 
 
 def test_82_wandering_trader_spawner_reset(h):

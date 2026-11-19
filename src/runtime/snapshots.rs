@@ -1,9 +1,11 @@
 use super::super::{
     Dim, ExperienceOrb, FallingBlock, Game, ItemEntity, Mob,
-    boats::Boat,
     commands::OtherEntity,
     dragon::{Crystal, Dragon},
     machines::HopperState,
+};
+use horizon_gameplay::{
+    boats::Boat,
     minecarts::Minecart,
     tnt::PrimedTnt,
 };

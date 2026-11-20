@@ -174,12 +174,28 @@ pub fn apply_timeline_snapshot_on_server(
     if policy.world_scoreboard {
         game.load_scoreboard();
         game.score.board = snap.scoreboard.clone();
-        if let RollbackOrigin::DiskSlot(slot) = origin {
-            let cp_slot_dir = slot_dir(&game.world_root, slot);
-            game.score.storage =
-                horizon_client::command_storage::CommandStorage::load(&cp_slot_dir);
-            game.score.stopwatches =
-                horizon_client::stopwatches::Stopwatches::load(&cp_slot_dir);
+        match &origin {
+            RollbackOrigin::DiskSlot(slot) => {
+                let cp_slot_dir = slot_dir(&game.world_root, slot);
+                game.score.storage =
+                    horizon_client::command_storage::CommandStorage::load(&cp_slot_dir);
+                if let Some(elapsed) = &snap.stopwatches_elapsed {
+                    game.score.stopwatches =
+                        restore_stopwatches_elapsed(&game.world_root, elapsed);
+                } else {
+                    game.score.stopwatches =
+                        horizon_client::stopwatches::Stopwatches::load(&cp_slot_dir);
+                }
+            }
+            RollbackOrigin::ScrubSnapshot { .. } => {
+                if let Some(storage) = &snap.command_storage {
+                    game.score.storage = storage.clone();
+                }
+                if let Some(elapsed) = &snap.stopwatches_elapsed {
+                    game.score.stopwatches =
+                        restore_stopwatches_elapsed(&game.world_root, elapsed);
+                }
+            }
         }
         game.sync_score_registries();
     }
@@ -194,16 +210,18 @@ pub fn apply_timeline_snapshot_on_server(
         game.ui.registries.bossbars = game.bosses.bars.ids();
     }
     if policy.world_dragon_fight {
-        let fight_path = fight_dat_path(&game.world_root);
-        match &snap.dragon_fight_dat {
-            Some(bytes) => {
-                if let Some(parent) = fight_path.parent() {
-                    let _ = fs::create_dir_all(parent);
+        if matches!(origin, RollbackOrigin::DiskSlot(_)) {
+            let fight_path = fight_dat_path(&game.world_root);
+            match &snap.dragon_fight_dat {
+                Some(bytes) => {
+                    if let Some(parent) = fight_path.parent() {
+                        let _ = fs::create_dir_all(parent);
+                    }
+                    let _ = fs::write(&fight_path, bytes);
                 }
-                let _ = fs::write(&fight_path, bytes);
-            }
-            None => {
-                let _ = fs::remove_file(&fight_path);
+                None => {
+                    let _ = fs::remove_file(&fight_path);
+                }
             }
         }
         if let Some(ftag) = &snap.fight_tag {
@@ -272,24 +290,38 @@ pub fn apply_timeline_snapshot_on_server(
     game.maps = Default::default();
     game.rand_sequences = snap.rand_sequences.clone();
 
-    let trader_path = trader_dat_path(&game.world_root);
-    match &snap.trader_dat {
-        Some(bytes) => {
-            if let Some(parent) = trader_path.parent() {
-                let _ = fs::create_dir_all(parent);
+    match &origin {
+        RollbackOrigin::DiskSlot(_) => {
+            let trader_path = trader_dat_path(&game.world_root);
+            match &snap.trader_dat {
+                Some(bytes) => {
+                    if let Some(parent) = trader_path.parent() {
+                        let _ = fs::create_dir_all(parent);
+                    }
+                    let _ = fs::write(&trader_path, bytes);
+                }
+                None => {
+                    let _ = fs::remove_file(&trader_path);
+                }
             }
-            let _ = fs::write(&trader_path, bytes);
+            game.creatures.reset_trader();
+            game.load_trader_data();
         }
-        None => {
-            let _ = fs::remove_file(&trader_path);
+        RollbackOrigin::ScrubSnapshot { .. } => {
+            if let Some(tag) = &snap.trader_tag {
+                game.creatures.reset_trader();
+                game.creatures.trader.load(tag.get("data"));
+            } else if game.creatures.trader.to_save().is_some() {
+                game.creatures.reset_trader();
+                game.creatures.trader.load(None);
+            }
         }
     }
-    game.creatures.reset_trader();
-    game.load_trader_data();
     bench_accum(Phase::Bosses, t_bosses);
 
     let t_mca = std::time::Instant::now();
     let mut deleted_region_files = false;
+    let mut restored_unloaded_count = 0usize;
     if let RollbackOrigin::DiskSlot(_) = origin {
         let subfolders = ["region", "entities", "poi"];
         let dims = [
@@ -311,7 +343,222 @@ pub fn apply_timeline_snapshot_on_server(
                 }
             }
         }
-    } else if let RollbackOrigin::ScrubSnapshot { ref future_region_files, .. } = origin {
+    } else if let RollbackOrigin::ScrubSnapshot {
+        ref touched_unloaded,
+        ref future_region_files,
+        ..
+    } = origin
+    {
+        if !touched_unloaded.is_empty()
+            && (policy.blocks || policy.biomes || policy.block_entities || policy.entities_presence)
+        {
+            let mut by_dim: HashMap<Dim, Vec<&UnloadedChunkRestore>> = HashMap::new();
+            for item in touched_unloaded {
+                by_dim.entry(item.dim).or_default().push(item);
+            }
+            let saved_dim = game.dim;
+            for (dim, items) in by_dim {
+                if game.dim != dim && game.enter_level(dim).is_err() {
+                    continue;
+                }
+                let mut temp_keys = Vec::new();
+                let mut temp_items: Vec<&UnloadedChunkRestore> = Vec::new();
+                for item in items {
+                    if let Some(chunk) = &item.chunk {
+                        if !game.world.chunks.contains_key(&item.pos) {
+                            game.world.chunks.insert(item.pos, Arc::clone(chunk));
+                            if !item.block_entities.is_empty() {
+                                game.world
+                                    .block_entities
+                                    .load_chunk(item.block_entities.clone());
+                            }
+                            for (pos, name) in &item.block_names {
+                                game.world.block_names.insert(*pos, name.clone());
+                            }
+                            temp_keys.push(item.pos);
+                            temp_items.push(item);
+                        }
+                    }
+                }
+                if !temp_keys.is_empty() {
+                    if policy.blocks || policy.biomes || policy.block_entities {
+                        let chunks_to_write = game.with_entities(
+                            temp_keys.iter().filter_map(|k| game.world.chunks.get(k)),
+                        );
+                        let _ = game.save.save_later(
+                            &chunks_to_write,
+                            game.pack.assets.registry,
+                            game.res.biomes(),
+                        );
+                    }
+                    if policy.entities_presence {
+                        let saved_mobs = std::mem::take(&mut game.mobs);
+                        let saved_dropped = std::mem::take(&mut game.dropped);
+                        let saved_orbs = std::mem::take(&mut game.orbs);
+                        let saved_proj = std::mem::take(&mut game.creatures.projectiles);
+                        let saved_boats = std::mem::take(&mut game.boats);
+                        let saved_carts = std::mem::take(&mut game.carts);
+                        let saved_tnts = std::mem::take(&mut game.tnts);
+                        let saved_falling = std::mem::take(&mut game.falling);
+                        let saved_paintings = std::mem::take(&mut game.paintings);
+                        let saved_frames = std::mem::take(&mut game.item_frames);
+                        let saved_stands = std::mem::take(&mut game.armor_stands);
+                        let saved_cushions = std::mem::take(&mut game.cushions);
+                        let saved_others = std::mem::take(&mut game.others);
+                        let saved_crystals = std::mem::take(&mut game.crystals);
+                        let saved_tridents = std::mem::take(&mut game.tridents);
+                        let saved_rockets = std::mem::take(&mut game.rockets);
+                        let saved_breath = std::mem::take(&mut game.breath_clouds);
+                        let saved_fangs = std::mem::take(&mut game.fangs.list);
+                        let saved_ominous = std::mem::take(&mut game.ominous_spawners);
+                        let saved_persist = std::mem::take(&mut game.persist);
+                        let saved_next = game.next_entity;
+
+                        let registry = game.pack.assets.registry;
+                        for item in &temp_items {
+                            let ent = &item.entities;
+                            for m in &ent.mobs {
+                                game.mobs.push(m.clone());
+                            }
+                            for d in &ent.dropped {
+                                game.dropped.push(d.clone());
+                            }
+                            for o in &ent.orbs {
+                                game.orbs.push(o.clone());
+                            }
+                            for p in &ent.projectiles {
+                                game.creatures.projectiles.push(p.clone());
+                            }
+                            for b in &ent.boats {
+                                game.boats.push(b.clone());
+                            }
+                            for c in &ent.carts {
+                                game.carts.push(c.clone());
+                            }
+                            for t in &ent.tnts {
+                                game.tnts.push(t.clone());
+                            }
+                            for f in &ent.falling {
+                                game.falling.push(f.clone());
+                            }
+                            for p in &ent.paintings {
+                                game.paintings.push(p.clone());
+                            }
+                            for f in &ent.item_frames {
+                                game.item_frames.push(f.clone());
+                            }
+                            for a in &ent.armor_stands {
+                                game.armor_stands.push(a.clone());
+                            }
+                            for c in &ent.cushions {
+                                game.cushions.push(c.clone());
+                            }
+                            for o in &ent.others {
+                                game.others.push(o.clone());
+                            }
+                            for c in &ent.crystals {
+                                game.crystals.push(c.clone());
+                            }
+                            for ts in &ent.tridents {
+                                if let Some(n) = horizon_client::entity_nbt::trident_from_nbt(&ts.nbt)
+                                {
+                                    let mut t = horizon_gameplay::trident::ThrownTrident::from_nbt(
+                                        n, &ts.nbt, registry,
+                                    );
+                                    t.id = ts.id;
+                                    t.previous = ts.previous;
+                                    t.in_ground_time = ts.in_ground_time;
+                                    t.no_physics = ts.no_physics;
+                                    t.owner = ts.owner;
+                                    t.guest = ts.guest;
+                                    game.tridents.push(t);
+                                }
+                            }
+                            for rs in &ent.rockets {
+                                if let Some(rn) =
+                                    horizon_client::entity_nbt::firework_rocket_from_nbt(
+                                        &rs.nbt, None,
+                                    )
+                                {
+                                    let mut r = horizon_gameplay::fireworks::Rocket::from_nbt(rn);
+                                    r.id = rs.id;
+                                    r.attached = rs.attached;
+                                    r.guest = rs.guest;
+                                    r.owner = rs.owner;
+                                    r.attached_to = rs.attached_to;
+                                    game.rockets.push(r);
+                                }
+                            }
+                            for bs in &ent.breath_clouds {
+                                if let Some((_, mut cloud)) =
+                                    super::super::potions::potion_cloud_from_nbt(&bs.nbt)
+                                {
+                                    cloud.id = bs.id;
+                                    cloud.motion = bs.motion;
+                                    cloud.from_dragon = bs.from_dragon;
+                                    cloud.victims = bs.victims.clone();
+                                    game.breath_clouds.push(cloud);
+                                }
+                            }
+                            for f in &ent.fangs {
+                                game.fangs.list.push(f.clone());
+                            }
+                            for (oid, onbt) in &ent.ominous_spawners {
+                                game.load_ominous_item_spawner(onbt.clone());
+                                if !game.ominous_spawners.is_empty() {
+                                    let last = game.ominous_spawners.len() - 1;
+                                    game.ominous_spawners.update(last, |o| o.id = *oid);
+                                }
+                            }
+                            for (&id, &u) in &ent.persist_uuids {
+                                game.persist.uuids.insert(id, u);
+                            }
+                            for (&id, tag) in &ent.persist_raw {
+                                game.persist.raw.insert(id, tag.clone());
+                            }
+                            for (&id, slots) in &ent.persist_passenger_slots {
+                                game.persist.passenger_slots.insert(id, slots.clone());
+                            }
+                        }
+
+                        let key_set: HashSet<(i32, i32)> = temp_keys.iter().copied().collect();
+                        let ent_chunks = game.entity_chunks(&key_set, false);
+                        let _ = game.save.save_entities_later(ent_chunks);
+
+                        game.mobs = saved_mobs;
+                        game.dropped = saved_dropped;
+                        game.orbs = saved_orbs;
+                        game.creatures.projectiles = saved_proj;
+                        game.boats = saved_boats;
+                        game.carts = saved_carts;
+                        game.tnts = saved_tnts;
+                        game.falling = saved_falling;
+                        game.paintings = saved_paintings;
+                        game.item_frames = saved_frames;
+                        game.armor_stands = saved_stands;
+                        game.cushions = saved_cushions;
+                        game.others = saved_others;
+                        game.crystals = saved_crystals;
+                        game.tridents = saved_tridents;
+                        game.rockets = saved_rockets;
+                        game.breath_clouds = saved_breath;
+                        game.fangs.list = saved_fangs;
+                        game.ominous_spawners = saved_ominous;
+                        game.persist = saved_persist;
+                        game.next_entity = saved_next;
+                    }
+                    let _ = game.save.flush();
+                    restored_unloaded_count += temp_keys.len();
+                    for k in &temp_keys {
+                        let _ = game.world.unload_chunk(*k);
+                        game.world.block_entities.unload_chunks(&[*k]);
+                    }
+                }
+            }
+            if game.dim != saved_dim {
+                let _ = game.enter_level(saved_dim);
+            }
+        }
         for p in future_region_files {
             if p.is_file() {
                 let _ = fs::remove_file(p);
@@ -321,7 +568,12 @@ pub fn apply_timeline_snapshot_on_server(
     }
     bench_accum(Phase::FutureMca, t_mca);
 
-    if target_dim != game.dim || deleted_region_files || disk_files_changed > 0 || !is_hot_rollback {
+    if target_dim != game.dim
+        || deleted_region_files
+        || restored_unloaded_count > 0
+        || disk_files_changed > 0
+        || !is_hot_rollback
+    {
         let t_stream = std::time::Instant::now();
         if let RollbackOrigin::DiskSlot(_) = origin {
             restore_offline_files(&snap.offline_player_data, policy.player_stats);

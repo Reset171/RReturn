@@ -28,7 +28,7 @@ def deploy_to_instance(
         else:
             targets.append(data_home / "horizon" / "instances" / instance / "horizon-native-mods")
     else:
-        # Check launcher's selected instance or global
+        # Check launcher's selected instance or default to global
         selected_dir = None
         try:
             out = subprocess.check_output(
@@ -171,10 +171,7 @@ struct Mod;
 #[mod_api::horizon_mod]
 impl mod_api::Hooks for Mod {
     fn register(&self, r: &mut dyn mod_api::Registrar, _: &mod_api::RegistrationContext) {
-        use mod_api::{
-            KeyConflictContext, KeyMappingsRegistrar, KeyRegistration, SettingSpec,
-            SettingsRegistrar,
-        };
+        use mod_api::{KeyConflictContext, KeyRegistration, SettingSpec};
 
         r.register_key_mapping(
             KeyRegistration::new("scrub", "key.keyboard.u")
@@ -216,7 +213,7 @@ impl mod_api::Hooks for Mod {
                 5.0,
                 600.0,
                 5.0,
-                60.0,
+                300.0,
             )
             .tooltip("rreturn.setting.fixed_interval_sec.tooltip"),
         );
@@ -314,6 +311,7 @@ impl mod_api::Hooks for Mod {
         target_instance = deploy if deploy else None
         deployed = deploy_to_instance(out_path, mod_id, mod_version, target_instance)
         deployed_paths = [str(p) for p in deployed]
+
     result = {
         "file": str(out_path),
         "size": len(zip_bytes),

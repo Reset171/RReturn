@@ -54,12 +54,48 @@ pub fn is_valid_slot_name(name: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Default)]
+pub struct UnloadedChunkEntities {
+    pub mobs: Vec<Mob>,
+    pub dropped: Vec<ItemEntity>,
+    pub orbs: Vec<ExperienceOrb>,
+    pub projectiles: Vec<horizon_client::projectiles::Projectile>,
+    pub boats: Vec<Boat>,
+    pub carts: Vec<Minecart>,
+    pub tnts: Vec<PrimedTnt>,
+    pub falling: Vec<FallingBlock>,
+    pub paintings: Vec<Painting>,
+    pub item_frames: Vec<ItemFrame>,
+    pub armor_stands: Vec<ArmorStand>,
+    pub cushions: Vec<Cushion>,
+    pub others: Vec<OtherEntity>,
+    pub crystals: Vec<Crystal>,
+    pub tridents: Vec<TridentSnapshot>,
+    pub rockets: Vec<RocketSnapshot>,
+    pub breath_clouds: Vec<BreathSnapshot>,
+    pub fangs: Vec<super::super::fangs::Fangs>,
+    pub ominous_spawners: Vec<(u32, Tag)>,
+    pub persist_uuids: HashMap<u32, [i32; 4]>,
+    pub persist_raw: HashMap<u32, Tag>,
+    pub persist_passenger_slots: HashMap<u32, Vec<super::super::persist::PassengerSlot>>,
+}
+
+#[derive(Clone)]
+pub struct UnloadedChunkRestore {
+    pub dim: Dim,
+    pub pos: (i32, i32),
+    pub chunk: Option<Arc<Chunk>>,
+    pub block_entities: Vec<((i32, i32, i32), BlockEntity)>,
+    pub block_names: Vec<((i32, i32, i32), Tag)>,
+    pub entities: UnloadedChunkEntities,
+}
+
+#[derive(Clone)]
 pub enum RollbackOrigin<'a> {
     DiskSlot(&'a str),
     ScrubSnapshot {
         target_tick: i64,
-        touched_unloaded: Vec<([i32; 2], String)>,
+        touched_unloaded: Vec<UnloadedChunkRestore>,
         future_region_files: Vec<PathBuf>,
     },
 }

@@ -1,3 +1,4 @@
+use super::scrub_timeline::with_scrub_ring;
 use super::super::Game;
 use super::benchmark::*;
 use super::snapshots::*;
@@ -180,7 +181,6 @@ pub fn apply_client_level_rollback(game: &mut Game<'_>, slot: &str) {
                 report.push_str(&format!("\n|   |-- ... and {} more", diffs.len() - 10));
             }
             report.push_str(&format!("\n|-- Dirty Sections Marked: {dirty_marked}"));
-            eprintln!("{report}");
             log::info!("{report}");
             append_to_rreturn_log(&game.world_root, &report);
             return;
@@ -196,7 +196,6 @@ pub fn apply_client_level_rollback(game: &mut Game<'_>, slot: &str) {
             game.dim.id(),
             client_snap.dim.id()
         );
-        eprintln!("{report}");
         log::info!("{report}");
         append_to_rreturn_log(&game.world_root, &report);
         return;
@@ -220,7 +219,40 @@ pub fn apply_client_level_rollback(game: &mut Game<'_>, slot: &str) {
         .map(|p| ((p.position.x as i32) >> 4, (p.position.z as i32) >> 4))
         .unwrap_or((0, 0));
 
-    let mut chunk_keys: Vec<(i32, i32)> = client_snap.chunks.keys().copied().collect();
+    let candidate_chunks: Option<HashSet<(i32, i32)>> = if slot == "scrub" {
+        let mut touched = HashSet::new();
+        with_scrub_ring(|ring| {
+            for frame in ring.frames.iter() {
+                for delta in &frame.block_deltas {
+                    touched.insert((delta.x >> 4, delta.z >> 4));
+                }
+                for swap in &frame.section_swaps {
+                    touched.insert((swap.cx, swap.cz));
+                }
+                for b in &frame.biome_deltas {
+                    touched.insert((b.cx, b.cz));
+                }
+            }
+        });
+        for &c in game.world.modified.iter() {
+            touched.insert(c);
+        }
+        for dz in -4..=4 {
+            for dx in -4..=4 {
+                touched.insert((px + dx, pz + dz));
+            }
+        }
+        Some(touched)
+    } else {
+        None
+    };
+
+    let mut chunk_keys: Vec<(i32, i32)> = client_snap
+        .chunks
+        .keys()
+        .copied()
+        .filter(|coord| candidate_chunks.as_ref().map_or(true, |set| set.contains(coord)))
+        .collect();
     chunk_keys.sort_unstable_by_key(|&(cx, cz)| (cx - px).abs().max((cz - pz).abs()));
 
     let t_scan = std::time::Instant::now();
@@ -392,7 +424,6 @@ pub fn apply_client_level_rollback(game: &mut Game<'_>, slot: &str) {
             ));
         }
     }
-    eprintln!("{report}");
     log::info!("{report}");
     append_to_rreturn_log(&game.world_root, &report);
 }

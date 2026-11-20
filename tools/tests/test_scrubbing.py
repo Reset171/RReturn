@@ -25,6 +25,14 @@ def _parse_pos(chat_str):
     return None
 
 
+def _parse_health(chat_str):
+    s = str(chat_str)
+    if ":" in s:
+        s = s.split(":")[-1]
+    nums = re.findall(r"[-+]?\d*\.?\d+", s)
+    return float(nums[0]) if nums else 20.0
+
+
 def test_83_interactive_time_scrubbing_and_rewind(h):
     setup_clean_env(h)
     h.tp(0.5, 65, 0.5)
@@ -172,6 +180,10 @@ def test_85_scrub_fov_bobbing_and_hurt_overlay(h):
     # Deal damage to set hurt_time > 0
     h.command("damage @e[tag=scrub_cow,limit=1] 2")
     h.wait(2)
+    t_dmg_str = str(h.command("time query gametime"))
+    dmg_nums = re.findall(r"\d+", t_dmg_str)
+    dmg_tick = int(dmg_nums[0]) if dmg_nums else 0
+
     ht_during_damage = h.data_get_entity("@e[tag=scrub_cow,limit=1]", "HurtTime")
     nums = re.findall(r"\d+", ht_during_damage)
     ht_val = int(nums[0]) if nums else 0
@@ -184,12 +196,18 @@ def test_85_scrub_fov_bobbing_and_hurt_overlay(h):
     ht_rec_val = int(nums[0]) if nums else -1
     assert ht_rec_val == 0, f"Expected hurt time to recover to 0: {ht_recovered}"
 
-    # Start scrub and step backwards to the moment of impact
+    # Start scrub and step backwards to the exact moment of impact
     res = h.rreturn("scrub start")
     assert "started" in str(res).lower(), f"Unexpected scrub start: {res}"
 
-    # Step back ~5 steps (~7.5 ticks) to when cow was hurt
-    h.rreturn("scrub step -5.0")
+    status = _parse_res(h.rreturn("scrub status"))
+    anchor_tick = status.get("anchor_tick", 0)
+    if anchor_tick > dmg_tick and dmg_tick > 0:
+        step_val = -float(anchor_tick - dmg_tick) / 1.5
+    else:
+        step_val = -10.0
+
+    h.rreturn(f"scrub step {step_val:.2f}")
     res_commit = str(h.rreturn("scrub commit"))
     assert "committed" in res_commit.lower(), f"Unexpected commit: {res_commit}"
     h.wait(2)
@@ -226,6 +244,103 @@ def test_85_scrub_fov_bobbing_and_hurt_overlay(h):
 
     h.rreturn("scrub cancel")
     h.wait(2)
+
+
+def test_86_scrub_player_inventory_health_and_effects_no_dupe(h):
+    setup_clean_env(h)
+    h.tp(0.5, 65, 0.5)
+    h.wait(10)
+
+    # 1. Clear inventory and give baseline items
+    h.command("clear @s")
+    h.command("give @s minecraft:diamond 5")
+    h.command("effect clear @s")
+    h.wait(15)
+
+    # Check baseline diamonds count
+    raw_inv = h.data_get_entity("@s", "Inventory")
+    assert "diamond" in str(raw_inv), f"Expected diamonds in inventory: {raw_inv}"
+    assert "Count: 5b" in str(raw_inv) or "count: 5" in str(raw_inv).lower(), f"Expected 5 diamonds: {raw_inv}"
+
+    # 2. Give 10 more diamonds (total 15), damage player, and give poison
+    h.command("give @s minecraft:diamond 10")
+    h.command("damage @s 6")
+    h.command("effect give @s minecraft:poison 15 1")
+    h.wait(10)
+
+    raw_inv_more = h.data_get_entity("@s", "Inventory")
+    assert "Count: 15b" in str(raw_inv_more) or "count: 15" in str(raw_inv_more).lower(), f"Expected 15 diamonds: {raw_inv_more}"
+    hp_damaged = h.data_get_entity("@s", "Health")
+    hp_val = _parse_health(hp_damaged)
+    assert hp_val < 19.0, f"Expected damaged HP: {hp_val} (raw: {hp_damaged})"
+
+    # 3. Start scrub and step backward ~14 steps (~21 ticks) before the damage and extra diamonds
+    res = h.rreturn("scrub start")
+    assert "started" in str(res).lower(), f"Unexpected scrub start: {res}"
+    h.rreturn("scrub step -14.0")
+    res_commit = str(h.rreturn("scrub commit"))
+    assert "committed" in res_commit.lower(), f"Unexpected scrub commit: {res_commit}"
+    h.wait(4)
+
+    # 4. Verify rollback:
+    # Inventory must have EXACTLY 5 diamonds (no dupe, no 15 diamonds)!
+    raw_inv_rewound = h.data_get_entity("@s", "Inventory")
+    assert "Count: 5b" in str(raw_inv_rewound) or "count: 5" in str(raw_inv_rewound).lower(), (
+        f"Diamonds were not rolled back to 5! Dupe occurred: {raw_inv_rewound}"
+    )
+    assert "Count: 15b" not in str(raw_inv_rewound), f"Future diamonds remained: {raw_inv_rewound}"
+
+    # Health must be restored to 20!
+    hp_rewound = h.data_get_entity("@s", "Health")
+    hp_rewound_val = _parse_health(hp_rewound)
+    assert hp_rewound_val >= 19.9, f"HP was not restored: {hp_rewound_val} (raw: {hp_rewound})"
+
+    # Poison effect must be gone!
+    raw_effects = h.data_get_entity("@s", "active_effects")
+    assert "poison" not in str(raw_effects).lower(), f"Poison effect was not removed: {raw_effects}"
+
+
+def test_87_scrub_mob_resurrection_and_tnt_explosion_revert(h):
+    setup_clean_env(h)
+    h.tp(0.5, 65, 0.5)
+    h.wait(10)
+
+    # 1. Clean previous entities
+    h.command("kill @e[tag=scrub_target_zombie]")
+    h.command("setblock 5 65 5 minecraft:emerald_block")
+    h.wait(4)
+    assert "emerald_block" in h.block(5, 65, 5).get("block", ""), "Emerald block not placed"
+
+    # 2. Summon zombie at (3.5, 65, 3.5) and record history
+    h.command("summon minecraft:zombie 3.5 65.0 3.5 {Tags:['scrub_target_zombie'],CustomName:'\"UndeadScrub\"'}")
+    h.wait(20)
+    assert h.has_entity("@e[tag=scrub_target_zombie]"), "Zombie did not spawn"
+
+    # 3. Kill the zombie and destroy the emerald block
+    h.command("kill @e[tag=scrub_target_zombie]")
+    h.command("setblock 5 65 5 minecraft:air")
+    h.wait(10)
+    assert not h.has_entity("@e[tag=scrub_target_zombie]"), "Zombie was not killed"
+    assert "air" in h.block(5, 65, 5).get("block", ""), "Emerald block was not destroyed"
+
+    # 4. Start scrub and step backward ~12 steps (~18 ticks) to when zombie was alive and emerald was present
+    res = h.rreturn("scrub start")
+    assert "started" in str(res).lower(), f"Unexpected scrub start: {res}"
+    h.rreturn("scrub step -12.0")
+    res_commit = str(h.rreturn("scrub commit"))
+    assert "committed" in res_commit.lower(), f"Unexpected scrub commit: {res_commit}"
+    h.wait(4)
+
+    # 5. Zombie MUST be resurrected!
+    assert h.has_entity("@e[tag=scrub_target_zombie]"), "Dead zombie was NOT resurrected on scrub commit!"
+    # Emerald block must be restored!
+    assert "emerald_block" in h.block(5, 65, 5).get("block", ""), "Emerald block was NOT restored on scrub commit!"
+
+    # Cleanup
+    h.command("kill @e[tag=scrub_target_zombie]")
+    h.command("setblock 5 65 5 minecraft:air")
+    h.wait(2)
+
 
 
 

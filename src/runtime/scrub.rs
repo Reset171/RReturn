@@ -1,17 +1,328 @@
-use super::super::Game;
-use super::restore::{apply_timeline_snapshot_on_server, rollback_slot_checkpoint_on_server};
+use super::super::{
+    Dim, ExperienceOrb, FallingBlock, Game, ItemEntity, Mob,
+    commands::OtherEntity,
+    dragon::Crystal,
+};
+use super::restore::apply_timeline_snapshot_on_server;
 use super::restore_client::apply_client_level_rollback;
 use super::scrub_interpolate::{
     apply_block_rewind_to_game, apply_interpolated_poses_to_game, apply_timeline_sounds_to_game,
-    interpolate_mob_pose, lerp_angle, lerp_f32, lerp_f64, InterpolatedMobPose,
 };
-use super::scrub_server::get_server_snapshot_for_tick;
+use super::scrub_perf::*;
+use super::scrub_server::{
+    materialize_server_scrub, server_scrub_time_range, truncate_server_scrub_after,
+};
 use super::scrub_timeline::{with_scrub_ring, with_scrub_ring_mut};
+use super::snapshots::{BreathSnapshot, DragonSnapshot, RocketSnapshot, TridentSnapshot};
 use super::types::*;
-use horizon_client::fast_hash::FxHashMap;
-use std::collections::HashSet;
-use std::sync::{Mutex, OnceLock};
+use horizon_client::{
+    block_entity_anim::BlockEntityAnims,
+    boss_overlay::BossOverlay,
+    chunk::Chunk,
+    entities::{ArmorStand, Cushion, ItemFrame, Painting},
+    fast_hash::FxHashMap,
+    items::ItemStack,
+    world::Weather,
+    worldborder::WorldBorder,
+};
+use horizon_gameplay::{
+    boats::Boat,
+    minecarts::Minecart,
+    tnt::PrimedTnt,
+};
+use horizon_protocol::packets::play::{self, Clientbound as C};
+use std::cell::RefCell;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
+
+pub struct AnchorClientState {
+    pub dim: Dim,
+    pub chunks: FxHashMap<(i32, i32), Arc<Chunk>>,
+    pub day_time: i64,
+    pub weather: Weather,
+    pub border: WorldBorder,
+    pub boss_overlay: BossOverlay,
+    pub sculk_darkness: (f32, f32),
+    pub flash: u32,
+    pub be_anims: BlockEntityAnims,
+    pub moving_pistons: Vec<([i32; 3], horizon_world::piston_shape::MovingPistonState)>,
+    pub mobs: horizon_client::join_seq::JoinList<Mob>,
+    pub dropped: horizon_client::join_seq::JoinList<ItemEntity>,
+    pub orbs: horizon_client::join_seq::JoinList<ExperienceOrb>,
+    pub tnts: horizon_client::join_seq::JoinList<PrimedTnt>,
+    pub falling: horizon_client::join_seq::JoinList<FallingBlock, false>,
+    pub boats: horizon_client::join_seq::JoinList<Boat, false>,
+    pub carts: horizon_client::join_seq::JoinList<Minecart, false>,
+    pub projectiles:
+        horizon_client::join_seq::JoinList<horizon_client::projectiles::Projectile, false>,
+    pub crystals: horizon_client::join_seq::JoinList<Crystal>,
+    pub paintings: horizon_client::join_seq::JoinList<Painting>,
+    pub item_frames: horizon_client::join_seq::JoinList<ItemFrame>,
+    pub armor_stands: horizon_client::join_seq::JoinList<ArmorStand>,
+    pub cushions: horizon_client::join_seq::JoinList<Cushion>,
+    pub others: horizon_client::join_seq::ResidentList<OtherEntity>,
+    pub dragon: Option<DragonSnapshot>,
+    pub tridents: Vec<TridentSnapshot>,
+    pub rockets: Vec<RocketSnapshot>,
+    pub breath_clouds: Vec<BreathSnapshot>,
+    pub fangs: horizon_client::join_seq::ResidentList<super::super::fangs::Fangs>,
+    pub thrown_potions: ThrownPotionsSnapshot,
+    pub particles: Vec<horizon_client::particles::Particle>,
+    pub elder_guardians: Vec<i32>,
+    pub player: Option<horizon_client::motion::PlayerMotion>,
+    pub yaw: f32,
+    pub pitch: f32,
+    pub selected: usize,
+    pub inventory: Vec<Option<ItemStack>>,
+    pub armor: [Option<ItemStack>; 4],
+    pub offhand: Option<ItemStack>,
+    pub using: Option<(usize, u32)>,
+    pub use_duration: i32,
+    pub fov_modifier: f32,
+    pub walk_dist: f32,
+    pub bob: f32,
+}
+
+thread_local! {
+    static ANCHOR_STATE: RefCell<Option<AnchorClientState>> = const { RefCell::new(None) };
+}
+
+fn capture_anchor_client_state(game: &mut Game<'_>) -> AnchorClientState {
+    let registry = game.pack.assets.registry;
+    let tridents = game
+        .tridents
+        .iter()
+        .map(|t| {
+            let uuid = game.persist.uuids.get(&t.id).copied().unwrap_or([0; 4]);
+            let raw = game.persist.raw.get(&t.id);
+            TridentSnapshot {
+                join: t.join,
+                id: t.id,
+                nbt: t.to_nbt(uuid, registry, raw),
+                previous: t.previous,
+                in_ground_time: t.in_ground_time,
+                no_physics: t.no_physics,
+                owner: t.owner,
+                guest: t.guest,
+            }
+        })
+        .collect();
+    let rockets = game
+        .rockets
+        .iter()
+        .map(|r| {
+            let uuid = game.persist.uuids.get(&r.id).copied().unwrap_or([0; 4]);
+            let raw = game.persist.raw.get(&r.id);
+            RocketSnapshot {
+                id: r.id,
+                nbt: r.to_nbt(uuid, None, raw),
+                attached: r.attached,
+                guest: r.guest,
+                owner: r.owner,
+                attached_to: r.attached_to,
+            }
+        })
+        .collect();
+    let breath_clouds = game
+        .breath_clouds
+        .iter()
+        .map(|c| {
+            let uuid = game.persist.uuids.get(&c.id).copied().unwrap_or([0; 4]);
+            let raw = game.persist.raw.get(&c.id);
+            BreathSnapshot {
+                id: c.id,
+                nbt: super::super::potions::potion_cloud_to_nbt(c, uuid, raw),
+                at: c.at,
+                motion: c.motion,
+                radius: c.radius,
+                age: c.age,
+                duration: c.duration,
+                from_dragon: c.from_dragon,
+                potion_none: c.potion.is_none(),
+                victims: c.victims.clone(),
+            }
+        })
+        .collect();
+    AnchorClientState {
+        dim: game.dim,
+        chunks: (&*game.world.chunks).clone(),
+        day_time: game.world.day_time,
+        weather: game.world.weather,
+        border: game.border.clone(),
+        boss_overlay: game.boss_overlay.clone(),
+        sculk_darkness: game.sculk.darkness,
+        flash: game.flash,
+        be_anims: game.be_anims.clone(),
+        moving_pistons: game.world.moving_pistons.clone(),
+        mobs: game.mobs.clone(),
+        dropped: game.dropped.clone(),
+        orbs: game.orbs.clone(),
+        tnts: game.tnts.clone(),
+        falling: game.falling.clone(),
+        boats: game.boats.clone(),
+        carts: game.carts.clone(),
+        projectiles: game.creatures.projectiles.clone(),
+        crystals: game.crystals.clone(),
+        paintings: game.paintings.clone(),
+        item_frames: game.item_frames.clone(),
+        armor_stands: game.armor_stands.clone(),
+        cushions: game.cushions.clone(),
+        others: game.others.clone(),
+        dragon: game.dragon.as_ref().map(DragonSnapshot::from_live),
+        tridents,
+        rockets,
+        breath_clouds,
+        fangs: game.fangs.list.clone(),
+        thrown_potions: game.potions.rreturn_capture_thrown(),
+        particles: game.particles.live().cloned().collect(),
+        elder_guardians: game.particles.elder_guardians().to_vec(),
+        player: game.player.clone(),
+        yaw: game.yaw,
+        pitch: game.pitch,
+        selected: game.selected,
+        inventory: game.inventory.clone(),
+        armor: game.armor.clone(),
+        offhand: game.offhand.clone(),
+        using: game.using,
+        use_duration: game.use_duration,
+        fov_modifier: game.view.fov_modifier,
+        walk_dist: game.avatar.walk_dist,
+        bob: game.avatar.bob,
+    }
+}
+
+fn restore_anchor_client_state(game: &mut Game<'_>, anchor: AnchorClientState) {
+    if game.dim != anchor.dim {
+        game.dim = anchor.dim;
+        game.world.chunks = Default::default();
+        let num_sections = game.world.layout().sections() as i32;
+        for ((cx, cz), chunk) in anchor.chunks {
+            game.world.chunks.insert((cx, cz), chunk);
+            for s in 0..num_sections {
+                game.world.dirty_sections.insert((cx, s, cz));
+            }
+        }
+        game.world.revision = game.world.revision.wrapping_add(1);
+    }
+    game.world.day_time = anchor.day_time;
+    game.world.weather = anchor.weather;
+    game.border = anchor.border;
+    game.boss_overlay = anchor.boss_overlay;
+    game.sculk.darkness = anchor.sculk_darkness;
+    game.flash = anchor.flash;
+    let kinds = std::mem::take(&mut game.be_anims.kinds);
+    game.be_anims = anchor.be_anims;
+    if game.be_anims.kinds.is_empty() {
+        game.be_anims.kinds = kinds;
+    }
+    game.world.moving_pistons = anchor.moving_pistons;
+    game.mobs = anchor.mobs;
+    game.dropped = anchor.dropped;
+    game.orbs = anchor.orbs;
+    game.tnts = anchor.tnts;
+    game.falling = anchor.falling;
+    game.boats = anchor.boats;
+    game.carts = anchor.carts;
+    game.creatures.projectiles = anchor.projectiles;
+    game.crystals = anchor.crystals;
+    game.paintings = anchor.paintings;
+    game.item_frames = anchor.item_frames;
+    game.armor_stands = anchor.armor_stands;
+    game.cushions = anchor.cushions;
+    game.others = anchor.others;
+    if let Some(d) = anchor.dragon.and_then(|ds| ds.to_live(game.level.seed)) {
+        game.dragon.replace(d);
+    } else {
+        game.dragon.discard();
+    }
+    let registry = game.pack.assets.registry;
+    game.tridents.clear();
+    for ts in &anchor.tridents {
+        if let Some(n) = horizon_client::entity_nbt::trident_from_nbt(&ts.nbt) {
+            let mut t = horizon_gameplay::trident::ThrownTrident::from_nbt(n, &ts.nbt, registry);
+            t.id = ts.id;
+            t.previous = ts.previous;
+            t.in_ground_time = ts.in_ground_time;
+            t.no_physics = ts.no_physics;
+            t.owner = ts.owner;
+            t.guest = ts.guest;
+            game.tridents.push(t);
+        }
+    }
+    game.rockets.clear();
+    for rs in &anchor.rockets {
+        if let Some(rn) = horizon_client::entity_nbt::firework_rocket_from_nbt(&rs.nbt, None) {
+            let mut r = horizon_gameplay::fireworks::Rocket::from_nbt(rn);
+            r.id = rs.id;
+            r.attached = rs.attached;
+            r.guest = rs.guest;
+            r.owner = rs.owner;
+            r.attached_to = rs.attached_to;
+            game.rockets.push(r);
+        }
+    }
+    game.breath_clouds.clear();
+    for bs in &anchor.breath_clouds {
+        if let Some((_, mut cloud)) = super::super::potions::potion_cloud_from_nbt(&bs.nbt) {
+            cloud.id = bs.id;
+            cloud.motion = bs.motion;
+            cloud.from_dragon = bs.from_dragon;
+            cloud.victims = bs.victims.clone();
+            game.breath_clouds.push(cloud);
+        } else if bs.from_dragon || bs.potion_none {
+            game.breath_clouds.push(super::super::dragon::Breath {
+                attachment_lifetime: Default::default(),
+                join: Default::default(),
+                id: bs.id,
+                at: bs.at,
+                motion: bs.motion,
+                radius: bs.radius,
+                age: bs.age,
+                duration: bs.duration,
+                from_dragon: bs.from_dragon,
+                victims: bs.victims.clone(),
+                potion: None,
+            });
+        }
+    }
+    game.fangs.list = anchor.fangs;
+    game.potions.rreturn_restore_thrown(&anchor.thrown_potions);
+    game.particles.clear();
+    for p in anchor.particles {
+        game.particles.push(p);
+    }
+    for _ in 0..anchor.elder_guardians.len() {
+        game.particles.elder_guardian();
+    }
+    let level = horizon_client::particles::ParticleLevel {
+        world: &game.world,
+        facts: game.res.facts(),
+        collision: game.res.collision(),
+        player: anchor
+            .player
+            .as_ref()
+            .map(|p| ([p.position.x, p.position.y, p.position.z], p.velocity.y)),
+        cached_chunk: std::cell::Cell::new(None),
+    };
+    game.particles.tick(&level);
+    game.particles.sounds.clear();
+    game.player = anchor.player;
+    game.yaw = anchor.yaw;
+    game.pitch = anchor.pitch;
+    game.selected = anchor.selected;
+    game.inventory = anchor.inventory;
+    game.armor = anchor.armor;
+    game.offhand = anchor.offhand;
+    game.using = anchor.using;
+    game.use_duration = anchor.use_duration;
+    game.view.fov_modifier = anchor.fov_modifier;
+    game.view.old_fov_modifier = anchor.fov_modifier;
+    game.avatar.walk_dist = anchor.walk_dist;
+    game.avatar.walk_dist_o = anchor.walk_dist;
+    game.avatar.bob = anchor.bob;
+    game.avatar.bob_o = anchor.bob;
+    game.snap_player_model_pitch();
+}
 
 pub struct ScrubSession {
     pub active: bool,
@@ -24,6 +335,7 @@ pub struct ScrubSession {
     pub start_time: Option<Instant>,
     pub applied_block_tick: i64,
     pub was_frozen_before_scrub: bool,
+    pub server_was_frozen_before_scrub: bool,
 }
 
 impl Default for ScrubSession {
@@ -39,18 +351,20 @@ impl Default for ScrubSession {
             start_time: None,
             applied_block_tick: 0,
             was_frozen_before_scrub: false,
+            server_was_frozen_before_scrub: false,
         }
     }
 }
 
 static SESSION: OnceLock<Mutex<ScrubSession>> = OnceLock::new();
+static SCRUB_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 fn session_lock() -> &'static Mutex<ScrubSession> {
     SESSION.get_or_init(|| Mutex::new(ScrubSession::default()))
 }
 
 pub fn is_scrubbing() -> bool {
-    session_lock().lock().map(|s| s.active).unwrap_or(false)
+    SCRUB_ACTIVE.load(std::sync::atomic::Ordering::Acquire)
 }
 
 pub fn snap_scrub_time_to_target() {
@@ -100,6 +414,12 @@ pub fn start_scrub(game: &mut Game<'_>) {
         game.native_chat(&tr("command.rreturn.no_permission"));
         return;
     }
+    let server_range = if let Some(server) = &game.integrated {
+        server.call(|_| server_scrub_time_range()).flatten()
+    } else {
+        server_scrub_time_range()
+    };
+
     let mut s = match session_lock().lock() {
         Ok(guard) => guard,
         Err(_) => return,
@@ -109,7 +429,14 @@ pub fn start_scrub(game: &mut Game<'_>) {
     }
 
     let now_tick = game.world.game_time;
-    let (min_tick, max_tick) = with_scrub_ring(|r| r.time_range()).unwrap_or((now_tick, now_tick));
+    let client_range = with_scrub_ring(|r| r.time_range());
+
+    let (min_tick, max_tick) = match (client_range, server_range) {
+        (Some((cmin, cmax)), Some((smin, smax))) => (cmin.max(smin), cmax.max(smax)),
+        (Some(cr), None) => cr,
+        (None, Some(sr)) => sr,
+        (None, None) => (now_tick, now_tick),
+    };
 
     s.active = true;
     s.anchor_tick = now_tick.max(max_tick);
@@ -121,6 +448,15 @@ pub fn start_scrub(game: &mut Game<'_>) {
     s.start_time = Some(Instant::now());
     s.applied_block_tick = s.anchor_tick;
     s.was_frozen_before_scrub = game.clock.frozen();
+    let was_frozen = s.was_frozen_before_scrub;
+    let start_t = s.current_time;
+    SCRUB_ACTIVE.store(true, std::sync::atomic::Ordering::Release);
+    drop(s);
+
+    let anchor_snapshot = capture_anchor_client_state(game);
+    ANCHOR_STATE.with(|cell| {
+        *cell.borrow_mut() = Some(anchor_snapshot);
+    });
 
     with_scrub_ring_mut(|r| {
         if r.reference_chunks.is_empty() {
@@ -129,17 +465,29 @@ pub fn start_scrub(game: &mut Game<'_>) {
         }
     });
 
-    // Stop any ongoing mining / block breaking
     game.stop_mining();
-
-    // Freeze game clock so physics and mob ticking pause during scrub on client
     game.clock.set_frozen(true);
 
-    // Freeze integrated server clock so server mob AI/physics pause immediately
-    if let Some(server) = &game.integrated {
-        server.call(|srv| {
-            srv.clock.set_frozen(true);
-        });
+    let srv_frozen = if let Some(server) = &game.integrated {
+        server
+            .call(|srv| {
+                let prev = srv.clock.frozen();
+                srv.clock.set_frozen(true);
+                if let Some(host) = srv.lan.as_ref() {
+                    let pkt = C::TickingState(play::TickingState {
+                        rate: srv.clock.rate(),
+                        frozen: true,
+                    });
+                    host.hub.broadcast_level(&pkt);
+                }
+                prev
+            })
+            .unwrap_or(false)
+    } else {
+        was_frozen
+    };
+    if let Ok(mut s) = session_lock().lock() {
+        s.server_was_frozen_before_scrub = srv_frozen;
     }
 
     if let Some(r) = game.remote.as_mut() {
@@ -149,8 +497,6 @@ pub fn start_scrub(game: &mut Game<'_>) {
         r.head_lerps.clear();
     }
 
-    let start_t = s.current_time;
-    drop(s);
     apply_interpolated_poses_to_game(game, start_t);
 }
 
@@ -210,14 +556,29 @@ pub fn on_frame_render_pre(game: &mut Game<'_>, _world_partial: f32, _partial: f
     let target_t = s.current_time;
     let old_applied = s.applied_block_tick;
     let new_applied = target_t.round() as i64;
+    let accel = s.jog_accel;
     s.applied_block_tick = new_applied;
     drop(s);
 
+    let t_frame_start = std::time::Instant::now();
     apply_interpolated_poses_to_game(game, target_t);
+    let mut block_rewind_us = 0;
     if old_applied != new_applied {
+        let t_br_0 = std::time::Instant::now();
         apply_block_rewind_to_game(game, old_applied, new_applied);
-        apply_timeline_sounds_to_game(game, old_applied, new_applied);
+        block_rewind_us = t_br_0.elapsed().as_micros() as u64;
+        apply_timeline_sounds_to_game(game, old_applied, new_applied, accel);
     }
+    let total_render_us = t_frame_start.elapsed().as_micros() as u64;
+    record_frame_render_perf(
+        total_render_us,
+        0,
+        0,
+        0,
+        0,
+        block_rewind_us,
+        0,
+    );
 }
 
 pub fn commit_scrub(game: &mut Game<'_>) {
@@ -233,98 +594,110 @@ pub fn commit_scrub(game: &mut Game<'_>) {
     let anchor = s.anchor_tick;
     let final_time = s.current_time;
     let was_frozen = s.was_frozen_before_scrub;
+    let srv_was_frozen = s.server_was_frozen_before_scrub;
     s.active = false;
+    SCRUB_ACTIVE.store(false, std::sync::atomic::Ordering::Release);
     s.start_time = None;
     s.jog_accel = 1.0;
     s.applied_block_tick = final_tick;
     drop(s);
 
+    game.extras.frame_partial_ticks = None;
+    let saved_anchor = ANCHOR_STATE.with(|cell| cell.borrow_mut().take());
+
     if final_tick < anchor {
-        let (mob_poses, _player_pos, _player_yaw, _player_pitch) = with_scrub_ring(|ring| {
-            if let Some((left, right, alpha)) = ring.find_frame_pair(final_time) {
-                let a64 = f64::from(alpha);
-                let p_pos = [
-                    lerp_f64(left.player_pos[0], right.player_pos[0], a64),
-                    lerp_f64(left.player_pos[1], right.player_pos[1], a64),
-                    lerp_f64(left.player_pos[2], right.player_pos[2], a64),
-                ];
-                let p_yaw = lerp_angle(left.player_yaw, right.player_yaw, alpha);
-                let p_pitch = lerp_f32(left.player_pitch, right.player_pitch, alpha);
-
-                let mut poses = Vec::new();
-                let mut right_mobs_by_id = FxHashMap::default();
-                for m in &right.mobs {
-                    right_mobs_by_id.insert(m.id, m);
-                }
-                for left_mob in &left.mobs {
-                    if let Some(right_mob) = right_mobs_by_id.get(&left_mob.id) {
-                        poses.push((left_mob.id, interpolate_mob_pose(left_mob, right_mob, alpha)));
-                    } else {
-                        poses.push((left_mob.id, InterpolatedMobPose {
-                            pos: left_mob.pos,
-                            yaw: left_mob.yaw,
-                            body_yaw: left_mob.body_yaw,
-                            head_yaw: left_mob.head_yaw,
-                            head_pitch: left_mob.head_pitch,
-                            limb_position: left_mob.limb_position,
-                            limb_speed: left_mob.limb_speed,
-                            attack_anim: left_mob.attack_anim,
-                            swell: left_mob.swell,
-                            health: left_mob.health,
-                            alive: left_mob.alive,
-                            hurt_time: left_mob.hurt_time,
-                            death_time: left_mob.death_time,
-                        }));
-                    }
-                }
-                (poses, p_pos, p_yaw, p_pitch)
-            } else {
-                (Vec::new(), [0.0; 3], 0.0, 0.0)
-            }
-        });
-
+        let t_commit_start = std::time::Instant::now();
         apply_interpolated_poses_to_game(game, final_time);
+        game.extras.frame_partial_ticks = None;
 
-        let valid_mob_ids: HashSet<u32> = mob_poses.iter().map(|(id, _)| *id).collect();
-        if !valid_mob_ids.is_empty() {
-            game.mobs.retain_mut(|m| valid_mob_ids.contains(&m.id));
-        }
-
-        let did_rollback = if let Some(server) = &game.integrated {
-            server.call(move |srv| {
-                if let Some(snap) = get_server_snapshot_for_tick(final_tick) {
-                    apply_timeline_snapshot_on_server(
-                        srv,
-                        &snap,
-                        RollbackOrigin::ScrubSnapshot {
-                            target_tick: final_tick,
-                            touched_unloaded: Vec::new(),
-                            future_region_files: Vec::new(),
-                        },
-                    )
-                } else {
-                    false
-                }
-            }).unwrap_or(false)
-        } else if let Some(snap) = get_server_snapshot_for_tick(final_tick) {
-            apply_timeline_snapshot_on_server(
-                game,
-                &snap,
-                RollbackOrigin::ScrubSnapshot {
-                    target_tick: final_tick,
-                    touched_unloaded: Vec::new(),
-                    future_region_files: Vec::new(),
-                },
-            )
+        let (did_rollback, restored_frozen, mat_us, srb_us) = if let Some(server) = &game.integrated {
+            server
+                .call(move |srv| {
+                    let t_mat_0 = std::time::Instant::now();
+                    if let Some((snap, touched_unloaded, future_region_files)) =
+                        materialize_server_scrub(srv, final_tick)
+                    {
+                        let mat_us = t_mat_0.elapsed().as_micros() as u64;
+                        let t_srb_0 = std::time::Instant::now();
+                        let ok = apply_timeline_snapshot_on_server(
+                            srv,
+                            &snap,
+                            RollbackOrigin::ScrubSnapshot {
+                                target_tick: final_tick,
+                                touched_unloaded,
+                                future_region_files,
+                            },
+                        );
+                        let srb_us = t_srb_0.elapsed().as_micros() as u64;
+                        if ok {
+                            truncate_server_scrub_after(snap.game_time);
+                        }
+                        let frozen = srv.clock.frozen();
+                        if let Some(host) = srv.lan.as_ref() {
+                            let pkt = C::TickingState(play::TickingState {
+                                rate: srv.clock.rate(),
+                                frozen,
+                            });
+                            host.hub.broadcast_level(&pkt);
+                        }
+                        (ok, frozen, mat_us, srb_us)
+                    } else {
+                        srv.clock.set_frozen(srv_was_frozen);
+                        (false, srv_was_frozen, 0, 0)
+                    }
+                })
+                .unwrap_or((false, was_frozen, 0, 0))
         } else {
-            false
+            let t_mat_0 = std::time::Instant::now();
+            if let Some((snap, touched_unloaded, future_region_files)) =
+                materialize_server_scrub(game, final_tick)
+            {
+                let mat_us = t_mat_0.elapsed().as_micros() as u64;
+                let t_srb_0 = std::time::Instant::now();
+                let ok = apply_timeline_snapshot_on_server(
+                    game,
+                    &snap,
+                    RollbackOrigin::ScrubSnapshot {
+                        target_tick: final_tick,
+                        touched_unloaded,
+                        future_region_files,
+                    },
+                );
+                let srb_us = t_srb_0.elapsed().as_micros() as u64;
+                if ok {
+                    truncate_server_scrub_after(snap.game_time);
+                }
+                (ok, game.clock.frozen(), mat_us, srb_us)
+            } else {
+                (false, was_frozen, 0, 0)
+            }
         };
 
+        let mut crb_us = 0;
         if did_rollback {
             game.close_container();
             game.screen = super::super::Screen::Playing;
+            let t_crb_0 = std::time::Instant::now();
             apply_client_level_rollback(game, "scrub");
+            crb_us = t_crb_0.elapsed().as_micros() as u64;
+        } else if let Some(anchor_state) = saved_anchor {
+            restore_anchor_client_state(game, anchor_state);
         }
+
+        let total_commit_us = t_commit_start.elapsed().as_micros() as u64;
+        record_commit_perf(total_commit_us, mat_us, srb_us, crb_us);
+
+        game.clock.set_frozen(restored_frozen);
+
+        with_scrub_ring_mut(|r| {
+            r.frames.retain(|f| f.game_time <= final_tick);
+            r.checkpoint_markers.retain(|&t| t <= final_tick);
+            r.dim_markers.retain(|&(t, _)| t <= final_tick);
+            r.damage_markers.retain(|&t| t <= final_tick);
+            r.reference_chunks = (&*game.world.chunks).clone();
+            r.last_world_revision = game.world.revision;
+            r.last_dim = Some(game.dim);
+        });
 
         let sound = mod_api::SoundPlay::ui("minecraft:block.respawn_anchor.deplete");
         game.play_local_sound(&sound, 0);
@@ -332,21 +705,26 @@ pub fn commit_scrub(game: &mut Game<'_>) {
         let dt = (anchor - final_tick) as f64 / 20.0;
         let dt_str = format!("{:.1}", dt);
         game.native_chat(&tr_args("message.rreturn.scrub.commit", &[&dt_str]));
-    }
-
-    with_scrub_ring_mut(|r| {
-        if final_tick < anchor {
-            r.frames.retain(|f| f.game_time <= final_tick);
-            r.keyframes.retain(|(t, _)| *t <= final_tick);
+    } else {
+        if let Some(anchor_state) = saved_anchor {
+            restore_anchor_client_state(game, anchor_state);
         }
-        r.reference_chunks = (&*game.world.chunks).clone();
-        r.last_world_revision = game.world.revision;
-    });
-
-    game.clock.set_frozen(was_frozen);
-    if let Some(server) = &game.integrated {
-        server.call(|srv| {
-            srv.clock.set_frozen(was_frozen);
+        game.clock.set_frozen(was_frozen);
+        if let Some(server) = &game.integrated {
+            server.call(move |srv| {
+                srv.clock.set_frozen(srv_was_frozen);
+                if let Some(host) = srv.lan.as_ref() {
+                    let pkt = C::TickingState(play::TickingState {
+                        rate: srv.clock.rate(),
+                        frozen: srv_was_frozen,
+                    });
+                    host.hub.broadcast_level(&pkt);
+                }
+            });
+        }
+        with_scrub_ring_mut(|r| {
+            r.reference_chunks = (&*game.world.chunks).clone();
+            r.last_world_revision = game.world.revision;
         });
     }
 }
@@ -363,35 +741,27 @@ pub fn cancel_scrub(game: &mut Game<'_>) {
     let anchor = s.anchor_tick;
     let applied = s.applied_block_tick;
     let was_frozen = s.was_frozen_before_scrub;
+    let srv_was_frozen = s.server_was_frozen_before_scrub;
     s.active = false;
+    SCRUB_ACTIVE.store(false, std::sync::atomic::Ordering::Release);
     s.start_time = None;
     s.current_time = anchor as f64;
     s.target_time = anchor as f64;
     s.applied_block_tick = anchor;
     drop(s);
 
+    game.extras.frame_partial_ticks = None;
+
     if applied != anchor {
         apply_block_rewind_to_game(game, applied, anchor);
-        apply_timeline_sounds_to_game(game, applied, anchor);
     }
-    apply_interpolated_poses_to_game(game, anchor as f64);
-    let player_sync = game.player.as_ref().map(|p| (p.position, game.yaw, game.pitch));
-    if let Some((pos, yaw, pitch)) = player_sync {
-        if let Some(server) = &game.integrated {
-            server.call(move |srv| {
-                if let Some(sp) = srv.player.as_mut() {
-                    sp.position = pos;
-                    sp.old_position = pos;
-                    sp.velocity = Default::default();
-                    sp.yaw = yaw;
-                    sp.head_yaw = yaw;
-                    sp.pitch = pitch;
-                    sp.teleported = true;
-                }
-                srv.yaw = yaw;
-                srv.pitch = pitch;
-            });
-        }
+
+    let saved_anchor = ANCHOR_STATE.with(|cell| cell.borrow_mut().take());
+    if let Some(anchor_state) = saved_anchor {
+        restore_anchor_client_state(game, anchor_state);
+    } else {
+        apply_interpolated_poses_to_game(game, anchor as f64);
+        game.extras.frame_partial_ticks = None;
     }
 
     with_scrub_ring_mut(|r| {
@@ -404,8 +774,15 @@ pub fn cancel_scrub(game: &mut Game<'_>) {
 
     game.clock.set_frozen(was_frozen);
     if let Some(server) = &game.integrated {
-        server.call(|srv| {
-            srv.clock.set_frozen(was_frozen);
+        server.call(move |srv| {
+            srv.clock.set_frozen(srv_was_frozen);
+            if let Some(host) = srv.lan.as_ref() {
+                let pkt = C::TickingState(play::TickingState {
+                    rate: srv.clock.rate(),
+                    frozen: srv_was_frozen,
+                });
+                host.hub.broadcast_level(&pkt);
+            }
         });
     }
     game.native_chat(&tr("message.rreturn.scrub.cancel"));
@@ -422,8 +799,8 @@ pub fn render_hud(game: &Game<'_>, draw: &mut horizon_client::hud::HudBatch) {
         return;
     }
 
-    let box_w = 320.0f32;
-    let box_h = 42.0f32;
+    let box_w = 380.0f32;
+    let box_h = 46.0f32;
     let x = (w - box_w) * 0.5;
     let y = h - box_h - 40.0;
 
@@ -431,17 +808,48 @@ pub fn render_hud(game: &Game<'_>, draw: &mut horizon_client::hud::HudBatch) {
     game.native_fill(draw, [x, y, box_w, 2.0], 0xFF00D2FF);
 
     let bar_x = x + 12.0;
-    let bar_y = y + 24.0;
+    let bar_y = y + 26.0;
     let bar_w = box_w - 24.0;
-    let bar_h = 4.0;
+    let bar_h = 5.0;
     game.native_fill(draw, [bar_x, bar_y, bar_w, bar_h], 0x80303038);
 
     let total_range = (max_t - min_t).max(1) as f64;
+
+    with_scrub_ring(|ring| {
+        for &cp_t in &ring.checkpoint_markers {
+            if cp_t >= min_t && cp_t <= max_t {
+                let frac = ((cp_t - min_t) as f64 / total_range).clamp(0.0, 1.0) as f32;
+                let mx = bar_x + bar_w * frac;
+                game.native_fill(draw, [mx - 1.0, bar_y - 3.0, 2.0, bar_h + 6.0], 0xFFFFD700);
+            }
+        }
+        for &(dim_t, dim) in &ring.dim_markers {
+            if dim_t >= min_t && dim_t <= max_t {
+                let frac = ((dim_t - min_t) as f64 / total_range).clamp(0.0, 1.0) as f32;
+                let mx = bar_x + bar_w * frac;
+                let color = match dim {
+                    Dim::Overworld => 0xFF44DD55,
+                    Dim::Nether => 0xFFCC44FF,
+                    Dim::End => 0xFFFFFF55,
+                    Dim::Extra(_) => 0xFF55AAFF,
+                };
+                game.native_fill(draw, [mx - 1.0, bar_y - 2.0, 2.0, bar_h + 4.0], color);
+            }
+        }
+        for &dmg_t in &ring.damage_markers {
+            if dmg_t >= min_t && dmg_t <= max_t {
+                let frac = ((dmg_t - min_t) as f64 / total_range).clamp(0.0, 1.0) as f32;
+                let mx = bar_x + bar_w * frac;
+                game.native_fill(draw, [mx, bar_y - 1.0, 2.0, bar_h + 2.0], 0xFFFF3333);
+            }
+        }
+    });
+
     let progress = ((curr - min_t as f64) / total_range).clamp(0.0, 1.0) as f32;
     let fill_w = bar_w * progress;
     game.native_fill(draw, [bar_x, bar_y, fill_w, bar_h], 0xFF00E5FF);
     let pip_x = (bar_x + fill_w - 2.0).clamp(bar_x, bar_x + bar_w - 4.0);
-    game.native_fill(draw, [pip_x, bar_y - 2.0, 4.0, 8.0], 0xFFFFFFFF);
+    game.native_fill(draw, [pip_x, bar_y - 2.0, 4.0, bar_h + 4.0], 0xFFFFFFFF);
 
     let delta_ticks = (curr - max_t as f64).round() as i64;
     let delta_sec = (delta_ticks as f64) / 20.0;
@@ -449,9 +857,22 @@ pub fn render_hud(game: &Game<'_>, draw: &mut horizon_client::hud::HudBatch) {
     let mins = (abs_sec / 60.0).floor() as i64;
     let secs = abs_sec % 60.0;
 
-    let time_str = format!("{} {:02}:{:04.1}s", if delta_ticks < 0 { "REWIND" } else { "LIVE" }, mins, secs);
-    let hint_str = "[Wheel] Scrub  [U / Enter] Apply  [Esc] Cancel";
+    let dim_tag = match game.dim {
+        Dim::Overworld => "OW",
+        Dim::Nether => "NETHER",
+        Dim::End => "END",
+        Dim::Extra(_) => "DIM",
+    };
+
+    let time_str = format!(
+        "{} {:02}:{:04.1}s [{}]",
+        if delta_ticks < 0 { "REWIND" } else { "LIVE" },
+        mins,
+        secs,
+        dim_tag
+    );
+    let hint_str = "[Wheel/A/D] Scrub  [U/Enter] Apply  [Esc] Cancel";
 
     game.native_text(draw, &time_str, [x + 12.0, y + 8.0], 0xFFFFFFFF, true);
-    game.native_text(draw, hint_str, [x + 120.0, y + 8.0], 0xFFAAAAAA, false);
+    game.native_text(draw, hint_str, [x + 168.0, y + 8.0], 0xFFAAAAAA, false);
 }

@@ -423,25 +423,36 @@ pub fn apply_level_snapshot_in_place(
                 });
             }
         }
-        game.potions.clear_thrown();
+        game.potions.rreturn_restore_thrown(&snap.thrown_potions);
         game.potions.clouds.clear();
     }
 
     if policy.world_raids {
-        let path = raids_dat_path(&game.world_root, dim);
-        match &snap.raids_dat {
-            Some(bytes) => {
+        if let Some(raids) = &snap.raids_mem {
+            game.raiding.raids = raids.clone();
+            if let Some(bytes) = &snap.raids_dat {
+                let path = raids_dat_path(&game.world_root, dim);
                 if let Some(parent) = path.parent() {
                     let _ = fs::create_dir_all(parent);
                 }
                 let _ = fs::write(&path, bytes);
             }
-            None => {
-                let _ = fs::remove_file(&path);
+        } else {
+            let path = raids_dat_path(&game.world_root, dim);
+            match &snap.raids_dat {
+                Some(bytes) => {
+                    if let Some(parent) = path.parent() {
+                        let _ = fs::create_dir_all(parent);
+                    }
+                    let _ = fs::write(&path, bytes);
+                }
+                None => {
+                    let _ = fs::remove_file(&path);
+                }
             }
+            game.raiding.loaded = None;
+            game.load_raids();
         }
-        game.raiding.loaded = None;
-        game.load_raids();
     }
 
     game.spawn_scratch = Default::default();

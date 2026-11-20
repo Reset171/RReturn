@@ -1,84 +1,8 @@
 use super::super::{Game, Mob};
+use super::scrub_audio::play_scrub_sounds;
 use super::scrub_timeline::{with_scrub_ring, MobPoseRecord};
 use horizon_client::fast_hash::FxHashMap;
-use horizon_core::random::{LegacyRandom, RandomSource};
-use std::path::{Path, PathBuf};
-use std::sync::Mutex;
-
-static REVERSE_AUDIO_CACHE: Mutex<Option<FxHashMap<String, (Vec<f32>, u32)>>> = Mutex::new(None);
-
-fn decode_ogg_file(path: &Path) -> Option<(Vec<f32>, u32)> {
-    use symphonia::core::{
-        audio::SampleBuffer, codecs::DecoderOptions, formats::FormatOptions, io::MediaSourceStream,
-        meta::MetadataOptions, probe::Hint,
-    };
-    let file = std::fs::File::open(path).ok()?;
-    let stream = MediaSourceStream::new(Box::new(file), Default::default());
-    let mut hint = Hint::new();
-    hint.with_extension("ogg");
-    let probed = symphonia::default::get_probe()
-        .format(
-            &hint,
-            stream,
-            &FormatOptions::default(),
-            &MetadataOptions::default(),
-        )
-        .ok()?;
-    let mut format = probed.format;
-    let track = format.default_track()?;
-    let id = track.id;
-    let rate = track.codec_params.sample_rate?;
-    let mut decoder = symphonia::default::get_codecs()
-        .make(&track.codec_params, &DecoderOptions::default())
-        .ok()?;
-    let mut mono_samples = Vec::new();
-    while let Ok(packet) = format.next_packet() {
-        if packet.track_id() != id {
-            continue;
-        }
-        let Ok(buffer) = decoder.decode(&packet) else {
-            continue;
-        };
-        let spec = *buffer.spec();
-        let frame_channels = spec.channels.count().max(1);
-        let mut decoded = SampleBuffer::<f32>::new(buffer.capacity() as u64, spec);
-        decoded.copy_interleaved_ref(buffer);
-        let raw_samples = decoded.samples();
-        if frame_channels == 1 {
-            mono_samples.extend_from_slice(raw_samples);
-        } else {
-            for frame in raw_samples.chunks(frame_channels) {
-                let sum: f32 = frame.iter().sum();
-                mono_samples.push(sum / frame_channels as f32);
-            }
-        }
-    }
-    if mono_samples.is_empty() {
-        None
-    } else {
-        Some((mono_samples, rate))
-    }
-}
-
-fn resolve_sound_file(resources_dir: &Path, namespace: &str, sound_path: &str) -> Option<PathBuf> {
-    let candidate1 = resources_dir.join("assets").join(namespace).join(sound_path);
-    if candidate1.exists() {
-        return Some(candidate1);
-    }
-    if let Ok(cwd) = std::env::current_dir() {
-        let candidate2 = cwd.join(resources_dir).join("assets").join(namespace).join(sound_path);
-        if candidate2.exists() {
-            return Some(candidate2);
-        }
-    }
-    if let Ok(data_home) = std::env::var("XDG_DATA_HOME") {
-        let p = PathBuf::from(data_home).join("horizon/assets").join(namespace).join(sound_path);
-        if p.exists() {
-            return Some(p);
-        }
-    }
-    None
-}
+use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug)]
 pub struct InterpolatedMobPose {
@@ -459,6 +383,22 @@ pub fn apply_block_rewind_to_game(game: &mut Game<'_>, from_tick: i64, to_tick: 
                     break;
                 }
                 if frame.game_time <= from_tick {
+                    for swap in frame.section_swaps.iter().rev() {
+                        if let Some(chunk_arc) = game.world.chunks.get_mut(&(swap.cx, swap.cz)) {
+                            if let Some(chunk) = Arc::get_mut(chunk_arc) {
+                                if let Some(sec) = chunk.sections.get_mut(swap.s_idx) {
+                                    *sec = swap.old_section.clone();
+                                }
+                            } else {
+                                let mut chunk = (**chunk_arc).clone();
+                                if let Some(sec) = chunk.sections.get_mut(swap.s_idx) {
+                                    *sec = swap.old_section.clone();
+                                }
+                                *chunk_arc = Arc::new(chunk);
+                            }
+                            game.world.dirty_sections.insert((swap.cx, swap.s_idx as i32, swap.cz));
+                        }
+                    }
                     for delta in frame.block_deltas.iter().rev() {
                         let _ = game.world.set(
                             delta.x,
@@ -476,6 +416,22 @@ pub fn apply_block_rewind_to_game(game: &mut Game<'_>, from_tick: i64, to_tick: 
                     break;
                 }
                 if frame.game_time > from_tick {
+                    for swap in frame.section_swaps.iter() {
+                        if let Some(chunk_arc) = game.world.chunks.get_mut(&(swap.cx, swap.cz)) {
+                            if let Some(chunk) = Arc::get_mut(chunk_arc) {
+                                if let Some(sec) = chunk.sections.get_mut(swap.s_idx) {
+                                    *sec = swap.new_section.clone();
+                                }
+                            } else {
+                                let mut chunk = (**chunk_arc).clone();
+                                if let Some(sec) = chunk.sections.get_mut(swap.s_idx) {
+                                    *sec = swap.new_section.clone();
+                                }
+                                *chunk_arc = Arc::new(chunk);
+                            }
+                            game.world.dirty_sections.insert((swap.cx, swap.s_idx as i32, swap.cz));
+                        }
+                    }
                     for delta in frame.block_deltas.iter() {
                         let _ = game.world.set(
                             delta.x,
@@ -490,17 +446,22 @@ pub fn apply_block_rewind_to_game(game: &mut Game<'_>, from_tick: i64, to_tick: 
     });
 }
 
-pub fn apply_timeline_sounds_to_game(game: &Game<'_>, from_tick: i64, to_tick: i64) {
+pub fn apply_timeline_sounds_to_game(
+    game: &Game<'_>,
+    from_tick: i64,
+    to_tick: i64,
+    jog_accel: f64,
+) {
     if from_tick == to_tick {
         return;
     }
+
+    let mut sounds_to_play = Vec::new();
 
     with_scrub_ring(|ring| {
         if ring.frames.is_empty() {
             return;
         }
-
-        let mut sounds_to_play = Vec::new();
 
         if to_tick < from_tick {
             // Rewinding backwards in time: gather sounds in reverse chronological order
@@ -527,66 +488,9 @@ pub fn apply_timeline_sounds_to_game(game: &Game<'_>, from_tick: i64, to_tick: i
                 }
             }
         }
-
-        let mut rng = LegacyRandom::new(42);
-        for (idx, (s, backwards)) in sounds_to_play.into_iter().take(3).enumerate() {
-            let at = if s.relative { None } else { Some(s.position) };
-            if backwards {
-                // True backwards audio waveform playback: decode OGG, reverse PCM samples, play via push_voice
-                let mut played = false;
-                if let Some(sound_def) = game.audio.engine.registry.sound(&s.identifier, &mut rng) {
-                    let (namespace, sound_path) = sound_def.path();
-                    let cache_key = format!("{namespace}:{sound_path}");
-
-                    let mut cached_samples = None;
-                    if let Ok(mut lock) = REVERSE_AUDIO_CACHE.lock() {
-                        let map = lock.get_or_insert_with(FxHashMap::default);
-                        if let Some(entry) = map.get(&cache_key) {
-                            cached_samples = Some(entry.clone());
-                        }
-                    }
-
-                    if cached_samples.is_none() {
-                        if let Some(file_path) = resolve_sound_file(&game.options.resources, namespace, &sound_path) {
-                            if let Some((mut samples, rate)) = decode_ogg_file(&file_path) {
-                                samples.reverse();
-                                if let Ok(mut lock) = REVERSE_AUDIO_CACHE.lock() {
-                                    let map = lock.get_or_insert_with(FxHashMap::default);
-                                    map.insert(cache_key.clone(), (samples.clone(), rate));
-                                }
-                                cached_samples = Some((samples, rate));
-                            }
-                        }
-                    }
-
-                    if let Some((samples, rate)) = cached_samples {
-                        let source_id = ((to_tick as u128) << 32) ^ (idx as u128) ^ 0x52524554;
-                        if game.audio.push_voice("rreturn", source_id, &samples, rate, at) {
-                            played = true;
-                        }
-                    }
-                }
-
-                if !played {
-                    let mut sound = if s.relative {
-                        mod_api::SoundPlay::ui(&s.identifier)
-                    } else {
-                        mod_api::SoundPlay::at(&s.identifier, mod_api::SoundSource::Records, s.position)
-                    };
-                    sound.pitch = 0.85;
-                    sound.volume = 0.9;
-                    game.play_local_sound(&sound, 0);
-                }
-            } else {
-                let mut sound = if s.relative {
-                    mod_api::SoundPlay::ui(&s.identifier)
-                } else {
-                    mod_api::SoundPlay::at(&s.identifier, mod_api::SoundSource::Records, s.position)
-                };
-                sound.pitch = 1.0;
-                sound.volume = 0.9;
-                game.play_local_sound(&sound, 0);
-            }
-        }
     });
+
+    if !sounds_to_play.is_empty() {
+        play_scrub_sounds(game, sounds_to_play, to_tick, jog_accel);
+    }
 }

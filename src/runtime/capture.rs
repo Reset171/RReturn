@@ -2,6 +2,7 @@ use super::super::{
     Dim, Game,
 };
 use super::persistence::{save_checkpoint_to_disk, save_slot_to_disk};
+use super::scrub_perf::*;
 use super::snapshots::*;
 use super::types::*;
 use horizon_client::{
@@ -23,6 +24,45 @@ use std::{
     sync::Arc,
 };
 
+pub fn snapshot_stopwatches_elapsed(sw: &Stopwatches) -> BTreeMap<String, i64> {
+    let mut out = BTreeMap::new();
+    for id in sw.ids() {
+        if let Some(secs) = sw.elapsed_seconds(&id) {
+            out.insert(id, (secs * 1000.0).round() as i64);
+        }
+    }
+    out
+}
+
+pub fn restore_stopwatches_elapsed(
+    world_root: &Path,
+    elapsed: &BTreeMap<String, i64>,
+) -> Stopwatches {
+    if elapsed.is_empty() {
+        return Stopwatches::default();
+    }
+    let tmp_root = world_root.join("rreturn").join(".scrub_sw_tmp");
+    let dat_path = tmp_root.join("data/minecraft/stopwatches.dat");
+    if let Some(parent) = dat_path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let map: horizon_core::nbt::Compound = elapsed
+        .iter()
+        .map(|(k, &ms)| (k.as_str().into(), Tag::Long(ms)))
+        .collect();
+    let tag = Tag::compound([
+        ("data", Tag::compound([("stopwatches", Tag::Compound(map))])),
+        ("DataVersion", Tag::Int(horizon_core::version::DATA_VERSION)),
+    ]);
+    let restored = if write_dat(&dat_path, tag).is_ok() {
+        Stopwatches::load(&tmp_root)
+    } else {
+        Stopwatches::default()
+    };
+    let _ = fs::remove_dir_all(&tmp_root);
+    restored
+}
+
 pub fn capture_chunk_ticks(
     chunks: &FxHashMap<(i32, i32), Arc<Chunk>>,
     ticks: &Ticks,
@@ -30,9 +70,18 @@ pub fn capture_chunk_ticks(
     let mut out = HashMap::new();
     for &(cx, cz) in chunks.keys() {
         let cpos = ChunkPos::new(cx, cz);
-        let b = ticks.blocks.chunk(cpos).cloned().unwrap_or_default();
-        let f = ticks.fluids.chunk(cpos).cloned().unwrap_or_default();
-        out.insert((cx, cz), (b, f));
+        let b = ticks.blocks.chunk(cpos);
+        let f = ticks.fluids.chunk(cpos);
+        if b.is_some_and(|t| !t.positions.is_empty()) || f.is_some_and(|t| !t.positions.is_empty())
+        {
+            out.insert(
+                (cx, cz),
+                (
+                    b.cloned().unwrap_or_default(),
+                    f.cloned().unwrap_or_default(),
+                ),
+            );
+        }
     }
     out
 }
@@ -70,13 +119,30 @@ pub fn backup_offline_files(world_root: &Path) -> HashMap<PathBuf, Vec<u8>> {
 }
 
 pub fn capture_level_snapshot(game: &Game<'_>, dim: Dim) -> LevelSnapshot {
-    let raids_dat = fs::read(raids_dat_path(&game.world_root, dim)).ok();
+    capture_level_snapshot_opts(game, dim, true)
+}
+
+pub fn capture_level_snapshot_in_memory(game: &Game<'_>, dim: Dim) -> LevelSnapshot {
+    capture_level_snapshot_opts(game, dim, false)
+}
+
+fn capture_level_snapshot_opts(game: &Game<'_>, dim: Dim, read_disk_raids: bool) -> LevelSnapshot {
+    let t_ch_0 = std::time::Instant::now();
+    let raids_dat = if read_disk_raids {
+        fs::read(raids_dat_path(&game.world_root, dim)).ok()
+    } else {
+        None
+    };
+    let raids_mem = Some(game.raiding.raids.clone());
     let chunks_map: FxHashMap<(i32, i32), Arc<Chunk>> = (&*game.world.chunks).clone();
     let mut be_attachments = Vec::new();
     for &(cx, cz) in chunks_map.keys() {
         be_attachments.extend(game.world.block_entities.chunk_attachments(cx, cz));
     }
     let chunk_ticks = capture_chunk_ticks(&chunks_map, &game.block_ticks);
+    let t_ch = t_ch_0.elapsed();
+
+    let t_ent_0 = std::time::Instant::now();
     let registry = game.pack.assets.registry;
     let tridents = game
         .tridents
@@ -189,7 +255,18 @@ pub fn capture_level_snapshot(game: &Game<'_>, dim: Dim) -> LevelSnapshot {
         piston_pushes: game.block_ticks.piston_pushes.clone(),
         block_events: game.block_ticks.block_events.clone(),
         hoppers: game.hoppers.clone(),
-        mobs: game.mobs.clone(),
+        mobs: {
+            let t_mb_0 = std::time::Instant::now();
+            let mb = game.mobs.clone();
+            let t_mb = t_mb_0.elapsed();
+            let t_ent = t_ent_0.elapsed();
+            record_raw_capture_sub_perf(
+                t_ch.as_micros() as u64,
+                t_mb.as_micros() as u64,
+                t_ent.as_micros() as u64,
+            );
+            mb
+        },
         dropped: game.dropped.clone(),
         orbs: game.orbs.clone(),
         projectiles: game.creatures.projectiles.clone(),
@@ -207,11 +284,13 @@ pub fn capture_level_snapshot(game: &Game<'_>, dim: Dim) -> LevelSnapshot {
         tridents,
         rockets,
         breath_clouds,
+        thrown_potions: game.potions.rreturn_capture_thrown(),
         knot_ids: game.knot_ids.clone(),
         persist_uuids: (*game.persist.uuids).clone(),
         persist_raw: game.persist.raw.clone(),
         persist_passenger_slots: game.persist.passenger_slots.clone(),
         raids_dat,
+        raids_mem,
         last_hurt_by_player: game.last_hurt_by_player.clone(),
         love_cause: game.love_cause.clone(),
     }
@@ -222,7 +301,29 @@ pub fn capture_parked_snapshot(
     dim: Dim,
     p: &crate::game::levels::Parked,
 ) -> LevelSnapshot {
-    let raids_dat = fs::read(raids_dat_path(&game.world_root, dim)).ok();
+    capture_parked_snapshot_opts(game, dim, p, true)
+}
+
+pub fn capture_parked_snapshot_in_memory(
+    game: &Game<'_>,
+    dim: Dim,
+    p: &crate::game::levels::Parked,
+) -> LevelSnapshot {
+    capture_parked_snapshot_opts(game, dim, p, false)
+}
+
+fn capture_parked_snapshot_opts(
+    game: &Game<'_>,
+    dim: Dim,
+    p: &crate::game::levels::Parked,
+    read_disk_raids: bool,
+) -> LevelSnapshot {
+    let raids_dat = if read_disk_raids {
+        fs::read(raids_dat_path(&game.world_root, dim)).ok()
+    } else {
+        None
+    };
+    let raids_mem = Some(p.raiding.raids.clone());
     let chunks_map: FxHashMap<(i32, i32), Arc<Chunk>> = (&*p.world.chunks).clone();
     let mut be_attachments = Vec::new();
     for &(cx, cz) in chunks_map.keys() {
@@ -359,11 +460,13 @@ pub fn capture_parked_snapshot(
         tridents,
         rockets,
         breath_clouds,
+        thrown_potions: ThrownPotionsSnapshot::default(),
         knot_ids: p.knot_ids.clone(),
         persist_uuids: (*p.persist.uuids).clone(),
         persist_raw: p.persist.raw.clone(),
         persist_passenger_slots: p.persist.passenger_slots.clone(),
         raids_dat,
+        raids_mem,
         last_hurt_by_player: HashMap::new(),
         love_cause: HashMap::new(),
     }
@@ -566,9 +669,9 @@ pub fn capture_guests_snapshot(game: &Game<'_>) -> (HashMap<u128, GuestSnapshot>
 pub fn capture_timeline_snapshot_in_memory(game: &Game<'_>) -> Arc<TimelineSnapshot> {
     let (guests, online) = capture_guests_snapshot(game);
     let mut levels = HashMap::new();
-    levels.insert(game.dim, capture_level_snapshot(game, game.dim));
+    levels.insert(game.dim, capture_level_snapshot_in_memory(game, game.dim));
     for (&dim, parked) in &game.levels.parked {
-        levels.insert(dim, capture_parked_snapshot(game, dim, parked));
+        levels.insert(dim, capture_parked_snapshot_in_memory(game, dim, parked));
     }
     let (anchor_set, policy) = with_state(|st| {
         let anchors: HashSet<u128> = resolve_anchors(&st.anchor, &online, game.world.game_time, None)
@@ -592,6 +695,7 @@ pub fn capture_timeline_snapshot_in_memory(game: &Game<'_>) -> Arc<TimelineSnaps
         dragon_fight_dat: None,
         fight_tag: Some(game.fight.rreturn_pack()),
         trader_dat: None,
+        trader_tag: game.creatures.trader.to_save(),
         rand_sequences: game.rand_sequences.clone(),
         region_files: HashSet::new(),
         difficulty: game.ui.difficulty,
@@ -642,6 +746,8 @@ pub fn capture_timeline_snapshot_in_memory(game: &Game<'_>) -> Arc<TimelineSnaps
         }).unwrap_or_default(),
         scheduled_events: game.fns.schedule.clone(),
         scoreboard: game.score.board.clone(),
+        command_storage: Some(game.score.storage.clone()),
+        stopwatches_elapsed: Some(snapshot_stopwatches_elapsed(&game.score.stopwatches)),
         sound_seed_state: None,
         cmd_post_effects: game.cmds.post_effects.clone(),
         guests,
@@ -782,6 +888,7 @@ pub fn create_slot_checkpoint_on_server(
         dragon_fight_dat,
         fight_tag: Some(game.fight.rreturn_pack()),
         trader_dat,
+        trader_tag: game.creatures.trader.to_save(),
         rand_sequences: game.rand_sequences.clone(),
         region_files,
         difficulty: game.ui.difficulty,
@@ -832,6 +939,8 @@ pub fn create_slot_checkpoint_on_server(
         }).unwrap_or_default(),
         scheduled_events: game.fns.schedule.clone(),
         scoreboard: game.score.board.clone(),
+        command_storage: Some(game.score.storage.clone()),
+        stopwatches_elapsed: Some(snapshot_stopwatches_elapsed(&game.score.stopwatches)),
         sound_seed_state: None,
         cmd_post_effects: game.cmds.post_effects.clone(),
         guests,
@@ -873,6 +982,7 @@ pub fn create_slot_checkpoint_on_server(
     if let Ok(mut tr) = loop_tracker().write() {
         tr.on_checkpoint(game.world.game_time);
     }
+    record_scrub_checkpoint_marker(game.world.game_time);
     bench_accum(Phase::CaptureWorldState, t_world_state);
 
     let bench_report = bench_end_and_log();

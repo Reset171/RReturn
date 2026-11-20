@@ -139,11 +139,13 @@ pub fn hydrate_level_from_disk(
         tridents: entities_res.tridents,
         rockets: entities_res.rockets,
         breath_clouds: entities_res.breath_clouds,
+        thrown_potions: ThrownPotionsSnapshot::default(),
         knot_ids: entities_res.knot_ids,
         persist_uuids: entities_res.persist_uuids,
         persist_raw: entities_res.persist_raw,
         persist_passenger_slots: entities_res.persist_passenger_slots,
         raids_dat,
+        raids_mem: None,
         last_hurt_by_player: entities_res.last_hurt_by_player,
         love_cause: entities_res.love_cause,
     })

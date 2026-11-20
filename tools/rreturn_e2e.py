@@ -118,6 +118,23 @@ from tools.tests.test_scrubbing import (
     test_83_interactive_time_scrubbing_and_rewind,
     test_84_scrub_mob_motion_freeze_and_no_extrapolation,
     test_85_scrub_fov_bobbing_and_hurt_overlay,
+    test_86_scrub_player_inventory_health_and_effects_no_dupe,
+    test_87_scrub_mob_resurrection_and_tnt_explosion_revert,
+)
+from tools.tests.test_scrubbing_advanced import (
+    test_88_scrub_continuous_mob_motion_no_stutter,
+    test_89_scrub_armor_and_equipment_rollback,
+    test_90_scrub_experience_level_and_progress_rollback,
+    test_91_scrub_dropped_item_pickup_and_reemergence,
+    test_92_scrub_fire_ticks_and_extinguish_rollback,
+    test_93_scrub_rapid_toggle_and_cancel_stability,
+    test_94_scrub_container_furnace_cook_time_rollback,
+    test_95_scrub_redstone_lamp_power_toggle_rollback,
+    test_96_scrub_mass_block_fill_and_restore,
+    test_97_scrub_weather_rain_and_thunder_rollback,
+    test_98_scrub_flying_arrow_trajectory_rollback,
+    test_99_scrub_cursor_bounds_clamping,
+    test_100_scrub_rewind_subcommand_full_cycle,
 )
 
 HEAVY_WORLD_GROUPS = {"chunks", "dimensions", "portals"}
@@ -245,6 +262,21 @@ def build_test_catalog():
         (83, "Test 83: Interactive Time Scrubbing and Rewind", "scrubbing", test_83_interactive_time_scrubbing_and_rewind),
         (84, "Test 84: Scrub Mob Motion Freeze and No Extrapolation", "scrubbing", test_84_scrub_mob_motion_freeze_and_no_extrapolation),
         (85, "Test 85: Scrub FOV Bobbing and Hurt Overlay", "scrubbing", test_85_scrub_fov_bobbing_and_hurt_overlay),
+        (86, "Test 86: Scrub Player Inventory, Health, and Effects No Dupe", "scrubbing", test_86_scrub_player_inventory_health_and_effects_no_dupe),
+        (87, "Test 87: Scrub Mob Resurrection and TNT Revert", "scrubbing", test_87_scrub_mob_resurrection_and_tnt_explosion_revert),
+        (88, "Test 88: Scrub Continuous Mob Motion No Stutter", "scrubbing", test_88_scrub_continuous_mob_motion_no_stutter),
+        (89, "Test 89: Scrub Armor and Equipment Rollback", "scrubbing", test_89_scrub_armor_and_equipment_rollback),
+        (90, "Test 90: Scrub Experience Level and Progress Rollback", "scrubbing", test_90_scrub_experience_level_and_progress_rollback),
+        (91, "Test 91: Scrub Dropped Item Pickup and Reemergence", "scrubbing", test_91_scrub_dropped_item_pickup_and_reemergence),
+        (92, "Test 92: Scrub Fire Ticks and Extinguish Rollback", "scrubbing", test_92_scrub_fire_ticks_and_extinguish_rollback),
+        (93, "Test 93: Scrub Rapid Toggle and Cancel Stability", "scrubbing", test_93_scrub_rapid_toggle_and_cancel_stability),
+        (94, "Test 94: Scrub Container Furnace Cook Time Rollback", "scrubbing", test_94_scrub_container_furnace_cook_time_rollback),
+        (95, "Test 95: Scrub Redstone Lamp Power Toggle Rollback", "scrubbing", test_95_scrub_redstone_lamp_power_toggle_rollback),
+        (96, "Test 96: Scrub Mass Block Fill and Restore", "scrubbing", test_96_scrub_mass_block_fill_and_restore),
+        (97, "Test 97: Scrub Weather Rain and Thunder Rollback", "scrubbing", test_97_scrub_weather_rain_and_thunder_rollback),
+        (98, "Test 98: Scrub Flying Arrow Trajectory Rollback", "scrubbing", test_98_scrub_flying_arrow_trajectory_rollback),
+        (99, "Test 99: Scrub Cursor Bounds Clamping", "scrubbing", test_99_scrub_cursor_bounds_clamping),
+        (100, "Test 100: Scrub Rewind Subcommand Full Cycle", "scrubbing", test_100_scrub_rewind_subcommand_full_cycle),
     ]
 
 

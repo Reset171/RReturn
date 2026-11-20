@@ -174,6 +174,7 @@ pub fn handle_server_started(game: &mut Game<'_>) {
     clear_client_snapshots();
     with_scrub_ring_mut(|r| r.clear());
     clear_server_scrub();
+    clear_reverse_audio_cache();
     game.audio.record_heard = true;
     let has_disk_cp = has_disk_checkpoint(&game.world_root);
     let mut restored_anchors = HashSet::new();
@@ -215,6 +216,7 @@ pub fn handle_lifecycle(_game: &mut Game<'_>, phase: WorldPhase) {
             clear_client_snapshots();
             with_scrub_ring_mut(|r| r.clear());
             clear_server_scrub();
+            clear_reverse_audio_cache();
             with_state_mut(|st| {
                 st.pending_death_rollback = None;
             });
@@ -224,14 +226,13 @@ pub fn handle_lifecycle(_game: &mut Game<'_>, phase: WorldPhase) {
 }
 
 pub fn handle_tick(game: &mut Game<'_>) {
-    if game.native_window() {
-        if !is_scrubbing() && game.screen == super::super::Screen::Playing {
-            with_scrub_ring_mut(|r| {
-                r.record_tick(game);
-            });
-        }
-    } else if !is_scrubbing() {
-        record_server_tick(game);
+    if !is_scrubbing()
+        && game.native_window()
+        && game.screen == super::super::Screen::Playing
+    {
+        with_scrub_ring_mut(|r| {
+            r.record_tick(game);
+        });
     }
 
     if game.screen == super::super::Screen::Dead {
@@ -280,9 +281,11 @@ pub fn handle_tick(game: &mut Game<'_>) {
             apply_client_level_rollback(game, &slot);
         }
     }
+}
 
-    if game.native_window() {
-        return;
+pub fn handle_server_tick(game: &mut Game<'_>, world_running: bool) {
+    if !is_scrubbing() && world_running {
+        record_server_tick(game);
     }
 
     let (do_save, do_load, dead_rollback) = with_state_mut(|st| {
@@ -298,8 +301,14 @@ pub fn handle_tick(game: &mut Game<'_>) {
     }
     if do_load || dead_rollback.is_some() {
         rollback_checkpoint_on_server(game);
-        let slot = with_state(|st| st.current_slot.clone());
-        apply_client_level_rollback(game, &slot);
+        if !game.serving() {
+            let slot = with_state(|st| st.current_slot.clone());
+            apply_client_level_rollback(game, &slot);
+        }
+        return;
+    }
+
+    if !world_running {
         return;
     }
 

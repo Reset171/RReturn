@@ -49,6 +49,12 @@ file = "crates/horizon-client/src/game/items/fishing.rs"
 name = "rreturn_fishing"
 source = "src/ext/fishing_ext.rs"
 
+[[native.module]]
+id = "potions_ext"
+file = "crates/horizon-client/src/game/items/potions.rs"
+name = "rreturn_potions"
+source = "src/ext/potions_ext.rs"
+
 [[native.mixin]]
 id = "native-key"
 target = "horizon_client::game::native_hooks::input_key::Game<'_>::native_input_key"
@@ -78,6 +84,16 @@ kind = "HEAD"
 helper = "src/hooks/hook_tick.rs"
 bindings = [
   { name = "game", ty = "&mut Game<'_>", value = "&mut *self" },
+]
+
+[[native.mixin]]
+id = "native-server-tick"
+target = "horizon_client::game::native_hooks::base::Game<'_>::native_server_tick"
+kind = "HEAD"
+helper = "src/hooks/hook_server_tick.rs"
+bindings = [
+  { name = "game", ty = "&mut Game<'_>", value = "&mut *self" },
+  { name = "phase", ty = "mod_api::ServerTickPhase", value = "phase" },
 ]
 
 [[native.mixin]]
@@ -204,12 +220,12 @@ bindings = [
 
 [[native.mixin]]
 id = "movement-input"
-target = "horizon_client::game::native_hooks::movement_input::Game<'_>::native_movement_input"
+target = "horizon_client::game::native_hooks::movement_input::Game<'_>::mod_movement_keys"
 kind = "HEAD"
+cancellable = true
 helper = "src/hooks/hook_movement_input.rs"
 bindings = [
   { name = "game", ty = "&Game<'_>", value = "&*self" },
-  { name = "call", ty = "mod_api::__private::MovementInputCall<'_>", value = "call" },
 ]
 
 [[native.mixin]]
@@ -222,5 +238,27 @@ bindings = [
   { name = "mapping", ty = "&str", value = "mapping" },
   { name = "pressed", ty = "bool", value = "pressed" },
   { name = "canceled", ty = "&mut bool", value = "&mut *canceled" },
+]
+
+[[native.mixin]]
+id = "server-chunk-unload"
+target = "horizon_client::game::native_hooks::on_chunk_unloaded::Game<'_>::native_chunk_unload"
+kind = "HEAD"
+helper = "src/hooks/hook_chunk_unloaded.rs"
+bindings = [
+  { name = "game", ty = "&mut Game<'_>", value = "&mut *self" },
+  { name = "dimension", ty = "&str", value = "dimension" },
+  { name = "chunk", ty = "[i32; 2]", value = "chunk" },
+]
+
+[[native.mixin]]
+id = "client-chunk-unload"
+target = "horizon_client::game::native_hooks::client_chunk_unload::Game<'_>::native_client_chunk_unload"
+kind = "HEAD"
+helper = "src/hooks/hook_client_chunk_unload.rs"
+bindings = [
+  { name = "game", ty = "&mut Game<'_>", value = "&mut *self" },
+  { name = "dimension", ty = "&str", value = "dimension" },
+  { name = "chunk", ty = "[i32; 2]", value = "chunk" },
 ]
 

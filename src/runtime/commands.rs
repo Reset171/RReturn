@@ -3,6 +3,7 @@ use super::capture::*;
 use super::policy::*;
 use super::restore::*;
 use super::restore_client::*;
+use super::scrub_perf::*;
 use super::snapshots::*;
 use super::storage::*;
 use super::telemetry::*;
@@ -78,6 +79,16 @@ pub fn execute_rreturn_command(
         }
         "trigger" => handle_trigger_subcommand(game, &words[2..], requester),
         "scrub" => handle_scrub_subcommand(game, &words[2..], requester),
+        "perf" => {
+            if words.get(2).copied() == Some("reset") {
+                reset_perf();
+                "[RReturn] Performance metrics reset.".to_owned()
+            } else if words.get(2).copied() == Some("json") {
+                get_perf_report_json()
+            } else {
+                get_perf_report_tree()
+            }
+        }
         "purge_memory" => {
             clear_all_slots();
             clear_client_snapshots();
@@ -428,7 +439,7 @@ pub fn handle_client_command(game: &mut Game<'_>, command: &str, ran: &mut bool)
     *ran = true;
 
     if trimmed.starts_with("rreturn scrub") {
-        let permitted = has_cheat_permission(game, None);
+        let permitted = has_level_4_permission(game, None);
         if !permitted {
             game.native_chat(&tr("command.rreturn.no_permission"));
             return;
@@ -528,7 +539,7 @@ pub fn intercept_owner_console_command(
 }
 
 fn handle_scrub_subcommand(game: &mut Game<'_>, args: &[&str], requester: Option<u128>) -> String {
-    if !has_cheat_permission(game, requester) {
+    if !has_level_4_permission(game, requester) {
         return tr("command.rreturn.no_permission");
     }
     let sub = args.first().copied().unwrap_or("status");
@@ -563,16 +574,26 @@ fn handle_scrub_subcommand(game: &mut Game<'_>, args: &[&str], requester: Option
             let s_count = with_scrub_ring(|r| r.frames.iter().map(|f| f.sounds.len()).sum::<usize>());
             let fov = game.view.fov_modifier;
             let walk_dist = game.avatar.walk_dist;
+            let day_time = game.world.day_time;
+            let rain_level = game.world.weather.rain_level.1;
+            let srv_range = if let Some(server) = &game.integrated {
+                server
+                    .call(|_| server_scrub_time_range())
+                    .flatten()
+                    .unwrap_or((0, 0))
+            } else {
+                server_scrub_time_range().unwrap_or((0, 0))
+            };
             if let Some((curr, min_t, max_t)) = get_scrub_info() {
                 format!(
-                    r#"{{"active":true,"current_time":{:.2},"min_tick":{},"anchor_tick":{},"swinging":{},"swing_anim":{:.2},"particles":{},"sounds":{},"fov_modifier":{:.3},"walk_dist":{:.3}}}"#,
-                    curr, min_t, max_t, swinging, swing_anim, p_count, s_count, fov, walk_dist
+                    r#"{{"active":true,"current_time":{:.2},"min_tick":{},"anchor_tick":{},"server_min_tick":{},"server_max_tick":{},"day_time":{},"rain_level":{:.3},"swinging":{},"swing_anim":{:.2},"particles":{},"sounds":{},"fov_modifier":{:.3},"walk_dist":{:.3}}}"#,
+                    curr, min_t, max_t, srv_range.0, srv_range.1, day_time, rain_level, swinging, swing_anim, p_count, s_count, fov, walk_dist
                 )
             } else {
                 let range = with_scrub_ring(|r| r.time_range()).unwrap_or((0, 0));
                 format!(
-                    r#"{{"active":false,"min_tick":{},"max_tick":{},"swinging":{},"swing_anim":{:.2},"particles":{},"sounds":{},"fov_modifier":{:.3},"walk_dist":{:.3}}}"#,
-                    range.0, range.1, swinging, swing_anim, p_count, s_count, fov, walk_dist
+                    r#"{{"active":false,"min_tick":{},"max_tick":{},"server_min_tick":{},"server_max_tick":{},"day_time":{},"rain_level":{:.3},"swinging":{},"swing_anim":{:.2},"particles":{},"sounds":{},"fov_modifier":{:.3},"walk_dist":{:.3}}}"#,
+                    range.0, range.1, srv_range.0, srv_range.1, day_time, rain_level, swinging, swing_anim, p_count, s_count, fov, walk_dist
                 )
             }
         }
@@ -580,9 +601,20 @@ fn handle_scrub_subcommand(game: &mut Game<'_>, args: &[&str], requester: Option
             let secs: f64 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(5.0);
             start_scrub(game);
             let ticks = secs * 20.0;
-            on_mouse_scroll(game, [0.0, -ticks], [0, (-ticks).round() as i32]);
+            step_scrub_ticks(-ticks);
+            snap_scrub_time_to_target();
+            on_frame_render_pre(game, 0.0, 0.0);
             commit_scrub(game);
             format!("[RReturn] Scrubbed back by {:.1} seconds.", secs)
+        }
+        "rewind_ticks" => {
+            let ticks: f64 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(20.0);
+            start_scrub(game);
+            step_scrub_ticks(-ticks);
+            snap_scrub_time_to_target();
+            on_frame_render_pre(game, 0.0, 0.0);
+            commit_scrub(game);
+            format!("[RReturn] Scrubbed back by {:.0} ticks.", ticks)
         }
         _ => "[RReturn] Usage: /rreturn scrub [start|step <N>|commit|cancel|status|rewind <sec>]".to_owned(),
     }

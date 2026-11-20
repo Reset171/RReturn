@@ -169,6 +169,33 @@ pub fn apply_interpolated_poses_to_game(game: &mut Game<'_>, target_time: f64) {
     for bp in &chosen_frame.break_progress {
         game.destroying.insert(bp.breaker, (bp.pos, bp.stage, chosen_frame.game_time));
     }
+
+    // First-person hand and arm swing interpolation
+    let chosen_swing = if alpha > 0.5 { &right_frame.arm_swing } else { &left_frame.arm_swing };
+    if chosen_swing.swinging {
+        let anim = lerp_f32(left_frame.arm_swing.animation, right_frame.arm_swing.animation, alpha);
+        game.swing.current = Some(horizon_client::first_person::SwingDescription {
+            hand: if chosen_swing.hand == 1 {
+                horizon_client::first_person::Hand::Off
+            } else {
+                horizon_client::first_person::Hand::Main
+            },
+            animation: horizon_client::first_person::SwingAnimation::DEFAULT,
+            duration_ticks: chosen_swing.duration.max(1),
+        });
+        game.swing.animation = anim;
+        game.swing.old_animation = anim;
+        game.swing.ticks = ((1.0 - anim) * chosen_swing.duration as f32).round() as i32;
+    } else {
+        game.swing.current = None;
+        game.swing.animation = 0.0;
+        game.swing.old_animation = 0.0;
+        game.swing.ticks = 0;
+    }
+    game.heights.main = lerp_f32(left_frame.arm_swing.height_main, right_frame.arm_swing.height_main, alpha);
+    game.heights.old_main = game.heights.main;
+    game.heights.off = lerp_f32(left_frame.arm_swing.height_off, right_frame.arm_swing.height_off, alpha);
+    game.heights.old_off = game.heights.off;
 }
 
 pub fn apply_block_rewind_to_game(game: &mut Game<'_>, from_tick: i64, to_tick: i64) {
@@ -195,6 +222,19 @@ pub fn apply_block_rewind_to_game(game: &mut Game<'_>, from_tick: i64, to_tick: 
                             delta.z,
                             horizon_world::registry::BlockStateId(delta.old_state),
                         );
+                        let state_for_particle = if delta.old_state != 0 { delta.old_state } else { delta.new_state };
+                        game.destroy_particles(
+                            [delta.x, delta.y, delta.z],
+                            horizon_world::registry::BlockStateId(state_for_particle),
+                        );
+                        let opt = horizon_client::particles::ParticleOptions::simple(
+                            horizon_client::particles::ParticleType::ReversePortal,
+                        );
+                        game.particles.add(
+                            &opt,
+                            [delta.x as f64 + 0.5, delta.y as f64 + 0.5, delta.z as f64 + 0.5],
+                            [0.0, 0.08, 0.0],
+                        );
                     }
                 }
             }
@@ -211,6 +251,19 @@ pub fn apply_block_rewind_to_game(game: &mut Game<'_>, from_tick: i64, to_tick: 
                             delta.y,
                             delta.z,
                             horizon_world::registry::BlockStateId(delta.new_state),
+                        );
+                        let state_for_particle = if delta.new_state != 0 { delta.new_state } else { delta.old_state };
+                        game.destroy_particles(
+                            [delta.x, delta.y, delta.z],
+                            horizon_world::registry::BlockStateId(state_for_particle),
+                        );
+                        let opt = horizon_client::particles::ParticleOptions::simple(
+                            horizon_client::particles::ParticleType::Portal,
+                        );
+                        game.particles.add(
+                            &opt,
+                            [delta.x as f64 + 0.5, delta.y as f64 + 0.5, delta.z as f64 + 0.5],
+                            [0.0, 0.08, 0.0],
                         );
                     }
                 }

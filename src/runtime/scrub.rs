@@ -1,9 +1,14 @@
 use super::super::Game;
 use super::restore::rollback_slot_checkpoint_on_server;
 use super::restore_client::apply_client_level_rollback;
-use super::scrub_interpolate::{apply_block_rewind_to_game, apply_interpolated_poses_to_game};
+use super::scrub_interpolate::{
+    apply_block_rewind_to_game, apply_interpolated_poses_to_game, interpolate_mob_pose,
+    lerp_angle, lerp_f32, lerp_f64, InterpolatedMobPose,
+};
 use super::scrub_timeline::{with_scrub_ring, with_scrub_ring_mut};
 use super::types::*;
+use horizon_client::fast_hash::FxHashMap;
+use std::collections::HashSet;
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
@@ -112,7 +117,61 @@ pub fn start_scrub(game: &mut Game<'_>) {
     game.clock.set_frozen(true);
 }
 
-pub fn on_mouse_scroll(_game: &mut Game<'_>, scroll: [f64; 2], accumulated: [i32; 2]) -> bool {
+pub fn play_scrub_sound(game: &Game<'_>, backwards: bool, accel: f64) {
+    let identifier = if backwards {
+        "minecraft:block.respawn_anchor.charge"
+    } else {
+        "minecraft:ui.button.click"
+    };
+    let mut sound = mod_api::SoundPlay::ui(identifier);
+    sound.volume = 0.45;
+    sound.pitch = if backwards {
+        (0.65 + (accel * 0.12) as f32).min(1.8)
+    } else {
+        1.25
+    };
+    game.play_local_sound(&sound, 0);
+}
+
+pub fn spawn_scrub_particles(game: &mut Game<'_>, backwards: bool) {
+    let (px_base, py_base, pz_base) = match &game.player {
+        Some(p) => (p.position.x, p.position.y, p.position.z),
+        None => return,
+    };
+
+    let offsets = {
+        let r = game.particles.random();
+        let mut v = Vec::with_capacity(4);
+        for _ in 0..4 {
+            let rx = (r.next_float() as f64 - 0.5) * 1.6;
+            let ry = (r.next_float() as f64) * 1.7;
+            let rz = (r.next_float() as f64 - 0.5) * 1.6;
+            v.push((rx, ry, rz));
+        }
+        v
+    };
+
+    let p_type = if backwards {
+        horizon_client::particles::ParticleType::ReversePortal
+    } else {
+        horizon_client::particles::ParticleType::Portal
+    };
+    let opt = horizon_client::particles::ParticleOptions::simple(p_type);
+
+    for (rx, ry, rz) in offsets {
+        let px = px_base + rx;
+        let py = py_base + ry;
+        let pz = pz_base + rz;
+        let (vx, vy, vz) = if backwards {
+            ((px_base - px) * 0.15, (py_base + 0.8 - py) * 0.15, (pz_base - pz) * 0.15)
+        } else {
+            ((px - px_base) * 0.15, 0.05, (pz - pz_base) * 0.15)
+        };
+        game.particles.add(&opt, [px, py, pz], [vx, vy, vz]);
+    }
+}
+
+pub fn on_mouse_scroll(game: &mut Game<'_>, scroll: [f64; 2], accumulated: [i32; 2]) -> bool {
     let mut s = match session_lock().lock() {
         Ok(guard) => guard,
         Err(_) => return false,
@@ -144,6 +203,12 @@ pub fn on_mouse_scroll(_game: &mut Game<'_>, scroll: [f64; 2], accumulated: [i32
 
     let step = wheel_y * s.jog_accel * 1.5;
     s.target_time = (s.target_time + step).clamp(s.min_tick as f64, s.anchor_tick as f64);
+    let backwards = step < 0.0;
+    let accel = s.jog_accel;
+    drop(s);
+
+    play_scrub_sound(game, backwards, accel);
+    spawn_scrub_particles(game, backwards);
 
     true
 }
@@ -174,6 +239,19 @@ pub fn on_frame_render_pre(game: &mut Game<'_>, _world_partial: f32, _partial: f
     if old_applied != new_applied {
         apply_block_rewind_to_game(game, old_applied, new_applied);
     }
+
+    // Keep particles seamlessly animated during scrub even while clock is frozen
+    let plevel = horizon_client::particles::ParticleLevel {
+        world: &game.world,
+        facts: game.res.facts(),
+        collision: game.collision,
+        player: game
+            .player
+            .as_ref()
+            .map(|p| ([p.position.x, p.position.y, p.position.z], p.velocity.y)),
+        cached_chunk: std::cell::Cell::new(None),
+    };
+    game.particles.tick(&plevel);
 }
 
 pub fn commit_scrub(game: &mut Game<'_>) {
@@ -195,37 +273,140 @@ pub fn commit_scrub(game: &mut Game<'_>) {
     drop(s);
 
     if final_tick < anchor {
-        let rolled_back = if let Some(server) = &game.integrated {
-            server.call(|srv| rollback_slot_checkpoint_on_server(srv, "default")).unwrap_or(false)
-        } else {
-            rollback_slot_checkpoint_on_server(game, "default")
-        };
-        apply_interpolated_poses_to_game(game, final_time);
-        let player_sync = game.player.as_ref().map(|p| (p.position, game.yaw, game.pitch));
-        if let Some((pos, yaw, pitch)) = player_sync {
-            if let Some(server) = &game.integrated {
-                server.call(move |srv| {
-                    if let Some(sp) = srv.player.as_mut() {
-                        sp.position = pos;
-                        sp.old_position = pos;
-                        sp.velocity = Default::default();
-                        sp.yaw = yaw;
-                        sp.head_yaw = yaw;
-                        sp.pitch = pitch;
-                        sp.teleported = true;
+        let (mob_poses, player_pos, player_yaw, player_pitch) = with_scrub_ring(|ring| {
+            if let Some((left, right, alpha)) = ring.find_frame_pair(final_time) {
+                let a64 = f64::from(alpha);
+                let p_pos = [
+                    lerp_f64(left.player_pos[0], right.player_pos[0], a64),
+                    lerp_f64(left.player_pos[1], right.player_pos[1], a64),
+                    lerp_f64(left.player_pos[2], right.player_pos[2], a64),
+                ];
+                let p_yaw = lerp_angle(left.player_yaw, right.player_yaw, alpha);
+                let p_pitch = lerp_f32(left.player_pitch, right.player_pitch, alpha);
+
+                let mut poses = Vec::new();
+                let mut right_mobs_by_id = FxHashMap::default();
+                for m in &right.mobs {
+                    right_mobs_by_id.insert(m.id, m);
+                }
+                for left_mob in &left.mobs {
+                    if let Some(right_mob) = right_mobs_by_id.get(&left_mob.id) {
+                        poses.push((left_mob.id, interpolate_mob_pose(left_mob, right_mob, alpha)));
+                    } else {
+                        poses.push((left_mob.id, InterpolatedMobPose {
+                            pos: left_mob.pos,
+                            yaw: left_mob.yaw,
+                            body_yaw: left_mob.body_yaw,
+                            head_yaw: left_mob.head_yaw,
+                            head_pitch: left_mob.head_pitch,
+                            limb_position: left_mob.limb_position,
+                            limb_speed: left_mob.limb_speed,
+                            attack_anim: left_mob.attack_anim,
+                            swell: left_mob.swell,
+                            health: left_mob.health,
+                            alive: left_mob.alive,
+                        }));
                     }
-                    srv.yaw = yaw;
-                    srv.pitch = pitch;
-                });
+                }
+                (poses, p_pos, p_yaw, p_pitch)
+            } else {
+                (Vec::new(), [0.0; 3], 0.0, 0.0)
             }
+        });
+
+        let server_block_deltas = with_scrub_ring(|ring| {
+            let mut deltas = Vec::new();
+            for frame in ring.frames.iter().rev() {
+                if frame.game_time <= final_tick {
+                    break;
+                }
+                if frame.game_time <= anchor {
+                    for delta in frame.block_deltas.iter().rev() {
+                        deltas.push((delta.x, delta.y, delta.z, delta.old_state));
+                    }
+                }
+            }
+            deltas
+        });
+
+        apply_interpolated_poses_to_game(game, final_time);
+
+        let valid_mob_ids: HashSet<u32> = mob_poses.iter().map(|(id, _)| *id).collect();
+        if !valid_mob_ids.is_empty() {
+            game.mobs.retain_mut(|m| valid_mob_ids.contains(&m.id));
         }
-        if rolled_back {
-            let active_slot = with_state(|st| st.current_slot.clone());
-            apply_client_level_rollback(game, &active_slot);
-            let dt = (anchor - final_tick) as f64 / 20.0;
-            let dt_str = format!("{:.1}", dt);
-            game.native_chat(&tr_args("message.rreturn.scrub.commit", &[&dt_str]));
+        if let Some(server) = &game.integrated {
+            let poses_for_server = mob_poses.clone();
+            let valid_ids_for_server = valid_mob_ids.clone();
+            server.call(move |srv| {
+                if let Some(sp) = srv.player.as_mut() {
+                    sp.position.x = player_pos[0];
+                    sp.position.y = player_pos[1];
+                    sp.position.z = player_pos[2];
+                    sp.old_position = sp.position;
+                    sp.velocity = Default::default();
+                    sp.yaw = player_yaw;
+                    sp.head_yaw = player_yaw;
+                    sp.pitch = player_pitch;
+                    sp.teleported = true;
+                    sp.teleported_delta = [false; 3];
+                }
+                srv.yaw = player_yaw;
+                srv.pitch = player_pitch;
+
+                for &(bx, by, bz, old_id) in &server_block_deltas {
+                    let _ = srv.world.set(
+                        bx,
+                        by,
+                        bz,
+                        horizon_world::registry::BlockStateId(old_id),
+                    );
+                }
+
+                if !valid_ids_for_server.is_empty() {
+                    srv.mobs.retain_mut(|m| valid_ids_for_server.contains(&m.id));
+                }
+                let mob_map: FxHashMap<u32, InterpolatedMobPose> = poses_for_server.into_iter().collect();
+                for live_mob in srv.mobs.iter_mut() {
+                    if let Some(pose) = mob_map.get(&live_mob.id) {
+                        live_mob.position.x = pose.pos[0];
+                        live_mob.position.y = pose.pos[1];
+                        live_mob.position.z = pose.pos[2];
+                        live_mob.previous.x = pose.pos[0];
+                        live_mob.previous.y = pose.pos[1];
+                        live_mob.previous.z = pose.pos[2];
+                        live_mob.velocity = Default::default();
+                        live_mob.yaw = pose.yaw;
+                        live_mob.previous_yaw = pose.yaw;
+                        live_mob.body_yaw = pose.body_yaw;
+                        live_mob.previous_body_yaw = pose.body_yaw;
+                        live_mob.head_yaw = pose.head_yaw;
+                        live_mob.previous_head_yaw = pose.head_yaw;
+                        live_mob.head_pitch = pose.head_pitch;
+                        live_mob.previous_head_pitch = pose.head_pitch;
+                        live_mob.limb_position = pose.limb_position;
+                        live_mob.limb_speed = pose.limb_speed;
+                        live_mob.previous_limb_speed = pose.limb_speed;
+                        live_mob.swell = pose.swell.round() as i32;
+                        live_mob.previous_swell = live_mob.swell;
+                        live_mob.anim.attack_anim = pose.attack_anim;
+                        live_mob.anim.attack_anim_o = pose.attack_anim;
+                        live_mob.health = pose.health;
+                        live_mob.needs_sync = true;
+                        live_mob.sync_position = true;
+                    }
+                }
+
+                srv.world.game_time = final_tick;
+            });
         }
+
+        let sound = mod_api::SoundPlay::ui("minecraft:block.respawn_anchor.deplete");
+        game.play_local_sound(&sound, 0);
+
+        let dt = (anchor - final_tick) as f64 / 20.0;
+        let dt_str = format!("{:.1}", dt);
+        game.native_chat(&tr_args("message.rreturn.scrub.commit", &[&dt_str]));
     }
 
     with_scrub_ring_mut(|r| {
@@ -285,6 +466,9 @@ pub fn cancel_scrub(game: &mut Game<'_>) {
         r.reference_chunks = (&*game.world.chunks).clone();
         r.last_world_revision = game.world.revision;
     });
+
+    let sound = mod_api::SoundPlay::ui("minecraft:block.iron_trapdoor.close");
+    game.play_local_sound(&sound, 0);
 
     game.clock.set_frozen(false);
     game.native_chat(&tr("message.rreturn.scrub.cancel"));

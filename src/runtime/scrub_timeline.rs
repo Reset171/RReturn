@@ -27,6 +27,18 @@ pub struct BreakProgressRecord {
 }
 
 #[derive(Clone, Copy, Debug)]
+pub struct ArmSwingRecord {
+    pub swinging: bool,
+    pub hand: u8,
+    pub animation: f32,
+    pub old_animation: f32,
+    pub ticks: i32,
+    pub duration: i32,
+    pub height_main: f32,
+    pub height_off: f32,
+}
+
+#[derive(Clone, Copy, Debug)]
 pub struct MobPoseRecord {
     pub id: u32,
     pub pos: [f64; 3],
@@ -66,6 +78,7 @@ pub struct TickHistoryFrame {
     pub projectiles: Vec<ProjectilePoseRecord>,
     pub block_deltas: Vec<BlockDeltaRecord>,
     pub break_progress: Vec<BreakProgressRecord>,
+    pub arm_swing: ArmSwingRecord,
 }
 
 pub struct ScrubHistoryRing {
@@ -232,6 +245,27 @@ impl ScrubHistoryRing {
             });
         }
 
+        let (is_swinging, swing_hand, swing_dur) = if let Some(c) = game.swing.current {
+            (
+                true,
+                if c.hand == horizon_client::first_person::Hand::Off { 1 } else { 0 },
+                c.duration_ticks,
+            )
+        } else {
+            (false, 0, 0)
+        };
+
+        let arm_swing = ArmSwingRecord {
+            swinging: is_swinging,
+            hand: swing_hand,
+            animation: game.swing.animation,
+            old_animation: game.swing.old_animation,
+            ticks: game.swing.ticks,
+            duration: swing_dur,
+            height_main: game.heights.main,
+            height_off: game.heights.off,
+        };
+
         if self.frames.len() >= MAX_SCRUB_TICKS {
             self.frames.pop_front();
         }
@@ -246,6 +280,7 @@ impl ScrubHistoryRing {
             projectiles,
             block_deltas,
             break_progress,
+            arm_swing,
         });
 
         // Periodic in-memory keyframe snapshot (every 5 seconds)

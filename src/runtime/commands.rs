@@ -557,11 +557,20 @@ fn handle_scrub_subcommand(game: &mut Game<'_>, args: &[&str], requester: Option
             "[RReturn] Scrub cancelled.".to_owned()
         }
         "status" => {
+            let swinging = game.swing.current.is_some();
+            let swing_anim = game.swing.animation;
+            let p_count = game.particle_count();
             if let Some((curr, min_t, max_t)) = get_scrub_info() {
-                format!(r#"{{"active":true,"current_time":{:.2},"min_tick":{},"anchor_tick":{}}}"#, curr, min_t, max_t)
+                format!(
+                    r#"{{"active":true,"current_time":{:.2},"min_tick":{},"anchor_tick":{},"swinging":{},"swing_anim":{:.2},"particles":{}}}"#,
+                    curr, min_t, max_t, swinging, swing_anim, p_count
+                )
             } else {
                 let range = with_scrub_ring(|r| r.time_range()).unwrap_or((0, 0));
-                format!(r#"{{"active":false,"min_tick":{},"max_tick":{}}}"#, range.0, range.1)
+                format!(
+                    r#"{{"active":false,"min_tick":{},"max_tick":{},"swinging":{},"swing_anim":{:.2},"particles":{}}}"#,
+                    range.0, range.1, swinging, swing_anim, p_count
+                )
             }
         }
         "rewind" => {

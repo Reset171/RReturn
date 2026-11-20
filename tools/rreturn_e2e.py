@@ -135,6 +135,10 @@ from tools.tests.test_scrubbing_advanced import (
     test_98_scrub_flying_arrow_trajectory_rollback,
     test_99_scrub_cursor_bounds_clamping,
     test_100_scrub_rewind_subcommand_full_cycle,
+    test_101_scrub_dispenser_prng_selection_determinism,
+    test_102_scrub_chest_loot_table_seed_determinism,
+    test_103_scrub_tnt_fuse_and_deterministic_deflection,
+    test_104_scrub_villager_ai_schedule_determinism,
 )
 
 HEAVY_WORLD_GROUPS = {"chunks", "dimensions", "portals"}
@@ -277,6 +281,10 @@ def build_test_catalog():
         (98, "Test 98: Scrub Flying Arrow Trajectory Rollback", "scrubbing", test_98_scrub_flying_arrow_trajectory_rollback),
         (99, "Test 99: Scrub Cursor Bounds Clamping", "scrubbing", test_99_scrub_cursor_bounds_clamping),
         (100, "Test 100: Scrub Rewind Subcommand Full Cycle", "scrubbing", test_100_scrub_rewind_subcommand_full_cycle),
+        (101, "Test 101: Scrub Dispenser PRNG Selection Determinism", "determinism", test_101_scrub_dispenser_prng_selection_determinism),
+        (102, "Test 102: Scrub Chest Loot Table Seed Determinism", "determinism", test_102_scrub_chest_loot_table_seed_determinism),
+        (103, "Test 103: Scrub TNT Fuse and Deterministic Deflection", "determinism", test_103_scrub_tnt_fuse_and_deterministic_deflection),
+        (104, "Test 104: Scrub Villager AI Schedule Determinism", "determinism", test_104_scrub_villager_ai_schedule_determinism),
     ]
 
 

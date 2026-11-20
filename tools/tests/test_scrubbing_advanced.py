@@ -429,3 +429,124 @@ def test_100_scrub_rewind_subcommand_full_cycle(h):
 
     h.command("setblock 1 65 1 minecraft:air")
     h.wait(2)
+
+
+def test_101_scrub_dispenser_prng_selection_determinism(h):
+    setup_clean_env(h)
+    h.tp(0.5, 65, 0.5)
+    h.wait(10)
+
+    # Place dispenser with 3 distinct items
+    h.command(
+        "setblock 2 65 0 minecraft:dispenser[facing=north]{Items:["
+        "{Slot:0b,id:'minecraft:apple',count:1},"
+        "{Slot:1b,id:'minecraft:gold_ingot',count:1},"
+        "{Slot:2b,id:'minecraft:emerald',count:1}"
+        "]}"
+    )
+    h.wait(15)
+
+    # Trigger dispenser with redstone
+    h.command("setblock 2 66 0 minecraft:redstone_block")
+    h.wait(6)
+
+    dropped_1 = str(h.data_get_entity("@e[type=item,limit=1,distance=..6]", "Item.id"))
+    assert "minecraft:" in dropped_1, f"No item dispensed on first run: {dropped_1}"
+    h.command("kill @e[type=item]")
+    h.command("setblock 2 66 0 minecraft:air")
+
+    # Scrub back to before the redstone block was placed
+    h.rreturn("scrub start")
+    h.rreturn("scrub step -12.0")
+    h.rreturn("scrub commit")
+    h.wait(4)
+
+    # Trigger dispenser again
+    h.command("setblock 2 66 0 minecraft:redstone_block")
+    h.wait(6)
+
+    dropped_2 = str(h.data_get_entity("@e[type=item,limit=1,distance=..6]", "Item.id"))
+    h.command("kill @e[type=item]")
+    h.command("setblock 2 65 0 minecraft:air")
+    h.command("setblock 2 66 0 minecraft:air")
+
+    # The exact same item must be chosen by PRNG!
+    assert dropped_1 == dropped_2, (
+        f"Dispenser RNG deviated across scrub: {dropped_1} vs {dropped_2}"
+    )
+
+
+def test_102_scrub_chest_loot_table_seed_determinism(h):
+    setup_clean_env(h)
+    h.tp(0.5, 65, 0.5)
+    h.wait(10)
+
+    # Place chest with loot table and seed
+    h.command("setblock 2 65 2 minecraft:chest{LootTable:'minecraft:chests/simple_dungeon',LootTableSeed:133742L}")
+    h.wait(12)
+    loot_tag = str(h.data_get_block(2, 65, 2, "LootTable"))
+    assert "simple_dungeon" in loot_tag, f"LootTable not set: {loot_tag}"
+
+    # Replace chest with gold block
+    h.command("setblock 2 65 2 minecraft:gold_block")
+    h.wait(10)
+    assert "gold_block" in h.block(2, 65, 2).get("block", ""), "Gold block not placed"
+
+    # Scrub back and commit
+    h.rreturn("scrub start")
+    h.rreturn("scrub step -12.0")
+    h.rreturn("scrub commit")
+    h.wait(4)
+
+    # Chest and its exact loot table & seed must be restored deterministically
+    loot_restored = str(h.data_get_block(2, 65, 2, "LootTable"))
+    seed_restored = str(h.data_get_block(2, 65, 2, "LootTableSeed"))
+    assert "simple_dungeon" in loot_restored, f"LootTable was not restored on rewind: {loot_restored}"
+    assert "133742" in seed_restored, f"LootTableSeed was not restored on rewind: {seed_restored}"
+
+    h.command("setblock 2 65 2 minecraft:air")
+    h.wait(2)
+
+
+def test_103_scrub_tnt_fuse_and_deterministic_deflection(h):
+    setup_clean_env(h)
+    h.tp(0.5, 65, 0.5)
+    h.wait(10)
+
+    # Summon primed TNT
+    h.command("kill @e[tag=test103_tnt]")
+    h.command("summon minecraft:tnt 0.5 66.0 0.5 {Tags:['test103_tnt'],Fuse:100s,Motion:[0.1,0.2,0.1]}")
+    h.wait(8)
+    assert h.has_entity("@e[tag=test103_tnt]"), "Primed TNT did not spawn"
+
+    # Scrub back 12 steps before TNT was summoned
+    h.rreturn("scrub start")
+    h.rreturn("scrub step -12.0")
+    h.rreturn("scrub commit")
+    h.wait(4)
+
+    # TNT must be completely gone in the pre-ignition state
+    assert not h.has_entity("@e[tag=test103_tnt]"), "Primed TNT remained after scrub rewind!"
+
+
+def test_104_scrub_villager_ai_schedule_determinism(h):
+    setup_clean_env(h)
+    h.tp(0.5, 65, 0.5)
+    h.wait(10)
+
+    # Summon villager with workstation
+    h.command("kill @e[tag=test104_vil]")
+    h.command("setblock 2 65 2 minecraft:lectern")
+    h.command("summon minecraft:villager 0.5 65.0 2.0 {Tags:['test104_vil'],VillagerData:{profession:'minecraft:librarian',level:1}}")
+    h.wait(15)
+    assert h.has_entity("@e[tag=test104_vil]"), "Villager did not spawn"
+
+    # Scrub back to before lectern was placed
+    h.rreturn("scrub start")
+    h.rreturn("scrub step -14.0")
+    h.rreturn("scrub commit")
+    h.wait(4)
+
+    # Lectern must be air, and villager should not exist
+    assert "air" in h.block(2, 65, 2).get("block", ""), "Lectern was not rolled back to air"
+    assert not h.has_entity("@e[tag=test104_vil]"), "Villager was not rolled back"

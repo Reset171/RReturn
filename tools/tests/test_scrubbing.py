@@ -157,3 +157,75 @@ def test_84_scrub_mob_motion_freeze_and_no_extrapolation(h):
     h.command("kill @e[tag=scrub_villager]")
     h.wait(4)
 
+
+def test_85_scrub_fov_bobbing_and_hurt_overlay(h):
+    setup_clean_env(h)
+    h.tp(0.5, 65, 0.5)
+    h.wait(10)
+
+    # 1. Test mob hurt overlay rewind
+    h.command("kill @e[tag=scrub_cow]")
+    h.command("summon minecraft:cow 0.5 65.0 4.0 {Tags:['scrub_cow']}")
+    h.wait(20)
+    assert h.has_entity("@e[tag=scrub_cow]"), "Cow did not spawn"
+
+    # Deal damage to set hurt_time > 0
+    h.command("damage @e[tag=scrub_cow,limit=1] 2")
+    h.wait(2)
+    ht_during_damage = h.data_get_entity("@e[tag=scrub_cow,limit=1]", "HurtTime")
+    nums = re.findall(r"\d+", ht_during_damage)
+    ht_val = int(nums[0]) if nums else 0
+    assert ht_val > 0, f"Expected hurt time > 0 right after damage: {ht_during_damage}"
+
+    # Wait until hurt_time expires to 0
+    h.wait(10)
+    ht_recovered = h.data_get_entity("@e[tag=scrub_cow,limit=1]", "HurtTime")
+    nums = re.findall(r"\d+", ht_recovered)
+    ht_rec_val = int(nums[0]) if nums else -1
+    assert ht_rec_val == 0, f"Expected hurt time to recover to 0: {ht_recovered}"
+
+    # Start scrub and step backwards to the moment of impact
+    res = h.rreturn("scrub start")
+    assert "started" in str(res).lower(), f"Unexpected scrub start: {res}"
+
+    # Step back ~5 steps (~7.5 ticks) to when cow was hurt
+    h.rreturn("scrub step -5.0")
+    res_commit = str(h.rreturn("scrub commit"))
+    assert "committed" in res_commit.lower(), f"Unexpected commit: {res_commit}"
+    h.wait(2)
+
+    # The cow's hurt time must be restored to > 0 on the server!
+    ht_rewound = h.data_get_entity("@e[tag=scrub_cow,limit=1]", "HurtTime")
+    nums = re.findall(r"\d+", ht_rewound)
+    ht_rewound_val = int(nums[0]) if nums else 0
+    assert ht_rewound_val > 0, f"Cow hurt_time was not restored on rewind: {ht_rewound}"
+
+    # Cleanup cow
+    h.command("kill @e[tag=scrub_cow]")
+    h.wait(2)
+
+    # 2. Test FOV and walk_dist telemetry in scrub status
+    h.command("effect give @s minecraft:speed 10 3 true")
+    h.wait(8)
+    st_fast = _parse_res(h.rreturn("scrub status"))
+    fov_fast = st_fast.get("fov_modifier", 1.0)
+    assert fov_fast > 1.05, f"Expected higher FOV modifier with speed: {fov_fast}"
+
+    h.command("effect clear @s")
+    h.wait(12)
+    st_normal = _parse_res(h.rreturn("scrub status"))
+    fov_normal = st_normal.get("fov_modifier", 1.0)
+    assert fov_normal < fov_fast, f"Expected FOV modifier to return to normal: {fov_normal}"
+
+    # Start scrub and step back into the high speed / high FOV window
+    h.rreturn("scrub start")
+    h.rreturn("scrub step -8.0")
+    st_rewound_fov = _parse_res(h.rreturn("scrub status"))
+    fov_rewound = st_rewound_fov.get("fov_modifier", 1.0)
+    assert fov_rewound > fov_normal, f"Expected FOV to expand on rewind to speed burst: {fov_rewound} vs normal {fov_normal}"
+
+    h.rreturn("scrub cancel")
+    h.wait(2)
+
+
+

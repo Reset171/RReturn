@@ -117,6 +117,7 @@ from tools.tests.test_bugs_investigation import (
 from tools.tests.test_scrubbing import (
     test_83_interactive_time_scrubbing_and_rewind,
     test_84_scrub_mob_motion_freeze_and_no_extrapolation,
+    test_85_scrub_fov_bobbing_and_hurt_overlay,
 )
 
 HEAVY_WORLD_GROUPS = {"chunks", "dimensions", "portals"}
@@ -243,6 +244,7 @@ def build_test_catalog():
         (82, "Test 82: Wandering Trader Spawner Reset", "investigation", test_82_wandering_trader_spawner_reset),
         (83, "Test 83: Interactive Time Scrubbing and Rewind", "scrubbing", test_83_interactive_time_scrubbing_and_rewind),
         (84, "Test 84: Scrub Mob Motion Freeze and No Extrapolation", "scrubbing", test_84_scrub_mob_motion_freeze_and_no_extrapolation),
+        (85, "Test 85: Scrub FOV Bobbing and Hurt Overlay", "scrubbing", test_85_scrub_fov_bobbing_and_hurt_overlay),
     ]
 
 

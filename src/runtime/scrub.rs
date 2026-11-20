@@ -249,6 +249,8 @@ pub fn commit_scrub(game: &mut Game<'_>) {
                             swell: left_mob.swell,
                             health: left_mob.health,
                             alive: left_mob.alive,
+                            hurt_time: left_mob.hurt_time,
+                            death_time: left_mob.death_time,
                         }));
                     }
                 }
@@ -336,6 +338,8 @@ pub fn commit_scrub(game: &mut Game<'_>) {
                         live_mob.anim.attack_anim = pose.attack_anim;
                         live_mob.anim.attack_anim_o = pose.attack_anim;
                         live_mob.health = pose.health;
+                        live_mob.hurt_time = pose.hurt_time;
+                        live_mob.death_time = pose.death_time;
                         live_mob.needs_sync = true;
                         live_mob.sync_position = true;
                     }

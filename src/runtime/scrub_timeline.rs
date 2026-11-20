@@ -52,6 +52,8 @@ pub struct MobPoseRecord {
     pub swell: f32,
     pub health: f32,
     pub alive: bool,
+    pub hurt_time: i32,
+    pub death_time: i32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -88,6 +90,12 @@ pub struct TickHistoryFrame {
     pub arm_swing: ArmSwingRecord,
     pub particles: Vec<horizon_client::particles::Particle>,
     pub sounds: Vec<SoundRecord>,
+    pub fov_modifier: f32,
+    pub avatar_walk_dist: f32,
+    pub avatar_bob: f32,
+    pub player_sprinting: bool,
+    pub player_hurt_time: i32,
+    pub player_hurt_dir: f32,
 }
 
 pub struct ScrubHistoryRing {
@@ -216,6 +224,19 @@ impl ScrubHistoryRing {
         let p_yaw = game.yaw;
         let p_pitch = game.pitch;
 
+        let fov_modifier = if game.view.fov_modifier > 0.05 {
+            game.view.fov_modifier
+        } else {
+            1.0
+        };
+        let avatar_walk_dist = game.avatar.walk_dist;
+        let avatar_bob = game.avatar.bob;
+        let (player_sprinting, player_hurt_time, player_hurt_dir) = game
+            .player
+            .as_ref()
+            .map(|p| (p.sprinting, p.health.hurt_animation_time, p.health.hurt_dir))
+            .unwrap_or((false, 0, 0.0));
+
         let mut mobs = Vec::with_capacity(game.mobs.len().min(64));
         for m in game.mobs.iter() {
             if m.removed {
@@ -234,6 +255,8 @@ impl ScrubHistoryRing {
                 swell: m.swell as f32,
                 health: m.health,
                 alive: m.alive(),
+                hurt_time: m.hurt_time,
+                death_time: m.death_time,
             });
         }
 
@@ -306,6 +329,12 @@ impl ScrubHistoryRing {
             arm_swing,
             particles,
             sounds,
+            fov_modifier,
+            avatar_walk_dist,
+            avatar_bob,
+            player_sprinting,
+            player_hurt_time,
+            player_hurt_dir,
         });
 
         // Periodic in-memory keyframe snapshot (every 5 seconds)

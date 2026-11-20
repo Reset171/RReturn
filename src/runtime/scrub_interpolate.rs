@@ -93,6 +93,8 @@ pub struct InterpolatedMobPose {
     pub swell: f32,
     pub health: f32,
     pub alive: bool,
+    pub hurt_time: i32,
+    pub death_time: i32,
 }
 
 #[inline]
@@ -140,6 +142,8 @@ pub fn interpolate_mob_pose(left: &MobPoseRecord, right: &MobPoseRecord, alpha: 
         swell: lerp_f32(left.swell, right.swell, alpha),
         health: lerp_f32(left.health, right.health, alpha),
         alive: if alpha > 0.5 { right.alive } else { left.alive },
+        hurt_time: if alpha > 0.5 { right.hurt_time } else { left.hurt_time },
+        death_time: if alpha > 0.5 { right.death_time } else { left.death_time },
     }
 }
 
@@ -160,6 +164,21 @@ pub fn apply_interpolated_poses_to_game(game: &mut Game<'_>, target_time: f64) {
     let interp_p_yaw = lerp_angle(left_frame.player_yaw, right_frame.player_yaw, alpha);
     let interp_p_pitch = lerp_f32(left_frame.player_pitch, right_frame.player_pitch, alpha);
 
+    // Dynamic FOV interpolation (e.g. wider FOV while sprinting/speed)
+    let interp_fov = lerp_f32(left_frame.fov_modifier, right_frame.fov_modifier, alpha);
+    if interp_fov > 0.05 {
+        game.view.fov_modifier = interp_fov;
+        game.view.old_fov_modifier = interp_fov;
+    }
+
+    // Camera view bobbing and hand movement interpolation
+    let interp_walk = lerp_f32(left_frame.avatar_walk_dist, right_frame.avatar_walk_dist, alpha);
+    let interp_bob = lerp_f32(left_frame.avatar_bob, right_frame.avatar_bob, alpha);
+    game.avatar.walk_dist = interp_walk;
+    game.avatar.walk_dist_o = interp_walk;
+    game.avatar.bob = interp_bob;
+    game.avatar.bob_o = interp_bob;
+
     if let Some(p) = game.player.as_mut() {
         p.position.x = interp_p_pos[0];
         p.position.y = interp_p_pos[1];
@@ -171,6 +190,9 @@ pub fn apply_interpolated_poses_to_game(game: &mut Game<'_>, target_time: f64) {
         p.pitch = interp_p_pitch;
         p.teleported = true;
         p.teleported_delta = [false; 3];
+        p.sprinting = if alpha > 0.5 { right_frame.player_sprinting } else { left_frame.player_sprinting };
+        p.health.hurt_animation_time = if alpha > 0.5 { right_frame.player_hurt_time } else { left_frame.player_hurt_time };
+        p.health.hurt_dir = if alpha > 0.5 { right_frame.player_hurt_dir } else { left_frame.player_hurt_dir };
         game.previous_position = p.position;
     }
     game.yaw = interp_p_yaw;
@@ -201,6 +223,8 @@ pub fn apply_interpolated_poses_to_game(game: &mut Game<'_>, target_time: f64) {
                     swell: left_mob.swell,
                     health: left_mob.health,
                     alive: left_mob.alive,
+                    hurt_time: left_mob.hurt_time,
+                    death_time: left_mob.death_time,
                 },
             );
         }
@@ -240,6 +264,8 @@ pub fn apply_interpolated_poses_to_game(game: &mut Game<'_>, target_time: f64) {
             live_mob.anim.attack_anim_o = pose.attack_anim;
 
             live_mob.health = pose.health;
+            live_mob.hurt_time = pose.hurt_time;
+            live_mob.death_time = pose.death_time;
         }
     }
 

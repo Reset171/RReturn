@@ -1,6 +1,84 @@
 use super::super::{Game, Mob};
 use super::scrub_timeline::{with_scrub_ring, MobPoseRecord};
 use horizon_client::fast_hash::FxHashMap;
+use horizon_core::random::{LegacyRandom, RandomSource};
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+static REVERSE_AUDIO_CACHE: Mutex<Option<FxHashMap<String, (Vec<f32>, u32)>>> = Mutex::new(None);
+
+fn decode_ogg_file(path: &Path) -> Option<(Vec<f32>, u32)> {
+    use symphonia::core::{
+        audio::SampleBuffer, codecs::DecoderOptions, formats::FormatOptions, io::MediaSourceStream,
+        meta::MetadataOptions, probe::Hint,
+    };
+    let file = std::fs::File::open(path).ok()?;
+    let stream = MediaSourceStream::new(Box::new(file), Default::default());
+    let mut hint = Hint::new();
+    hint.with_extension("ogg");
+    let probed = symphonia::default::get_probe()
+        .format(
+            &hint,
+            stream,
+            &FormatOptions::default(),
+            &MetadataOptions::default(),
+        )
+        .ok()?;
+    let mut format = probed.format;
+    let track = format.default_track()?;
+    let id = track.id;
+    let rate = track.codec_params.sample_rate?;
+    let mut decoder = symphonia::default::get_codecs()
+        .make(&track.codec_params, &DecoderOptions::default())
+        .ok()?;
+    let mut mono_samples = Vec::new();
+    while let Ok(packet) = format.next_packet() {
+        if packet.track_id() != id {
+            continue;
+        }
+        let Ok(buffer) = decoder.decode(&packet) else {
+            continue;
+        };
+        let spec = *buffer.spec();
+        let frame_channels = spec.channels.count().max(1);
+        let mut decoded = SampleBuffer::<f32>::new(buffer.capacity() as u64, spec);
+        decoded.copy_interleaved_ref(buffer);
+        let raw_samples = decoded.samples();
+        if frame_channels == 1 {
+            mono_samples.extend_from_slice(raw_samples);
+        } else {
+            for frame in raw_samples.chunks(frame_channels) {
+                let sum: f32 = frame.iter().sum();
+                mono_samples.push(sum / frame_channels as f32);
+            }
+        }
+    }
+    if mono_samples.is_empty() {
+        None
+    } else {
+        Some((mono_samples, rate))
+    }
+}
+
+fn resolve_sound_file(resources_dir: &Path, namespace: &str, sound_path: &str) -> Option<PathBuf> {
+    let candidate1 = resources_dir.join("assets").join(namespace).join(sound_path);
+    if candidate1.exists() {
+        return Some(candidate1);
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        let candidate2 = cwd.join(resources_dir).join("assets").join(namespace).join(sound_path);
+        if candidate2.exists() {
+            return Some(candidate2);
+        }
+    }
+    if let Ok(data_home) = std::env::var("XDG_DATA_HOME") {
+        let p = PathBuf::from(data_home).join("horizon/assets").join(namespace).join(sound_path);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    None
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct InterpolatedMobPose {
@@ -196,6 +274,12 @@ pub fn apply_interpolated_poses_to_game(game: &mut Game<'_>, target_time: f64) {
     game.heights.old_main = game.heights.main;
     game.heights.off = lerp_f32(left_frame.arm_swing.height_off, right_frame.arm_swing.height_off, alpha);
     game.heights.old_off = game.heights.off;
+
+    // Seamless particle playback on scrub: restore exact live particles from timeline
+    game.particles.clear();
+    for p in &chosen_frame.particles {
+        game.particles.push(p.clone());
+    }
 }
 
 pub fn apply_block_rewind_to_game(game: &mut Game<'_>, from_tick: i64, to_tick: i64) {
@@ -222,19 +306,6 @@ pub fn apply_block_rewind_to_game(game: &mut Game<'_>, from_tick: i64, to_tick: 
                             delta.z,
                             horizon_world::registry::BlockStateId(delta.old_state),
                         );
-                        let state_for_particle = if delta.old_state != 0 { delta.old_state } else { delta.new_state };
-                        game.destroy_particles(
-                            [delta.x, delta.y, delta.z],
-                            horizon_world::registry::BlockStateId(state_for_particle),
-                        );
-                        let opt = horizon_client::particles::ParticleOptions::simple(
-                            horizon_client::particles::ParticleType::ReversePortal,
-                        );
-                        game.particles.add(
-                            &opt,
-                            [delta.x as f64 + 0.5, delta.y as f64 + 0.5, delta.z as f64 + 0.5],
-                            [0.0, 0.08, 0.0],
-                        );
                     }
                 }
             }
@@ -252,21 +323,109 @@ pub fn apply_block_rewind_to_game(game: &mut Game<'_>, from_tick: i64, to_tick: 
                             delta.z,
                             horizon_world::registry::BlockStateId(delta.new_state),
                         );
-                        let state_for_particle = if delta.new_state != 0 { delta.new_state } else { delta.old_state };
-                        game.destroy_particles(
-                            [delta.x, delta.y, delta.z],
-                            horizon_world::registry::BlockStateId(state_for_particle),
-                        );
-                        let opt = horizon_client::particles::ParticleOptions::simple(
-                            horizon_client::particles::ParticleType::Portal,
-                        );
-                        game.particles.add(
-                            &opt,
-                            [delta.x as f64 + 0.5, delta.y as f64 + 0.5, delta.z as f64 + 0.5],
-                            [0.0, 0.08, 0.0],
-                        );
                     }
                 }
+            }
+        }
+    });
+}
+
+pub fn apply_timeline_sounds_to_game(game: &Game<'_>, from_tick: i64, to_tick: i64) {
+    if from_tick == to_tick {
+        return;
+    }
+
+    with_scrub_ring(|ring| {
+        if ring.frames.is_empty() {
+            return;
+        }
+
+        let mut sounds_to_play = Vec::new();
+
+        if to_tick < from_tick {
+            // Rewinding backwards in time: gather sounds in reverse chronological order
+            for frame in ring.frames.iter().rev() {
+                if frame.game_time <= to_tick {
+                    break;
+                }
+                if frame.game_time <= from_tick {
+                    for s in frame.sounds.iter().rev() {
+                        sounds_to_play.push((s.clone(), true));
+                    }
+                }
+            }
+        } else {
+            // Scrubbing forwards in time: gather sounds in forward chronological order
+            for frame in ring.frames.iter() {
+                if frame.game_time > to_tick {
+                    break;
+                }
+                if frame.game_time > from_tick {
+                    for s in frame.sounds.iter() {
+                        sounds_to_play.push((s.clone(), false));
+                    }
+                }
+            }
+        }
+
+        let mut rng = LegacyRandom::new(42);
+        for (idx, (s, backwards)) in sounds_to_play.into_iter().take(3).enumerate() {
+            let at = if s.relative { None } else { Some(s.position) };
+            if backwards {
+                // True backwards audio waveform playback: decode OGG, reverse PCM samples, play via push_voice
+                let mut played = false;
+                if let Some(sound_def) = game.audio.engine.registry.sound(&s.identifier, &mut rng) {
+                    let (namespace, sound_path) = sound_def.path();
+                    let cache_key = format!("{namespace}:{sound_path}");
+
+                    let mut cached_samples = None;
+                    if let Ok(mut lock) = REVERSE_AUDIO_CACHE.lock() {
+                        let map = lock.get_or_insert_with(FxHashMap::default);
+                        if let Some(entry) = map.get(&cache_key) {
+                            cached_samples = Some(entry.clone());
+                        }
+                    }
+
+                    if cached_samples.is_none() {
+                        if let Some(file_path) = resolve_sound_file(&game.options.resources, namespace, &sound_path) {
+                            if let Some((mut samples, rate)) = decode_ogg_file(&file_path) {
+                                samples.reverse();
+                                if let Ok(mut lock) = REVERSE_AUDIO_CACHE.lock() {
+                                    let map = lock.get_or_insert_with(FxHashMap::default);
+                                    map.insert(cache_key.clone(), (samples.clone(), rate));
+                                }
+                                cached_samples = Some((samples, rate));
+                            }
+                        }
+                    }
+
+                    if let Some((samples, rate)) = cached_samples {
+                        let source_id = ((to_tick as u128) << 32) ^ (idx as u128) ^ 0x52524554;
+                        if game.audio.push_voice("rreturn", source_id, &samples, rate, at) {
+                            played = true;
+                        }
+                    }
+                }
+
+                if !played {
+                    let mut sound = if s.relative {
+                        mod_api::SoundPlay::ui(&s.identifier)
+                    } else {
+                        mod_api::SoundPlay::at(&s.identifier, mod_api::SoundSource::Records, s.position)
+                    };
+                    sound.pitch = 0.85;
+                    sound.volume = 0.9;
+                    game.play_local_sound(&sound, 0);
+                }
+            } else {
+                let mut sound = if s.relative {
+                    mod_api::SoundPlay::ui(&s.identifier)
+                } else {
+                    mod_api::SoundPlay::at(&s.identifier, mod_api::SoundSource::Records, s.position)
+                };
+                sound.pitch = 1.0;
+                sound.volume = 0.9;
+                game.play_local_sound(&sound, 0);
             }
         }
     });

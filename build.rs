@@ -107,6 +107,7 @@ use horizon_client::{
     lan::guest::SavedBody,
     lang,
     mobs::Species,
+    particles::Particle,
     recipe_book::Settings as RecipeBookSettings,
     save::{item_from_nbt, read_dat, write_dat, Level},
     scoreboard::Scoreboard,

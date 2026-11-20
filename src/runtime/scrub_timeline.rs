@@ -1,7 +1,7 @@
 use super::super::{Game, Mob};
 use super::capture::capture_level_snapshot;
 use super::snapshots::*;
-use horizon_client::{chunk::Chunk, fast_hash::FxHashMap};
+use horizon_client::{chunk::Chunk, fast_hash::FxHashMap, particles::Particle};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -68,6 +68,13 @@ pub struct ProjectilePoseRecord {
 }
 
 #[derive(Clone, Debug)]
+pub struct SoundRecord {
+    pub identifier: String,
+    pub position: [f64; 3],
+    pub relative: bool,
+}
+
+#[derive(Clone, Debug)]
 pub struct TickHistoryFrame {
     pub game_time: i64,
     pub player_pos: [f64; 3],
@@ -79,6 +86,8 @@ pub struct TickHistoryFrame {
     pub block_deltas: Vec<BlockDeltaRecord>,
     pub break_progress: Vec<BreakProgressRecord>,
     pub arm_swing: ArmSwingRecord,
+    pub particles: Vec<horizon_client::particles::Particle>,
+    pub sounds: Vec<SoundRecord>,
 }
 
 pub struct ScrubHistoryRing {
@@ -168,7 +177,7 @@ impl ScrubHistoryRing {
         Some((first, last))
     }
 
-    pub fn record_tick(&mut self, game: &Game<'_>) {
+    pub fn record_tick(&mut self, game: &mut Game<'_>) {
         let now = game.world.game_time;
 
         // If the game time jumped backwards, clear future history
@@ -266,6 +275,20 @@ impl ScrubHistoryRing {
             height_off: game.heights.off,
         };
 
+        // Capture live particles (up to 128 particles per tick)
+        let particles: Vec<horizon_client::particles::Particle> = game.particles.live().take(128).cloned().collect();
+
+        // Ensure audio notification capture is enabled and drain sounds from the last tick
+        game.audio.record_heard = true;
+        let mut sounds = Vec::new();
+        for notif in std::mem::take(&mut game.audio.engine.notifications) {
+            sounds.push(SoundRecord {
+                identifier: notif.identifier,
+                position: notif.position,
+                relative: notif.relative,
+            });
+        }
+
         if self.frames.len() >= MAX_SCRUB_TICKS {
             self.frames.pop_front();
         }
@@ -281,6 +304,8 @@ impl ScrubHistoryRing {
             block_deltas,
             break_progress,
             arm_swing,
+            particles,
+            sounds,
         });
 
         // Periodic in-memory keyframe snapshot (every 5 seconds)

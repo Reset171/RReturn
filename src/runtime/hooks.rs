@@ -158,6 +158,8 @@ pub fn handle_server_started(game: &mut Game<'_>) {
     load_saved_settings(game);
     clear_all_slots();
     clear_client_snapshots();
+    with_scrub_ring_mut(|r| r.clear());
+    game.audio.record_heard = true;
     let has_disk_cp = has_disk_checkpoint(&game.world_root);
     let mut restored_anchors = HashSet::new();
     let mut restored_save_tick = game.world.game_time;
@@ -196,6 +198,7 @@ pub fn handle_lifecycle(_game: &mut Game<'_>, phase: WorldPhase) {
         | WorldPhase::WorldOpenFailed => {
             clear_all_slots();
             clear_client_snapshots();
+            with_scrub_ring_mut(|r| r.clear());
             with_state_mut(|st| {
                 st.pending_death_rollback = None;
             });

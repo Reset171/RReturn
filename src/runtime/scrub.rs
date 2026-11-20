@@ -2,8 +2,8 @@ use super::super::Game;
 use super::restore::rollback_slot_checkpoint_on_server;
 use super::restore_client::apply_client_level_rollback;
 use super::scrub_interpolate::{
-    apply_block_rewind_to_game, apply_interpolated_poses_to_game, interpolate_mob_pose,
-    lerp_angle, lerp_f32, lerp_f64, InterpolatedMobPose,
+    apply_block_rewind_to_game, apply_interpolated_poses_to_game, apply_timeline_sounds_to_game,
+    interpolate_mob_pose, lerp_angle, lerp_f32, lerp_f64, InterpolatedMobPose,
 };
 use super::scrub_timeline::{with_scrub_ring, with_scrub_ring_mut};
 use super::types::*;
@@ -117,61 +117,7 @@ pub fn start_scrub(game: &mut Game<'_>) {
     game.clock.set_frozen(true);
 }
 
-pub fn play_scrub_sound(game: &Game<'_>, backwards: bool, accel: f64) {
-    let identifier = if backwards {
-        "minecraft:block.respawn_anchor.charge"
-    } else {
-        "minecraft:ui.button.click"
-    };
-    let mut sound = mod_api::SoundPlay::ui(identifier);
-    sound.volume = 0.45;
-    sound.pitch = if backwards {
-        (0.65 + (accel * 0.12) as f32).min(1.8)
-    } else {
-        1.25
-    };
-    game.play_local_sound(&sound, 0);
-}
-
-pub fn spawn_scrub_particles(game: &mut Game<'_>, backwards: bool) {
-    let (px_base, py_base, pz_base) = match &game.player {
-        Some(p) => (p.position.x, p.position.y, p.position.z),
-        None => return,
-    };
-
-    let offsets = {
-        let r = game.particles.random();
-        let mut v = Vec::with_capacity(4);
-        for _ in 0..4 {
-            let rx = (r.next_float() as f64 - 0.5) * 1.6;
-            let ry = (r.next_float() as f64) * 1.7;
-            let rz = (r.next_float() as f64 - 0.5) * 1.6;
-            v.push((rx, ry, rz));
-        }
-        v
-    };
-
-    let p_type = if backwards {
-        horizon_client::particles::ParticleType::ReversePortal
-    } else {
-        horizon_client::particles::ParticleType::Portal
-    };
-    let opt = horizon_client::particles::ParticleOptions::simple(p_type);
-
-    for (rx, ry, rz) in offsets {
-        let px = px_base + rx;
-        let py = py_base + ry;
-        let pz = pz_base + rz;
-        let (vx, vy, vz) = if backwards {
-            ((px_base - px) * 0.15, (py_base + 0.8 - py) * 0.15, (pz_base - pz) * 0.15)
-        } else {
-            ((px - px_base) * 0.15, 0.05, (pz - pz_base) * 0.15)
-        };
-        game.particles.add(&opt, [px, py, pz], [vx, vy, vz]);
-    }
-}
-
-pub fn on_mouse_scroll(game: &mut Game<'_>, scroll: [f64; 2], accumulated: [i32; 2]) -> bool {
+pub fn on_mouse_scroll(_game: &mut Game<'_>, scroll: [f64; 2], accumulated: [i32; 2]) -> bool {
     let mut s = match session_lock().lock() {
         Ok(guard) => guard,
         Err(_) => return false,
@@ -203,12 +149,7 @@ pub fn on_mouse_scroll(game: &mut Game<'_>, scroll: [f64; 2], accumulated: [i32;
 
     let step = wheel_y * s.jog_accel * 1.5;
     s.target_time = (s.target_time + step).clamp(s.min_tick as f64, s.anchor_tick as f64);
-    let backwards = step < 0.0;
-    let accel = s.jog_accel;
     drop(s);
-
-    play_scrub_sound(game, backwards, accel);
-    spawn_scrub_particles(game, backwards);
 
     true
 }
@@ -238,20 +179,8 @@ pub fn on_frame_render_pre(game: &mut Game<'_>, _world_partial: f32, _partial: f
     apply_interpolated_poses_to_game(game, target_t);
     if old_applied != new_applied {
         apply_block_rewind_to_game(game, old_applied, new_applied);
+        apply_timeline_sounds_to_game(game, old_applied, new_applied);
     }
-
-    // Keep particles seamlessly animated during scrub even while clock is frozen
-    let plevel = horizon_client::particles::ParticleLevel {
-        world: &game.world,
-        facts: game.res.facts(),
-        collision: game.collision,
-        player: game
-            .player
-            .as_ref()
-            .map(|p| ([p.position.x, p.position.y, p.position.z], p.velocity.y)),
-        cached_chunk: std::cell::Cell::new(None),
-    };
-    game.particles.tick(&plevel);
 }
 
 pub fn commit_scrub(game: &mut Game<'_>) {
@@ -441,6 +370,7 @@ pub fn cancel_scrub(game: &mut Game<'_>) {
 
     if applied != anchor {
         apply_block_rewind_to_game(game, applied, anchor);
+        apply_timeline_sounds_to_game(game, applied, anchor);
     }
     apply_interpolated_poses_to_game(game, anchor as f64);
     let player_sync = game.player.as_ref().map(|p| (p.position, game.yaw, game.pitch));

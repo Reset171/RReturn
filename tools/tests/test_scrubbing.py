@@ -60,6 +60,7 @@ def test_83_interactive_time_scrubbing_and_rewind(h):
     assert st.get("current_time", anchor_t) <= anchor_t, f"Cursor did not move back: {st}"
     assert "diamond_block" in h.block(0, 65, 2).get("block", ""), "Diamond block did not reappear in real-time scrubbing!"
     assert "particles" in st, f"Particles field expected in scrub status: {st}"
+    assert "sounds" in st, f"Sounds field expected in scrub status: {st}"
 
     # Step forward: diamond block should disappear again in real time!
     h.rreturn("scrub step 12.0")

@@ -275,11 +275,139 @@ pub fn apply_interpolated_poses_to_game(game: &mut Game<'_>, target_time: f64) {
     game.heights.off = lerp_f32(left_frame.arm_swing.height_off, right_frame.arm_swing.height_off, alpha);
     game.heights.old_off = game.heights.off;
 
-    // Seamless particle playback on scrub: restore exact live particles from timeline
+    // Seamless particle playback on scrub: interpolate particles across sub-tick time
+    let interpolated_particles = interpolate_timeline_particles(
+        &left_frame.particles,
+        &right_frame.particles,
+        alpha,
+    );
+
     game.particles.clear();
-    for p in &chosen_frame.particles {
-        game.particles.push(p.clone());
+    for p in interpolated_particles {
+        game.particles.push(p);
     }
+    let world = &game.world;
+    let facts = game.res.facts();
+    let collision = game.res.collision();
+    let player_vel = game
+        .player
+        .as_ref()
+        .map(|p| ([p.position.x, p.position.y, p.position.z], p.velocity.y));
+    let level = horizon_client::particles::ParticleLevel {
+        world,
+        facts,
+        collision,
+        player: player_vel,
+        cached_chunk: std::cell::Cell::new(None),
+    };
+    game.particles.tick(&level);
+    game.particles.sounds.clear();
+}
+
+pub fn interpolate_timeline_particles(
+    left_particles: &[horizon_client::particles::Particle],
+    right_particles: &[horizon_client::particles::Particle],
+    alpha: f32,
+) -> Vec<horizon_client::particles::Particle> {
+    if left_particles.is_empty() && right_particles.is_empty() {
+        return Vec::new();
+    }
+    if right_particles.is_empty() || alpha <= 0.0 {
+        let mut cloned = left_particles.to_vec();
+        for p in &mut cloned {
+            p.previous = p.position;
+        }
+        return cloned;
+    }
+    if left_particles.is_empty() || alpha >= 1.0 {
+        let mut cloned = right_particles.to_vec();
+        for p in &mut cloned {
+            p.previous = p.position;
+        }
+        return cloned;
+    }
+
+    let a64 = f64::from(alpha);
+    let mut result = Vec::with_capacity(left_particles.len().max(right_particles.len()));
+    let mut matched_right = vec![false; right_particles.len()];
+
+    for left_p in left_particles {
+        let mut best_match: Option<usize> = None;
+        let mut min_dist_sq = 9.0;
+
+        for (r_idx, right_p) in right_particles.iter().enumerate() {
+            if matched_right[r_idx] {
+                continue;
+            }
+            if right_p.ty == left_p.ty
+                && right_p.lifetime == left_p.lifetime
+                && (right_p.age == left_p.age + 1 || (right_p.age == left_p.age && (alpha - 0.5).abs() < 0.49))
+            {
+                let dx = right_p.position[0] - left_p.position[0];
+                let dy = right_p.position[1] - left_p.position[1];
+                let dz = right_p.position[2] - left_p.position[2];
+                let dist_sq = dx * dx + dy * dy + dz * dz;
+                if dist_sq < min_dist_sq {
+                    min_dist_sq = dist_sq;
+                    best_match = Some(r_idx);
+                }
+            }
+        }
+
+        if let Some(r_idx) = best_match {
+            matched_right[r_idx] = true;
+            let right_p = &right_particles[r_idx];
+            let mut interp = left_p.clone();
+            let interp_pos = [
+                lerp_f64(left_p.position[0], right_p.position[0], a64),
+                lerp_f64(left_p.position[1], right_p.position[1], a64),
+                lerp_f64(left_p.position[2], right_p.position[2], a64),
+            ];
+            interp.position = interp_pos;
+            interp.previous = interp_pos;
+            interp.size = lerp_f32(left_p.size, right_p.size, alpha);
+            interp.rgba = [
+                lerp_f32(left_p.rgba[0], right_p.rgba[0], alpha),
+                lerp_f32(left_p.rgba[1], right_p.rgba[1], alpha),
+                lerp_f32(left_p.rgba[2], right_p.rgba[2], alpha),
+                lerp_f32(left_p.rgba[3], right_p.rgba[3], alpha),
+            ];
+            result.push(interp);
+        } else {
+            let mut interp = left_p.clone();
+            let interp_pos = [
+                left_p.position[0] + left_p.velocity[0] * a64,
+                left_p.position[1] + left_p.velocity[1] * a64,
+                left_p.position[2] + left_p.velocity[2] * a64,
+            ];
+            interp.position = interp_pos;
+            interp.previous = interp_pos;
+            interp.rgba[3] = (interp.rgba[3] * (1.0 - alpha)).clamp(0.0, 1.0);
+            if interp.rgba[3] > 0.02 {
+                result.push(interp);
+            }
+        }
+    }
+
+    for (r_idx, right_p) in right_particles.iter().enumerate() {
+        if !matched_right[r_idx] {
+            let mut interp = right_p.clone();
+            let back = 1.0 - a64;
+            let interp_pos = [
+                right_p.position[0] - right_p.velocity[0] * back,
+                right_p.position[1] - right_p.velocity[1] * back,
+                right_p.position[2] - right_p.velocity[2] * back,
+            ];
+            interp.position = interp_pos;
+            interp.previous = interp_pos;
+            interp.rgba[3] = (interp.rgba[3] * alpha).clamp(0.0, 1.0);
+            if interp.rgba[3] > 0.02 {
+                result.push(interp);
+            }
+        }
+    }
+
+    result
 }
 
 pub fn apply_block_rewind_to_game(game: &mut Game<'_>, from_tick: i64, to_tick: i64) {

@@ -30,17 +30,18 @@ def test_83_interactive_time_scrubbing_and_rewind(h):
     h.rreturn("set")
     h.wait(6)
 
-    # Spawn a zombie and change diamond block
+    # Spawn a zombie, particles, and change diamond block
     h.command("summon minecraft:zombie 3.5 65.0 3.5 {Tags:['scrub_zombie'],CustomName:'\"ScrubZ\"'}")
     h.command("setblock 0 65 2 minecraft:diamond_block")
-    h.wait(10)
+    h.command("particle minecraft:crit 3.5 66.0 3.5 0.2 0.2 0.2 0.1 15")
+    h.wait(6)
     assert h.has_entity("@e[tag=scrub_zombie]"), "Zombie did not spawn"
     assert "diamond_block" in h.block(0, 65, 2).get("block", ""), "Diamond block not set"
 
     # Move zombie to distant location and break diamond block
     h.command("tp @e[tag=scrub_zombie] 15.5 65.0 15.5")
     h.command("setblock 0 65 2 minecraft:air")
-    h.wait(12)
+    h.wait(14)
     assert "air" in h.block(0, 65, 2).get("block", ""), "Diamond block was not removed"
     far_pos = h.data_get_entity("@e[tag=scrub_zombie,limit=1]", "Pos")
     assert "15." in far_pos, f"Zombie did not move to far position: {far_pos}"
@@ -55,11 +56,12 @@ def test_83_interactive_time_scrubbing_and_rewind(h):
     anchor_t = st.get("anchor_tick", 0)
 
     # Step wheel backward past the break: diamond block should reappear in real time!
-    h.rreturn("scrub step -12.0")
+    h.rreturn("scrub step -14.0")
     st = _parse_res(h.rreturn("scrub status"))
     assert st.get("current_time", anchor_t) <= anchor_t, f"Cursor did not move back: {st}"
     assert "diamond_block" in h.block(0, 65, 2).get("block", ""), "Diamond block did not reappear in real-time scrubbing!"
     assert "particles" in st, f"Particles field expected in scrub status: {st}"
+    assert st.get("particles", 0) > 0, f"Expected particles to be active during rewound scrub frame: {st}"
     assert "sounds" in st, f"Sounds field expected in scrub status: {st}"
 
     # Step forward: diamond block should disappear again in real time!

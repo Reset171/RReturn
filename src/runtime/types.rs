@@ -54,6 +54,16 @@ pub fn is_valid_slot_name(name: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
+#[derive(Clone, Debug)]
+pub enum RollbackOrigin<'a> {
+    DiskSlot(&'a str),
+    ScrubSnapshot {
+        target_tick: i64,
+        touched_unloaded: Vec<([i32; 2], String)>,
+        future_region_files: Vec<PathBuf>,
+    },
+}
+
 fn is_local_dev_allowed(game: &Game<'_>, requester: Option<u128>) -> bool {
     if game.remote.is_some() && game.integrated.is_none() {
         return false;

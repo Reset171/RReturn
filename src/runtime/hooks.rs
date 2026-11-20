@@ -59,6 +59,20 @@ pub fn handle_key(game: &mut Game<'_>, key: &str, action: mod_api::KeyAction) {
             cancel_scrub(game);
             return;
         }
+        if (key == "key.keyboard.left" || key == "key.keyboard.a")
+            && matches!(action, mod_api::KeyAction::Press)
+        {
+            step_scrub_ticks(-1.0);
+            return;
+        }
+        if (key == "key.keyboard.right" || key == "key.keyboard.d")
+            && matches!(action, mod_api::KeyAction::Press)
+        {
+            step_scrub_ticks(1.0);
+            return;
+        }
+        // Block all other keys from interacting with the game during active scrub
+        return;
     }
 
     let pressed = matches!(action, mod_api::KeyAction::Press);
@@ -159,6 +173,7 @@ pub fn handle_server_started(game: &mut Game<'_>) {
     clear_all_slots();
     clear_client_snapshots();
     with_scrub_ring_mut(|r| r.clear());
+    clear_server_scrub();
     game.audio.record_heard = true;
     let has_disk_cp = has_disk_checkpoint(&game.world_root);
     let mut restored_anchors = HashSet::new();
@@ -199,6 +214,7 @@ pub fn handle_lifecycle(_game: &mut Game<'_>, phase: WorldPhase) {
             clear_all_slots();
             clear_client_snapshots();
             with_scrub_ring_mut(|r| r.clear());
+            clear_server_scrub();
             with_state_mut(|st| {
                 st.pending_death_rollback = None;
             });
@@ -208,10 +224,14 @@ pub fn handle_lifecycle(_game: &mut Game<'_>, phase: WorldPhase) {
 }
 
 pub fn handle_tick(game: &mut Game<'_>) {
-    if !is_scrubbing() && game.screen == super::super::Screen::Playing {
-        with_scrub_ring_mut(|r| {
-            r.record_tick(game);
-        });
+    if game.native_window() {
+        if !is_scrubbing() && game.screen == super::super::Screen::Playing {
+            with_scrub_ring_mut(|r| {
+                r.record_tick(game);
+            });
+        }
+    } else if !is_scrubbing() {
+        record_server_tick(game);
     }
 
     if game.screen == super::super::Screen::Dead {

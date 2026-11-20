@@ -25,6 +25,7 @@ const RUNTIME_FILES: &[&str] = &[
     "ui.rs",
     "tracker.rs",
     "scrub_timeline.rs",
+    "scrub_server.rs",
     "scrub_interpolate.rs",
     "scrub.rs",
     "hooks.rs",

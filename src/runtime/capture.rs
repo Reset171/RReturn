@@ -373,56 +373,7 @@ pub fn create_checkpoint_on_server(game: &mut Game<'_>, requester: Option<u128>)
     create_slot_checkpoint_on_server(game, requester, "default")
 }
 
-pub fn create_slot_checkpoint_on_server(
-    game: &mut Game<'_>,
-    requester: Option<u128>,
-    slot: &str,
-) -> bool {
-    if !is_valid_slot_name(slot.trim()) {
-        return false;
-    }
-    let now = game.world.game_time;
-    bench_begin(&format!("CHECKPOINT CAPTURE [{}]", slot), now);
-
-    let t_raids = std::time::Instant::now();
-    let open_cart_keys: Vec<(i32, i32, i32)> = game
-        .world
-        .block_entities
-        .keys()
-        .copied()
-        .filter(|k| k.1 == horizon_gameplay::minecarts::CART_KEY_Y)
-        .collect();
-    for key in open_cart_keys {
-        game.store_cart_items(key);
-    }
-    game.save_world_state();
-    game.score.storage.save(&game.world_root);
-    game.score.stopwatches.save(&game.world_root);
-    game.save_scoreboard();
-    game.save_bossbars();
-    game.save_schedule();
-    game.save_maps();
-    game.save_portal_arrivals();
-    game.raiding.raids.dirty = true;
-    game.save_raids();
-    game.save_fight();
-    game.save_wandering_trader();
-    if game.save_game_with(true).is_err()
-        || game.save_entities(true).is_err()
-        || game.save.flush().is_err()
-    {
-        let _ = bench_end_and_log();
-        return false;
-    }
-    for parked in game.levels.parked.values() {
-        if parked.save.flush().is_err() {
-            let _ = bench_end_and_log();
-            return false;
-        }
-    }
-    bench_accum(Phase::CaptureRaids, t_raids);
-
-    let t_players = std::time::Instant::now();
+pub fn capture_guests_snapshot(game: &Game<'_>) -> (HashMap<u128, GuestSnapshot>, Vec<u128>) {
     let mut guests = HashMap::new();
     let mut online = Vec::new();
     if let Some(host) = &game.lan {
@@ -537,11 +488,6 @@ pub fn create_slot_checkpoint_on_server(
             let effects = g.effects.list.clone();
             let effects_tick_count = g.effects.tick_count;
             let effects_changes = g.effects.changes;
-            if is_owner {
-                game.potions.effects.list = effects.clone();
-                game.potions.effects.tick_count = effects_tick_count;
-                game.potions.effects.changes = effects_changes;
-            }
             guests.insert(
                 g.uuid,
                 GuestSnapshot {
@@ -614,7 +560,153 @@ pub fn create_slot_checkpoint_on_server(
             );
         }
     }
+    (guests, online)
+}
 
+pub fn capture_timeline_snapshot_in_memory(game: &Game<'_>) -> Arc<TimelineSnapshot> {
+    let (guests, online) = capture_guests_snapshot(game);
+    let mut levels = HashMap::new();
+    levels.insert(game.dim, capture_level_snapshot(game, game.dim));
+    for (&dim, parked) in &game.levels.parked {
+        levels.insert(dim, capture_parked_snapshot(game, dim, parked));
+    }
+    let (anchor_set, policy) = with_state(|st| {
+        let anchors: HashSet<u128> = resolve_anchors(&st.anchor, &online, game.world.game_time, None)
+            .into_iter()
+            .collect();
+        (anchors, st.policy)
+    });
+
+    Arc::new(TimelineSnapshot {
+        anchor_ids: anchor_set,
+        policy,
+        game_time: game.world.game_time,
+        day_time: game.world.day_time,
+        weather: game.world.weather,
+        health_rules: game.world.health_rules,
+        rules: game.ui.rules.clone(),
+        border: game.border.clone(),
+        bossbars: game.bosses.bars.pack(),
+        sculk_tracker: game.sculk.tracker,
+        sculk_darkness: game.sculk.darkness,
+        dragon_fight_dat: None,
+        fight_tag: Some(game.fight.rreturn_pack()),
+        trader_dat: None,
+        rand_sequences: game.rand_sequences.clone(),
+        region_files: HashSet::new(),
+        difficulty: game.ui.difficulty,
+        difficulty_locked: game.level.difficulty_locked,
+        clock_rate: game.clock.rate(),
+        clock_frozen: game.clock.frozen(),
+        time_rate: game.ui.clock.rate,
+        time_partial: game.ui.clock.partial,
+        time_paused: game.ui.clock.paused,
+        command_clocks: game.ui.command_clocks.clone(),
+        world_spawn: game.level.world_spawn,
+        world_spawn_angle: game.level.world_spawn_angle,
+        next_entity: game.next_entity,
+        ticked_entities_through: game.ticked_entities_through,
+        ordered_announced: game.ordered.announced,
+        cat_tick: game.creatures.cat.next_tick,
+        phantom_tick: game.stats.rreturn_phantom_tick(),
+        player_extra: game.level.player_extra.clone(),
+        shoulder_time: game.creatures.shoulder_time.clone(),
+        fangs: game.fangs.list.clone(),
+        ominous_spawners: game
+            .ominous_spawners
+            .iter()
+            .map(|s| {
+                (
+                    s.id,
+                    horizon_client::entity_nbt::ominous_item_spawner_to_nbt(
+                        &s.item,
+                        Vec3::new(s.position[0], s.position[1], s.position[2]),
+                        s.spawn_item_after,
+                        s.uuid,
+                        s.raw.as_deref(),
+                    ),
+                )
+            })
+            .collect(),
+        portals_entities: game.portals.entities.clone(),
+        end_gateway_cooldowns: game.end.rreturn_gateway_cooldowns(),
+        lectern_pulses: game.lectern_pulses.clone(),
+        player_beds: game.player_beds.clone(),
+        sleep_seen: game.sleep_seen,
+        lead_killers: game.lead_killers.clone(),
+        lid_openers: game.lid_openers.clone(),
+        entity_attachments: game.entity_attachments.clone(),
+        player_attachments: game.player_state.attachments.clone(),
+        guest_attachments: game.lan.as_ref().map(|host| {
+            host.hub.guests.iter().map(|g| (g.uuid, (*g.attachments).clone())).collect()
+        }).unwrap_or_default(),
+        scheduled_events: game.fns.schedule.clone(),
+        scoreboard: game.score.board.clone(),
+        sound_seed_state: None,
+        cmd_post_effects: game.cmds.post_effects.clone(),
+        guests,
+        offline_player_data: HashMap::new(),
+        levels,
+        mob_players: game.lan.as_ref().map(|h| h.mob_players.clone()).unwrap_or_default(),
+        disk_restored: true,
+        client_using: game.using,
+        client_use_duration: game.use_duration,
+        client_use_ticks_set: false,
+        client_crossbow_sounds: game.crossbow_sounds,
+    })
+}
+
+pub fn create_slot_checkpoint_on_server(
+    game: &mut Game<'_>,
+    requester: Option<u128>,
+    slot: &str,
+) -> bool {
+    if !is_valid_slot_name(slot.trim()) {
+        return false;
+    }
+    let now = game.world.game_time;
+    bench_begin(&format!("CHECKPOINT CAPTURE [{}]", slot), now);
+
+    let t_raids = std::time::Instant::now();
+    let open_cart_keys: Vec<(i32, i32, i32)> = game
+        .world
+        .block_entities
+        .keys()
+        .copied()
+        .filter(|k| k.1 == horizon_gameplay::minecarts::CART_KEY_Y)
+        .collect();
+    for key in open_cart_keys {
+        game.store_cart_items(key);
+    }
+    game.save_world_state();
+    game.score.storage.save(&game.world_root);
+    game.score.stopwatches.save(&game.world_root);
+    game.save_scoreboard();
+    game.save_bossbars();
+    game.save_schedule();
+    game.save_maps();
+    game.save_portal_arrivals();
+    game.raiding.raids.dirty = true;
+    game.save_raids();
+    game.save_fight();
+    game.save_wandering_trader();
+    if game.save_game_with(true).is_err()
+        || game.save_entities(true).is_err()
+        || game.save.flush().is_err()
+    {
+        let _ = bench_end_and_log();
+        return false;
+    }
+    for parked in game.levels.parked.values() {
+        if parked.save.flush().is_err() {
+            let _ = bench_end_and_log();
+            return false;
+        }
+    }
+    bench_accum(Phase::CaptureRaids, t_raids);
+
+    let t_players = std::time::Instant::now();
+    let (guests, online) = capture_guests_snapshot(game);
     bench_add_players(online.len());
     bench_accum(Phase::CapturePlayers, t_players);
 

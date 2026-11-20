@@ -202,3 +202,25 @@ bindings = [
   { name = "draw", ty = "&mut horizon_client::hud::HudBatch", value = "&mut *draw" },
 ]
 
+[[native.mixin]]
+id = "movement-input"
+target = "horizon_client::game::native_hooks::movement_input::Game<'_>::native_movement_input"
+kind = "HEAD"
+helper = "src/hooks/hook_movement_input.rs"
+bindings = [
+  { name = "game", ty = "&Game<'_>", value = "&*self" },
+  { name = "call", ty = "mod_api::__private::MovementInputCall<'_>", value = "call" },
+]
+
+[[native.mixin]]
+id = "key-mapping-pre"
+target = "horizon_client::game::native_hooks::key_mapping_pre::Game<'_>::native_key_mapping_pre"
+kind = "HEAD"
+helper = "src/hooks/hook_key_mapping_pre.rs"
+bindings = [
+  { name = "game", ty = "&mut Game<'_>", value = "&mut *self" },
+  { name = "mapping", ty = "&str", value = "mapping" },
+  { name = "pressed", ty = "bool", value = "pressed" },
+  { name = "canceled", ty = "&mut bool", value = "&mut *canceled" },
+]
+

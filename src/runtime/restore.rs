@@ -21,18 +21,6 @@ pub fn rollback_checkpoint_on_server(game: &mut Game<'_>) -> bool {
 }
 
 pub fn rollback_slot_checkpoint_on_server(game: &mut Game<'_>, slot: &str) -> bool {
-    let t_start = std::time::Instant::now();
-    let prev_dim = game.dim;
-    bench_begin(&format!("ROLLBACK RESTORE [{}]", slot), game.world.game_time);
-
-    let t_flush = std::time::Instant::now();
-    let _ = game.save.flush();
-    for parked in game.levels.parked.values() {
-        let _ = parked.save.flush();
-    }
-    game.world.loaded_entities.clear();
-    bench_accum(Phase::FlushSave, t_flush);
-
     let t_hydrate = std::time::Instant::now();
     let mut snap = match get_slot_snapshot_clone(slot) {
         Some(s) => s,
@@ -58,15 +46,55 @@ pub fn rollback_slot_checkpoint_on_server(game: &mut Game<'_>, slot: &str) -> bo
     }
     bench_accum(Phase::HydrateSnapshot, t_hydrate);
 
-    let need_force_disk = !snap.disk_restored;
-    let is_hot_rollback = slot == "default"
-        && game.dim == target_dim
-        && snap.levels.contains_key(&game.dim)
-        && !need_force_disk;
-    let t_disk = std::time::Instant::now();
-    let disk_files_changed =
-        restore_disk_files_for_slot_opts(&game.world_root, slot, need_force_disk);
-    bench_accum(Phase::RestoreDiskFiles, t_disk);
+    apply_timeline_snapshot_on_server(game, &snap, RollbackOrigin::DiskSlot(slot))
+}
+
+pub fn apply_timeline_snapshot_on_server(
+    game: &mut Game<'_>,
+    snap: &TimelineSnapshot,
+    origin: RollbackOrigin<'_>,
+) -> bool {
+    let t_start = std::time::Instant::now();
+    let prev_dim = game.dim;
+    let bench_name = match origin {
+        RollbackOrigin::DiskSlot(slot) => format!("ROLLBACK RESTORE [{}]", slot),
+        RollbackOrigin::ScrubSnapshot { target_tick, .. } => {
+            format!("ROLLBACK RESTORE [SCRUB @ {}]", target_tick)
+        }
+    };
+    bench_begin(&bench_name, game.world.game_time);
+
+    let t_flush = std::time::Instant::now();
+    let _ = game.save.flush();
+    for parked in game.levels.parked.values() {
+        let _ = parked.save.flush();
+    }
+    game.world.loaded_entities.clear();
+    bench_accum(Phase::FlushSave, t_flush);
+
+    let target_dim = snap
+        .guests
+        .values()
+        .next()
+        .map(|g| Dim::from_id(&g.dimension))
+        .unwrap_or_else(|| {
+            snap.levels.keys().copied().next().unwrap_or(Dim::Overworld)
+        });
+
+    let (need_force_disk, is_hot_rollback, disk_files_changed) = match origin {
+        RollbackOrigin::DiskSlot(slot) => {
+            let need_force = !snap.disk_restored;
+            let is_hot = slot == "default"
+                && game.dim == target_dim
+                && snap.levels.contains_key(&game.dim)
+                && !need_force;
+            let t_disk = std::time::Instant::now();
+            let changed = restore_disk_files_for_slot_opts(&game.world_root, slot, need_force);
+            bench_accum(Phase::RestoreDiskFiles, t_disk);
+            (need_force, is_hot, changed)
+        }
+        RollbackOrigin::ScrubSnapshot { .. } => (false, true, 0),
+    };
 
     let t_savedir = std::time::Instant::now();
     if need_force_disk || !is_hot_rollback || disk_files_changed > 0 {
@@ -146,11 +174,13 @@ pub fn rollback_slot_checkpoint_on_server(game: &mut Game<'_>, slot: &str) -> bo
     if policy.world_scoreboard {
         game.load_scoreboard();
         game.score.board = snap.scoreboard.clone();
-        let cp_slot_dir = slot_dir(&game.world_root, slot);
-        game.score.storage =
-            horizon_client::command_storage::CommandStorage::load(&cp_slot_dir);
-        game.score.stopwatches =
-            horizon_client::stopwatches::Stopwatches::load(&cp_slot_dir);
+        if let RollbackOrigin::DiskSlot(slot) = origin {
+            let cp_slot_dir = slot_dir(&game.world_root, slot);
+            game.score.storage =
+                horizon_client::command_storage::CommandStorage::load(&cp_slot_dir);
+            game.score.stopwatches =
+                horizon_client::stopwatches::Stopwatches::load(&cp_slot_dir);
+        }
         game.sync_score_registries();
     }
     bench_accum(Phase::ServerGlobals, t_globals);
@@ -259,24 +289,33 @@ pub fn rollback_slot_checkpoint_on_server(game: &mut Game<'_>, slot: &str) -> bo
     bench_accum(Phase::Bosses, t_bosses);
 
     let t_mca = std::time::Instant::now();
-    let subfolders = ["region", "entities", "poi"];
-    let dims = [
-        "dimensions/minecraft/overworld",
-        "dimensions/minecraft/the_nether",
-        "dimensions/minecraft/the_end",
-    ];
     let mut deleted_region_files = false;
-    for dim_path in dims {
-        for sub in subfolders {
-            let rdir = game.world_root.join(dim_path).join(sub);
-            if let Ok(entries) = fs::read_dir(rdir) {
-                for e in entries.flatten() {
-                    let p = e.path();
-                    if p.is_file() && !snap.region_files.contains(&p) {
-                        let _ = fs::remove_file(&p);
-                        deleted_region_files = true;
+    if let RollbackOrigin::DiskSlot(_) = origin {
+        let subfolders = ["region", "entities", "poi"];
+        let dims = [
+            "dimensions/minecraft/overworld",
+            "dimensions/minecraft/the_nether",
+            "dimensions/minecraft/the_end",
+        ];
+        for dim_path in dims {
+            for sub in subfolders {
+                let rdir = game.world_root.join(dim_path).join(sub);
+                if let Ok(entries) = fs::read_dir(rdir) {
+                    for e in entries.flatten() {
+                        let p = e.path();
+                        if p.is_file() && !snap.region_files.contains(&p) {
+                            let _ = fs::remove_file(&p);
+                            deleted_region_files = true;
+                        }
                     }
                 }
+            }
+        }
+    } else if let RollbackOrigin::ScrubSnapshot { ref future_region_files, .. } = origin {
+        for p in future_region_files {
+            if p.is_file() {
+                let _ = fs::remove_file(p);
+                deleted_region_files = true;
             }
         }
     }
@@ -284,7 +323,9 @@ pub fn rollback_slot_checkpoint_on_server(game: &mut Game<'_>, slot: &str) -> bo
 
     if target_dim != game.dim || deleted_region_files || disk_files_changed > 0 || !is_hot_rollback {
         let t_stream = std::time::Instant::now();
-        restore_offline_files(&snap.offline_player_data, policy.player_stats);
+        if let RollbackOrigin::DiskSlot(_) = origin {
+            restore_offline_files(&snap.offline_player_data, policy.player_stats);
+        }
         game.streaming.wait(std::time::Duration::from_millis(2));
         if let Ok((fresh_streaming, fresh_save, _)) = super::super::world_loading::make_streaming(
             &game.res,
@@ -447,7 +488,7 @@ pub fn rollback_slot_checkpoint_on_server(game: &mut Game<'_>, slot: &str) -> bo
     }
 
     let t_player = std::time::Instant::now();
-    restore_players_on_rollback(game, &snap, prev_dim, target_dim);
+    restore_players_on_rollback(game, snap, prev_dim, target_dim);
     bench_accum(Phase::PlayersOnline, t_player);
     let player_ms = (std::time::Instant::now() - t_player).as_secs_f64() * 1000.0;
     let total_ms = (std::time::Instant::now() - t_start).as_secs_f64() * 1000.0;
@@ -469,22 +510,28 @@ pub fn rollback_slot_checkpoint_on_server(game: &mut Game<'_>, slot: &str) -> bo
     });
 
     let t_cs = std::time::Instant::now();
-    if need_force_disk || !snap.levels.contains_key(&target_dim) {
-        let mut updated = (*snap).clone();
-        updated.disk_restored = true;
-        if !updated.levels.contains_key(&target_dim) {
-            updated
-                .levels
-                .insert(target_dim, capture_level_snapshot(game, target_dim));
+    let slot_key = match origin {
+        RollbackOrigin::DiskSlot(slot) => {
+            if need_force_disk || !snap.levels.contains_key(&target_dim) {
+                let mut updated = (*snap).clone();
+                updated.disk_restored = true;
+                if !updated.levels.contains_key(&target_dim) {
+                    updated
+                        .levels
+                        .insert(target_dim, capture_level_snapshot(game, target_dim));
+                }
+                set_slot_snapshot(slot, Arc::new(updated));
+            }
+            slot
         }
-        set_slot_snapshot(slot, Arc::new(updated));
-    }
+        RollbackOrigin::ScrubSnapshot { .. } => "scrub",
+    };
 
     let client_snap = ClientBlockSnapshot {
         dim: game.dim,
         chunks: (&*game.world.chunks).clone(),
     };
-    set_client_slot_snapshot(slot, client_snap);
+    set_client_slot_snapshot(slot_key, client_snap);
     bump_rollback_epoch();
     bench_accum(Phase::ClientSnapUpdate, t_cs);
 

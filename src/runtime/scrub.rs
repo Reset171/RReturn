@@ -1,10 +1,11 @@
 use super::super::Game;
-use super::restore::rollback_slot_checkpoint_on_server;
+use super::restore::{apply_timeline_snapshot_on_server, rollback_slot_checkpoint_on_server};
 use super::restore_client::apply_client_level_rollback;
 use super::scrub_interpolate::{
     apply_block_rewind_to_game, apply_interpolated_poses_to_game, apply_timeline_sounds_to_game,
     interpolate_mob_pose, lerp_angle, lerp_f32, lerp_f64, InterpolatedMobPose,
 };
+use super::scrub_server::get_server_snapshot_for_tick;
 use super::scrub_timeline::{with_scrub_ring, with_scrub_ring_mut};
 use super::types::*;
 use horizon_client::fast_hash::FxHashMap;
@@ -22,6 +23,7 @@ pub struct ScrubSession {
     pub jog_accel: f64,
     pub start_time: Option<Instant>,
     pub applied_block_tick: i64,
+    pub was_frozen_before_scrub: bool,
 }
 
 impl Default for ScrubSession {
@@ -36,6 +38,7 @@ impl Default for ScrubSession {
             jog_accel: 1.0,
             start_time: None,
             applied_block_tick: 0,
+            was_frozen_before_scrub: false,
         }
     }
 }
@@ -77,8 +80,23 @@ pub fn get_scrub_info() -> Option<(f64, i64, i64)> {
     Some((s.current_time, s.min_tick, s.anchor_tick))
 }
 
+pub fn step_scrub_ticks(ticks: f64) {
+    let mut s = match session_lock().lock() {
+        Ok(guard) => guard,
+        Err(_) => return,
+    };
+    if !s.active {
+        return;
+    }
+    s.target_time = (s.target_time + ticks).clamp(s.min_tick as f64, s.anchor_tick as f64);
+}
+
 pub fn start_scrub(game: &mut Game<'_>) {
-    if !has_cheat_permission(game, None) {
+    if !has_level_4_permission(game, None) {
+        game.native_chat(&tr("command.rreturn.no_permission"));
+        return;
+    }
+    if game.remote.is_some() && game.integrated.is_none() {
         game.native_chat(&tr("command.rreturn.no_permission"));
         return;
     }
@@ -102,6 +120,7 @@ pub fn start_scrub(game: &mut Game<'_>) {
     s.jog_accel = 1.0;
     s.start_time = Some(Instant::now());
     s.applied_block_tick = s.anchor_tick;
+    s.was_frozen_before_scrub = game.clock.frozen();
 
     with_scrub_ring_mut(|r| {
         if r.reference_chunks.is_empty() {
@@ -125,6 +144,9 @@ pub fn start_scrub(game: &mut Game<'_>) {
 
     if let Some(r) = game.remote.as_mut() {
         r.stepped.clear();
+        r.lerps.clear();
+        r.cart_lerps.clear();
+        r.head_lerps.clear();
     }
 
     let start_t = s.current_time;
@@ -210,6 +232,7 @@ pub fn commit_scrub(game: &mut Game<'_>) {
     let final_tick = s.current_time.round() as i64;
     let anchor = s.anchor_tick;
     let final_time = s.current_time;
+    let was_frozen = s.was_frozen_before_scrub;
     s.active = false;
     s.start_time = None;
     s.jog_accel = 1.0;
@@ -217,7 +240,7 @@ pub fn commit_scrub(game: &mut Game<'_>) {
     drop(s);
 
     if final_tick < anchor {
-        let (mob_poses, player_pos, player_yaw, player_pitch) = with_scrub_ring(|ring| {
+        let (mob_poses, _player_pos, _player_yaw, _player_pitch) = with_scrub_ring(|ring| {
             if let Some((left, right, alpha)) = ring.find_frame_pair(final_time) {
                 let a64 = f64::from(alpha);
                 let p_pos = [
@@ -260,93 +283,47 @@ pub fn commit_scrub(game: &mut Game<'_>) {
             }
         });
 
-        let server_block_deltas = with_scrub_ring(|ring| {
-            let mut deltas = Vec::new();
-            for frame in ring.frames.iter().rev() {
-                if frame.game_time <= final_tick {
-                    break;
-                }
-                if frame.game_time <= anchor {
-                    for delta in frame.block_deltas.iter().rev() {
-                        deltas.push((delta.x, delta.y, delta.z, delta.old_state));
-                    }
-                }
-            }
-            deltas
-        });
-
         apply_interpolated_poses_to_game(game, final_time);
 
         let valid_mob_ids: HashSet<u32> = mob_poses.iter().map(|(id, _)| *id).collect();
         if !valid_mob_ids.is_empty() {
             game.mobs.retain_mut(|m| valid_mob_ids.contains(&m.id));
         }
-        if let Some(server) = &game.integrated {
-            let poses_for_server = mob_poses.clone();
-            let valid_ids_for_server = valid_mob_ids.clone();
+
+        let did_rollback = if let Some(server) = &game.integrated {
             server.call(move |srv| {
-                if let Some(sp) = srv.player.as_mut() {
-                    sp.position.x = player_pos[0];
-                    sp.position.y = player_pos[1];
-                    sp.position.z = player_pos[2];
-                    sp.old_position = sp.position;
-                    sp.velocity = Default::default();
-                    sp.yaw = player_yaw;
-                    sp.head_yaw = player_yaw;
-                    sp.pitch = player_pitch;
-                    sp.teleported = true;
-                    sp.teleported_delta = [false; 3];
+                if let Some(snap) = get_server_snapshot_for_tick(final_tick) {
+                    apply_timeline_snapshot_on_server(
+                        srv,
+                        &snap,
+                        RollbackOrigin::ScrubSnapshot {
+                            target_tick: final_tick,
+                            touched_unloaded: Vec::new(),
+                            future_region_files: Vec::new(),
+                        },
+                    )
+                } else {
+                    false
                 }
-                srv.yaw = player_yaw;
-                srv.pitch = player_pitch;
+            }).unwrap_or(false)
+        } else if let Some(snap) = get_server_snapshot_for_tick(final_tick) {
+            apply_timeline_snapshot_on_server(
+                game,
+                &snap,
+                RollbackOrigin::ScrubSnapshot {
+                    target_tick: final_tick,
+                    touched_unloaded: Vec::new(),
+                    future_region_files: Vec::new(),
+                },
+            )
+        } else {
+            false
+        };
 
-                for &(bx, by, bz, old_id) in &server_block_deltas {
-                    let _ = srv.world.set(
-                        bx,
-                        by,
-                        bz,
-                        horizon_world::registry::BlockStateId(old_id),
-                    );
-                }
-
-                if !valid_ids_for_server.is_empty() {
-                    srv.mobs.retain_mut(|m| valid_ids_for_server.contains(&m.id));
-                }
-                let mob_map: FxHashMap<u32, InterpolatedMobPose> = poses_for_server.into_iter().collect();
-                for live_mob in srv.mobs.iter_mut() {
-                    if let Some(pose) = mob_map.get(&live_mob.id) {
-                        live_mob.position.x = pose.pos[0];
-                        live_mob.position.y = pose.pos[1];
-                        live_mob.position.z = pose.pos[2];
-                        live_mob.previous.x = pose.pos[0];
-                        live_mob.previous.y = pose.pos[1];
-                        live_mob.previous.z = pose.pos[2];
-                        live_mob.velocity = Default::default();
-                        live_mob.yaw = pose.yaw;
-                        live_mob.previous_yaw = pose.yaw;
-                        live_mob.body_yaw = pose.body_yaw;
-                        live_mob.previous_body_yaw = pose.body_yaw;
-                        live_mob.head_yaw = pose.head_yaw;
-                        live_mob.previous_head_yaw = pose.head_yaw;
-                        live_mob.head_pitch = pose.head_pitch;
-                        live_mob.previous_head_pitch = pose.head_pitch;
-                        live_mob.limb_position = pose.limb_position;
-                        live_mob.limb_speed = pose.limb_speed;
-                        live_mob.previous_limb_speed = pose.limb_speed;
-                        live_mob.swell = pose.swell.round() as i32;
-                        live_mob.previous_swell = live_mob.swell;
-                        live_mob.anim.attack_anim = pose.attack_anim;
-                        live_mob.anim.attack_anim_o = pose.attack_anim;
-                        live_mob.health = pose.health;
-                        live_mob.hurt_time = pose.hurt_time;
-                        live_mob.death_time = pose.death_time;
-                        live_mob.needs_sync = true;
-                        live_mob.sync_position = true;
-                    }
-                }
-
-                srv.world.game_time = final_tick;
-            });
+        if did_rollback {
+            game.close_container();
+            game.screen = super::super::Screen::Playing;
+            apply_client_level_rollback(game, "scrub");
         }
 
         let sound = mod_api::SoundPlay::ui("minecraft:block.respawn_anchor.deplete");
@@ -366,10 +343,10 @@ pub fn commit_scrub(game: &mut Game<'_>) {
         r.last_world_revision = game.world.revision;
     });
 
-    game.clock.set_frozen(false);
+    game.clock.set_frozen(was_frozen);
     if let Some(server) = &game.integrated {
         server.call(|srv| {
-            srv.clock.set_frozen(false);
+            srv.clock.set_frozen(was_frozen);
         });
     }
 }
@@ -385,6 +362,7 @@ pub fn cancel_scrub(game: &mut Game<'_>) {
 
     let anchor = s.anchor_tick;
     let applied = s.applied_block_tick;
+    let was_frozen = s.was_frozen_before_scrub;
     s.active = false;
     s.start_time = None;
     s.current_time = anchor as f64;
@@ -424,10 +402,10 @@ pub fn cancel_scrub(game: &mut Game<'_>) {
     let sound = mod_api::SoundPlay::ui("minecraft:block.iron_trapdoor.close");
     game.play_local_sound(&sound, 0);
 
-    game.clock.set_frozen(false);
+    game.clock.set_frozen(was_frozen);
     if let Some(server) = &game.integrated {
         server.call(|srv| {
-            srv.clock.set_frozen(false);
+            srv.clock.set_frozen(was_frozen);
         });
     }
     game.native_chat(&tr("message.rreturn.scrub.cancel"));

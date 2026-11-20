@@ -113,8 +113,23 @@ pub fn start_scrub(game: &mut Game<'_>) {
     // Stop any ongoing mining / block breaking
     game.stop_mining();
 
-    // Freeze game clock so physics and mob ticking pause during scrub
+    // Freeze game clock so physics and mob ticking pause during scrub on client
     game.clock.set_frozen(true);
+
+    // Freeze integrated server clock so server mob AI/physics pause immediately
+    if let Some(server) = &game.integrated {
+        server.call(|srv| {
+            srv.clock.set_frozen(true);
+        });
+    }
+
+    if let Some(r) = game.remote.as_mut() {
+        r.stepped.clear();
+    }
+
+    let start_t = s.current_time;
+    drop(s);
+    apply_interpolated_poses_to_game(game, start_t);
 }
 
 pub fn on_mouse_scroll(_game: &mut Game<'_>, scroll: [f64; 2], accumulated: [i32; 2]) -> bool {
@@ -348,6 +363,11 @@ pub fn commit_scrub(game: &mut Game<'_>) {
     });
 
     game.clock.set_frozen(false);
+    if let Some(server) = &game.integrated {
+        server.call(|srv| {
+            srv.clock.set_frozen(false);
+        });
+    }
 }
 
 pub fn cancel_scrub(game: &mut Game<'_>) {
@@ -401,6 +421,11 @@ pub fn cancel_scrub(game: &mut Game<'_>) {
     game.play_local_sound(&sound, 0);
 
     game.clock.set_frozen(false);
+    if let Some(server) = &game.integrated {
+        server.call(|srv| {
+            srv.clock.set_frozen(false);
+        });
+    }
     game.native_chat(&tr("message.rreturn.scrub.cancel"));
 }
 

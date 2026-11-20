@@ -214,6 +214,8 @@ pub fn apply_interpolated_poses_to_game(game: &mut Game<'_>, target_time: f64) {
             live_mob.previous.x = pose.pos[0];
             live_mob.previous.y = pose.pos[1];
             live_mob.previous.z = pose.pos[2];
+            live_mob.velocity = Default::default();
+            live_mob.extra.previous_velocity = Default::default();
 
             live_mob.yaw = pose.yaw;
             live_mob.previous_yaw = pose.yaw;
@@ -239,6 +241,10 @@ pub fn apply_interpolated_poses_to_game(game: &mut Game<'_>, target_time: f64) {
 
             live_mob.health = pose.health;
         }
+    }
+
+    if let Some(r) = game.remote.as_mut() {
+        r.stepped.clear();
     }
 
     // Restore block breaking crack stages for target time

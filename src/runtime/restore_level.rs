@@ -325,6 +325,17 @@ pub fn apply_level_snapshot_in_place(
         game.portals.entities = snap.portals_entities.clone();
         bench_add_mobs(snap.mobs.len());
         game.mobs.clone_from(&snap.mobs);
+        for m in game.mobs.iter_mut() {
+            m.previous = m.position;
+            m.previous_yaw = m.yaw;
+            m.previous_head_pitch = m.head_pitch;
+            m.previous_body_yaw = m.body_yaw;
+            m.previous_head_yaw = m.head_yaw;
+            m.velocity = Default::default();
+            m.extra.previous_velocity = Default::default();
+            m.needs_sync = true;
+            m.sync_position = true;
+        }
         if policy.dropped_items {
             game.dropped.clone_from(&snap.dropped);
         }
@@ -518,6 +529,10 @@ pub fn apply_level_snapshot_in_place(
     }
     game.lan_cushion_breaks.clear();
     game.lan_global_events.clear();
+    if let Some(host) = game.lan.as_mut() {
+        host.states.clear();
+        host.idle_states = Default::default();
+    }
 
     game.creatures.wind_source = None;
     game.creatures.late_wind_pushes.clear();

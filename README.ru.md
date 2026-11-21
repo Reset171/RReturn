@@ -1,29 +1,32 @@
 **[English](README.md) · [Русский](README.ru.md)**
 
-Мод добавляет `Возвращение через смерть` для движка [Horizon](https://github.com/horizon-rust/horizon).
-Восстанавливает чанки, сущностей, блок-сущности, плановые тики, состояние ГСЧ, измерения и параметры игрока к последней точке сохранения при гибели или по ручной команде.
+Мод добавляет возвращение к точкам сохранения при гибели и интерактивную перемотку времени для движка [Horizon](https://github.com/horizon-rust/horizon).
+Восстанавливает чанки, сущностей, блок-сущности, плановые тики, состояние ГСЧ, измерения и параметры игрока к точкам сохранения либо интерактивно через скраббинг колёсиком мыши.
 
-Скрипт `build.rs` собирает подмодули `src/runtime/*.rs`, синхронизирует `src/ext/*.rs`, `src/hooks/*.rs`, `src/horizon-mixin.toml` и `LICENSE` в `mixins/rreturn/`, а также упаковывает `target/rreturn-<version>.hnmod`.
+Скрипт `build.rs` собирает подмодули `src/runtime/*.rs`, проверяет миксины из `horizon-mod.toml` и упаковывает плоский детерминированный пакет `target/rreturn-<version>.hmod`.
 
 ```sh
 cargo build
 ```
 
-Установка `target/rreturn-<version>.hnmod` и сборка в инстанс Horizon:
+Установка `target/rreturn-<version>.hmod` и сборка в инстанс Horizon:
 
 ```sh
-cp target/rreturn-*.hnmod ~/.local/share/horizon/horizon-native-mods/
+cp target/rreturn-*.hmod ~/.local/share/horizon/horizon-native-mods/
 horizon-launcher native-build --trust-native-code
 ```
 
-Либо сборка напрямую из директории проекта после `cargo build`:
+Либо автоматический деплой пакета в активный инстанс лаунчера:
 
 ```sh
-horizon-launcher native-build . --trust-native-code
+python3 tools/package.py --deploy
+horizon-launcher native-build --trust-native-code
 ```
 
 | Клавиша / Команда                                         | Описание                                                          |
 | --------------------------------------------------------- | ----------------------------------------------------------------- |
+| `U` / Колёсико мыши                                       | Интерактивная перемотка времени (удержание/переключение, подтверждение `Enter`) |
+| `/rreturn scrub <start\|commit\|cancel\|step>`            | Консольное управление субтиковым скраббингом времени              |
 | `F6` / `/rreturn set [slot]`                              | Сохранить чекпоинт в слот (по умолчанию `default`)                |
 | `F7` / `/rreturn load [slot]`                             | Откатить мир и игрока к слоту                                     |
 | `F8` / `/rreturn anchor mode <mode>`                      | Режим ключевого игрока (`fixed`, `multi`, `everyone`, `rotating`) |

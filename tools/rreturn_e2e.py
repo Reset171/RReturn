@@ -1,6 +1,7 @@
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -295,7 +296,7 @@ def run_worker_batch(worker_idx, batch, use_default_socket=False, fresh_worlds=T
         h = RReturnHarness(world=base_world)
         label = ""
     else:
-        sock = Path(f"/tmp/rreturn_w{worker_idx}_{stamp}.sock")
+        sock = Path(tempfile.gettempdir()) / f"rreturn_w{worker_idx}_{stamp}.sock"
         h = RReturnHarness(socket_path=sock, world=base_world)
         label = f"W{worker_idx}"
 

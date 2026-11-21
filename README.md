@@ -1,29 +1,32 @@
 **[English](README.md) · [Русский](README.ru.md)**
 
-Timeline rewind mod (`Return by Death`) for [Horizon](https://github.com/horizon-rust/horizon).
-Rewinds world chunks, entities, block entities, scheduled ticks, RNG state, dimensions, and player state to the last checkpoint on death or manual trigger.
+Timeline rewind and checkpoint rollback mod for [Horizon](https://github.com/horizon-rust/horizon).
+Rewinds world chunks, entities, block entities, scheduled ticks, RNG state, dimensions, and player state to checkpoints or interactively via mouse-wheel timeline scrubbing.
 
-`build.rs` assembles `src/runtime/*.rs`, synchronizes `src/ext/*.rs`, `src/hooks/*.rs`, `src/horizon-mixin.toml`, and `LICENSE` into `mixins/rreturn/`, and packages `target/rreturn-<version>.hnmod`.
+`build.rs` compiles modular `src/runtime/*.rs`, verifies mixins from `horizon-mod.toml`, and builds a deterministic flat package `target/rreturn-<version>.hmod`.
 
 ```sh
 cargo build
 ```
 
-Install `target/rreturn-<version>.hnmod` and build into a Horizon instance:
+Install `target/rreturn-<version>.hmod` and build into a Horizon instance:
 
 ```sh
-cp target/rreturn-*.hnmod ~/.local/share/horizon/horizon-native-mods/
+cp target/rreturn-*.hmod ~/.local/share/horizon/horizon-native-mods/
 horizon-launcher native-build --trust-native-code
 ```
 
-Or build directly from the source directory after `cargo build`:
+Or automatically deploy the package to the active launcher instance:
 
 ```sh
-horizon-launcher native-build . --trust-native-code
+python3 tools/package.py --deploy
+horizon-launcher native-build --trust-native-code
 ```
 
 | Input / Command | Description |
 |---|---|
+| `U` / Mouse Wheel | Interactive timeline scrub (rewind time, hold/toggle, confirm with `Enter`) |
+| `/rreturn scrub <start\|commit\|cancel\|step>` | CLI controls for sub-tick timeline scrubbing |
 | `F6` / `/rreturn set [slot]` | Save checkpoint to `slot` (default: `default`) |
 | `F7` / `/rreturn load [slot]` | Roll back world and player state to `slot` |
 | `F8` / `/rreturn anchor mode <mode>` | Set key player mode (`fixed`, `multi`, `everyone`, `rotating`) |

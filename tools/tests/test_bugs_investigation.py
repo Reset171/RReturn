@@ -241,10 +241,7 @@ def test_53_primed_tnt_rollback_preservation(h):
 
 
 def test_54_disk_checkpoint_projectiles_and_tnt_loss(h):
-    """Bug #27 & #28 investigation: Verify that disk slot files do NOT persist projectiles or primed TNT."""
-    import json
-    from pathlib import Path
-
+    """Verify that disk slot checkpoint properly restores projectiles and primed TNT across disk reload."""
     setup_clean_env(h)
     h.tp(500.5, 65.0, 500.5)
     h.command("kill @e[tag=disk_arrow]")
@@ -267,6 +264,10 @@ def test_54_disk_checkpoint_projectiles_and_tnt_loss(h):
     h.wait(2)
     assert not h.has_entity("@e[tag=disk_arrow]"), "Arrow was not killed"
     assert not h.has_entity("@e[tag=disk_tnt]"), "TNT was not killed"
+
+    # Purge in-memory snapshots to force hydration from disk files
+    h.rreturn("purge_memory")
+    h.wait(2)
 
     # Restore from disk checkpoint
     h.rreturn("load")

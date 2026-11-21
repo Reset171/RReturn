@@ -5,7 +5,7 @@ Native timeline-rewind mod for **Horizon** (Minecraft: Java Edition **26.3**).
 - **Regression tests:** Every bug fix requires a reproducing E2E test in `tools/tests/test_<category>.py` registered in `tools/rreturn_e2e.py`.
 
 - `horizon-mod.toml` & `src/hooks/hook_*.rs` — Manifest, mixin declarations, and hook helpers injected into `horizon-client` (`horizon = "5ef7734fdd854add5efd6817178be3c988d8d050"`).
-- `src/ext/*_ext.rs` — Engine extensions (`dragon_ext.rs`, `end_ext.rs`, `fishing_ext.rs`, `hub_ext.rs`, `remote_ext.rs`, `stats_ext.rs`).
+- `src/ext/*_ext.rs` — Engine extensions (`dragon_ext.rs`, `end_ext.rs`, `fishing_ext.rs`, `potions_ext.rs`, `remote_ext.rs`, `stats_ext.rs`).
 - `src/runtime/` — Modular runtime implementation:
   - `types.rs` — `RReturnState`, `AnchorMode`, `AnchorSettings`, permissions, and localization.
   - `policy.rs` — `RollbackPolicy` (35 deterministic rollback flags).
@@ -26,10 +26,16 @@ Native timeline-rewind mod for **Horizon** (Minecraft: Java Edition **26.3**).
   - `telemetry.rs` — Text and JSON status, threat metrics, and benchmark formatting.
   - `ui.rs` — Native mod settings and `config/rreturn.json` loading.
   - `tracker.rs` — `LoopTracker` F3+B hitbox color comparison across loops.
+  - `scrub_audio.rs` — Timeline audio prewarming, reversal, and background playback.
+  - `scrub_timeline.rs` — Sub-tick ring buffer, MobPoseRecord, SoundRecord, and delta recording.
+  - `scrub_server.rs` — Server-side COW snapshotting, delta compression, and scrub preview.
+  - `scrub_interpolate.rs` — Sub-tick interpolation for mob poses, animations, and sound triggers.
+  - `scrub.rs` — Interactive timeline scrubbing controller, UI overlay, and jog wheel handling.
+  - `scrub_perf.rs` — Microsecond phase breakdown and performance diagnostics for scrub timeline.
   - `benchmark.rs` — Phase timers and log output (`logs/rreturn.log`, `saves/<World>/rreturn/benchmark.log`).
   - `hooks.rs` — `handle_lifecycle`, `handle_tick`, `intercept_guest_die`, `handle_key`.
 - `src/lib.rs` — Standalone unit-test crate for slot name validation and atomic checkpoint I/O helpers.
-- `tools/` — `package.py` (deterministic `.hmod` packager), `pr_ready.py` (pre-commit check), `rreturn_harness.py` (control socket client), `rreturn_e2e.py` & `tools/tests/` (42 E2E tests), `rreturn_bench.py` (stress benchmark), `rreturn_spark.py` (CPU profiler).
+- `tools/` — `package.py` (deterministic `.hmod` packager), `pr_ready.py` (pre-commit check), `rreturn_harness.py` (control socket client), `rreturn_e2e.py` & `tools/tests/` (104 E2E tests), `rreturn_bench.py` (stress benchmark), `rreturn_spark.py` (CPU profiler).
 
 ```sh
 python3 tools/pr_ready.py --quick

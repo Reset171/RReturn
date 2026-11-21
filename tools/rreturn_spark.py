@@ -1,15 +1,27 @@
 import argparse
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from collections import defaultdict
 from pathlib import Path
 
 
-PROFILE_PATH = Path("/tmp/rreturn_spark_profile.json")
+PROFILE_PATH = Path(tempfile.gettempdir()) / "rreturn_spark_profile.json"
+
+
+def get_samply_bin():
+    found = shutil.which("samply")
+    if found:
+        return Path(found)
+    cargo_bin = Path.home() / ".cargo" / "bin" / "samply"
+    if cargo_bin.is_file():
+        return cargo_bin
+    return None
 
 
 def get_horizon_pid_and_bin():
@@ -173,7 +185,10 @@ def record_live_profile(duration_sec):
     if PROFILE_PATH.exists():
         PROFILE_PATH.unlink()
 
-    samply_bin = Path.home() / ".cargo/bin/samply"
+    samply_bin = get_samply_bin()
+    if not samply_bin:
+        print("[!] samply profiler не найден в PATH или ~/.cargo/bin. Установите: cargo install --locked samply")
+        sys.exit(1)
     cmd = [str(samply_bin), "record", "--save-only", "-o", str(PROFILE_PATH), "-p", str(pid)]
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
@@ -194,7 +209,10 @@ def record_live_profile(duration_sec):
 
 
 def open_web_profiler():
-    samply_bin = Path.home() / ".cargo/bin/samply"
+    samply_bin = get_samply_bin()
+    if not samply_bin:
+        print("[!] samply profiler не найден в PATH или ~/.cargo/bin. Установите: cargo install --locked samply")
+        sys.exit(1)
     if not PROFILE_PATH.exists():
         print(f"[!] Файл профиля {PROFILE_PATH} не найден. Сначала выполните запись: ./tools/rreturn_spark.py --record 5")
         sys.exit(1)

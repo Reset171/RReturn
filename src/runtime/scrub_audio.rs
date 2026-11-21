@@ -122,7 +122,12 @@ fn audio_worker_tx() -> &'static mpsc::Sender<DecodeAudioJob> {
 
 pub fn prewarm_reverse_sound(game: &Game<'_>, identifier: &str) {
     let mut rng = LegacyRandom::new(42);
-    let Some(sound_def) = game.audio.engine.registry.sound(identifier, &mut rng) else {
+    let norm = if identifier.contains(':') {
+        identifier.to_owned()
+    } else {
+        format!("minecraft:{identifier}")
+    };
+    let Some(sound_def) = game.audio.engine.registry.sound(&norm, &mut rng) else {
         return;
     };
     let (namespace, sound_path) = sound_def.path();
@@ -162,9 +167,14 @@ pub fn play_scrub_sounds(
     let speed_factor = (0.85 + (jog_accel - 1.0) * 0.04).clamp(0.75, 1.8) as f32;
     for (idx, (s, backwards)) in sounds_to_play.into_iter().take(4).enumerate() {
         let at = if s.relative { None } else { Some(s.position) };
+        let norm = if s.identifier.contains(':') {
+            s.identifier.clone()
+        } else {
+            format!("minecraft:{}", s.identifier)
+        };
         if backwards {
             let mut played = false;
-            if let Some(sound_def) = game.audio.engine.registry.sound(&s.identifier, &mut rng) {
+            if let Some(sound_def) = game.audio.engine.registry.sound(&norm, &mut rng) {
                 let (namespace, sound_path) = sound_def.path();
                 let cache_key = format!("{namespace}:{sound_path}");
                 let cached = audio_cache()
@@ -181,15 +191,15 @@ pub fn play_scrub_sounds(
                         played = true;
                     }
                 } else {
-                    prewarm_reverse_sound(game, &s.identifier);
+                    prewarm_reverse_sound(game, &norm);
                 }
             }
             if !played {
                 let mut sound = if s.relative {
-                    mod_api::SoundPlay::ui(&s.identifier)
+                    mod_api::SoundPlay::ui(&norm)
                 } else {
                     mod_api::SoundPlay::at(
-                        &s.identifier,
+                        &norm,
                         mod_api::SoundSource::Records,
                         s.position,
                     )
@@ -200,9 +210,9 @@ pub fn play_scrub_sounds(
             }
         } else {
             let mut sound = if s.relative {
-                mod_api::SoundPlay::ui(&s.identifier)
+                mod_api::SoundPlay::ui(&norm)
             } else {
-                mod_api::SoundPlay::at(&s.identifier, mod_api::SoundSource::Records, s.position)
+                mod_api::SoundPlay::at(&norm, mod_api::SoundSource::Records, s.position)
             };
             sound.pitch = speed_factor.clamp(0.5, 2.0);
             sound.volume = 0.9;

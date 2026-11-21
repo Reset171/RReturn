@@ -226,6 +226,10 @@ pub fn handle_lifecycle(_game: &mut Game<'_>, phase: WorldPhase) {
 }
 
 pub fn handle_tick(game: &mut Game<'_>) {
+    if game.audio.capture.is_none() {
+        game.audio.capture = Some(Vec::new());
+    }
+
     if !is_scrubbing()
         && game.native_window()
         && game.screen == super::super::Screen::Playing

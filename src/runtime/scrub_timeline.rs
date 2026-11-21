@@ -928,13 +928,37 @@ impl ScrubHistoryRing {
 
         game.audio.record_heard = true;
         let mut sounds = Vec::new();
+        if let Some(captured) = game.audio.capture.as_mut() {
+            for sound in captured.drain(..) {
+                let norm = if sound.event.contains(':') {
+                    sound.event
+                } else {
+                    format!("minecraft:{}", sound.event)
+                };
+                prewarm_reverse_sound(game, &norm);
+                sounds.push(SoundRecord {
+                    identifier: norm,
+                    position: sound.position,
+                    relative: false,
+                });
+            }
+        } else {
+            game.audio.capture = Some(Vec::new());
+        }
         for notif in std::mem::take(&mut game.audio.engine.notifications) {
-            prewarm_reverse_sound(game, &notif.identifier);
-            sounds.push(SoundRecord {
-                identifier: notif.identifier,
-                position: notif.position,
-                relative: notif.relative,
-            });
+            let norm = if notif.identifier.contains(':') {
+                notif.identifier
+            } else {
+                format!("minecraft:{}", notif.identifier)
+            };
+            if !sounds.iter().any(|s| s.identifier == norm) {
+                prewarm_reverse_sound(game, &norm);
+                sounds.push(SoundRecord {
+                    identifier: norm,
+                    position: notif.position,
+                    relative: notif.relative,
+                });
+            }
         }
 
         if self.frames.len() >= MAX_SCRUB_TICKS {

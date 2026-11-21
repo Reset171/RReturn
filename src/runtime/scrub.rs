@@ -466,6 +466,9 @@ pub fn start_scrub(game: &mut Game<'_>) {
     });
 
     game.stop_mining();
+    if let Some(c) = game.audio.capture.as_mut() {
+        c.clear();
+    }
     game.clock.set_frozen(true);
 
     let srv_frozen = if let Some(server) = &game.integrated {

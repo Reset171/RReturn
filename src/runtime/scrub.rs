@@ -699,9 +699,6 @@ pub fn commit_scrub(game: &mut Game<'_>) {
             r.last_dim = Some(game.dim);
         });
 
-        let sound = mod_api::SoundPlay::ui("minecraft:block.respawn_anchor.deplete");
-        game.play_local_sound(&sound, 0);
-
         let dt = (anchor - final_tick) as f64 / 20.0;
         let dt_str = format!("{:.1}", dt);
         game.native_chat(&tr_args("message.rreturn.scrub.commit", &[&dt_str]));
@@ -768,9 +765,6 @@ pub fn cancel_scrub(game: &mut Game<'_>) {
         r.reference_chunks = (&*game.world.chunks).clone();
         r.last_world_revision = game.world.revision;
     });
-
-    let sound = mod_api::SoundPlay::ui("minecraft:block.iron_trapdoor.close");
-    game.play_local_sound(&sound, 0);
 
     game.clock.set_frozen(was_frozen);
     if let Some(server) = &game.integrated {

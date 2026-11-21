@@ -42,7 +42,13 @@ pub fn apply_client_level_rollback(game: &mut Game<'_>, slot: &str) {
     game.mining = None;
     game.clicks.miss_time = 0;
     game.hotbar_pop = [0; 10];
+    let prev_vignette = if game.screen_fx.vignette_brightness >= 0.99 {
+        0.0
+    } else {
+        game.screen_fx.vignette_brightness
+    };
     game.screen_fx = Default::default();
+    game.screen_fx.vignette_brightness = prev_vignette;
     game.sculk.darkness = Default::default();
     game.stop_emote();
     game.clear_remote_hooks();

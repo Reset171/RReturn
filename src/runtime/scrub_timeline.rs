@@ -928,24 +928,22 @@ impl ScrubHistoryRing {
 
         game.audio.record_heard = true;
         let mut sounds = Vec::new();
-        if let Some(captured) = game.audio.capture.as_mut() {
-            for sound in captured.drain(..) {
-                let norm = if sound.event.contains(':') {
-                    sound.event
-                } else {
-                    format!("minecraft:{}", sound.event)
-                };
-                prewarm_reverse_sound(game, &norm);
-                sounds.push(SoundRecord {
-                    identifier: norm,
-                    position: sound.position,
-                    relative: false,
-                });
-            }
-        } else {
-            game.audio.capture = Some(Vec::new());
+        let captured = std::mem::take(game.audio.capture.get_or_insert_with(Vec::new));
+        for sound in captured {
+            let norm = if sound.event.contains(':') {
+                sound.event
+            } else {
+                format!("minecraft:{}", sound.event)
+            };
+            prewarm_reverse_sound(game, &norm);
+            sounds.push(SoundRecord {
+                identifier: norm,
+                position: sound.position,
+                relative: false,
+            });
         }
-        for notif in std::mem::take(&mut game.audio.engine.notifications) {
+        let notifications = std::mem::take(&mut game.audio.engine.notifications);
+        for notif in notifications {
             let norm = if notif.identifier.contains(':') {
                 notif.identifier
             } else {

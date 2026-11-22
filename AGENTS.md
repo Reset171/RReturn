@@ -1,10 +1,10 @@
 Native timeline-rewind mod for **Horizon** (Minecraft: Java Edition **26.3**).
 
-- **Flat .hmod package format:** Single manifest `horizon-mod.toml` (Horizon **8f83e5c85ae3b9a117f742e8d91170c5c9080a06**). Edit `src/runtime/*.rs`, `src/ext/*.rs`, `src/hooks/*.rs`, and `horizon-mod.toml`; `build.rs` generates `src/runtime.rs` and packages `target/rreturn-<version>.hmod` via `tools/package.py` on `cargo check` / `cargo build` / `cargo test`.
+- **Flat .hmod package format:** Single manifest `horizon-mod.toml`. Edit `src/runtime/*.rs`, `src/ext/*.rs`, `src/hooks/*.rs`, and `horizon-mod.toml`; `build.rs` generates `src/runtime.rs` and packages `target/rreturn-<version>.hmod` via `tools/package.py` on `cargo check` / `cargo build` / `cargo test`.
 - **Isolation:** Keep test runs in temporary `rreturn_e2e_*` worlds via `RReturnHarness` (`tools/rreturn_harness.py`). Shut down the game with `quit`, not `SIGKILL`.
 - **Regression tests:** Every bug fix requires a reproducing E2E test in `tools/tests/test_<category>.py` registered in `tools/rreturn_e2e.py`.
 
-- `horizon-mod.toml` & `src/hooks/hook_*.rs` — Manifest, mixin declarations, and hook helpers injected into `horizon-client` (`horizon = "8f83e5c85ae3b9a117f742e8d91170c5c9080a06"`).
+- `horizon-mod.toml` & `src/hooks/hook_*.rs` — Manifest, mixin declarations, and hook helpers injected into `horizon-client`.
 - `src/ext/*_ext.rs` — Engine extensions (`dragon_ext.rs`, `end_ext.rs`, `fishing_ext.rs`, `potions_ext.rs`, `remote_ext.rs`, `stats_ext.rs`).
 - `src/runtime/` — Modular runtime implementation:
   - `types.rs` — `RReturnState`, `AnchorMode`, `AnchorSettings`, permissions, and localization.

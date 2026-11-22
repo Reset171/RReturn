@@ -1,6 +1,6 @@
 id = "rreturn"
 name = "RReturn"
-version = "0.1.2"
+version = "0.2.0"
 description = "Timeline-rewind native mod for Horizon"
 authors = ["Reset171"]
 license = "GPL-3.0-only"

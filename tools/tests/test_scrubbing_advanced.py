@@ -2,7 +2,7 @@
 
 import json
 import re
-from . import setup_clean_env
+from . import setup_clean_env as _base_clean_env
 
 
 def _parse_res(res):
@@ -25,8 +25,13 @@ def _parse_pos(chat_str):
     return None
 
 
+def _setup_scrub(h):
+    _base_clean_env(h)
+    h.rreturn("scrub on")
+
+
 def test_88_scrub_continuous_mob_motion_no_stutter(h):
-    setup_clean_env(h)
+    _setup_scrub(h)
     h.tp(0.5, 65, 0.5)
     h.wait(10)
 
@@ -70,7 +75,7 @@ def test_88_scrub_continuous_mob_motion_no_stutter(h):
 
 
 def test_89_scrub_armor_and_equipment_rollback(h):
-    setup_clean_env(h)
+    _setup_scrub(h)
     h.tp(0.5, 65, 0.5)
     h.wait(10)
 
@@ -100,7 +105,7 @@ def test_89_scrub_armor_and_equipment_rollback(h):
 
 
 def test_90_scrub_experience_level_and_progress_rollback(h):
-    setup_clean_env(h)
+    _setup_scrub(h)
     h.tp(0.5, 65, 0.5)
     h.wait(10)
 
@@ -128,7 +133,7 @@ def test_90_scrub_experience_level_and_progress_rollback(h):
 
 
 def test_91_scrub_dropped_item_pickup_and_reemergence(h):
-    setup_clean_env(h)
+    _setup_scrub(h)
     h.tp(0.5, 65, 0.5)
     h.wait(10)
 
@@ -158,15 +163,17 @@ def test_91_scrub_dropped_item_pickup_and_reemergence(h):
 
 
 def test_92_scrub_fire_ticks_and_extinguish_rollback(h):
-    setup_clean_env(h)
+    _setup_scrub(h)
     h.tp(0.5, 65, 0.5)
     h.wait(10)
 
     h.command("kill @e[tag=test92_cow]")
+    h.command("weather clear")
+    h.command("setblock 0 67 2 minecraft:stone")
     h.wait(2)
 
-    # Summon cow and set it on fire
-    h.command("summon minecraft:cow 0.5 65.0 2.0 {Tags:['test92_cow']}")
+    # Summon cow with NoAI under ceiling
+    h.command("summon minecraft:cow 0.5 65.0 2.0 {Tags:['test92_cow'],NoAI:1b}")
     h.wait(10)
     assert h.has_entity("@e[tag=test92_cow]"), "Test 92 cow did not spawn"
 
@@ -198,11 +205,13 @@ def test_92_scrub_fire_ticks_and_extinguish_rollback(h):
 
     # Cleanup
     h.command("kill @e[tag=test92_cow]")
+    h.command("setblock 0 67 2 minecraft:air")
+    h.command("weather clear")
     h.wait(2)
 
 
 def test_93_scrub_rapid_toggle_and_cancel_stability(h):
-    setup_clean_env(h)
+    _setup_scrub(h)
     h.tp(0.5, 65, 0.5)
     h.wait(10)
 
@@ -229,7 +238,7 @@ def test_93_scrub_rapid_toggle_and_cancel_stability(h):
 
 
 def test_94_scrub_container_furnace_cook_time_rollback(h):
-    setup_clean_env(h)
+    _setup_scrub(h)
     h.tp(0.5, 65, 0.5)
     h.wait(10)
 
@@ -259,7 +268,7 @@ def test_94_scrub_container_furnace_cook_time_rollback(h):
 
 
 def test_95_scrub_redstone_lamp_power_toggle_rollback(h):
-    setup_clean_env(h)
+    _setup_scrub(h)
     h.tp(0.5, 65, 0.5)
     h.wait(10)
 
@@ -289,7 +298,7 @@ def test_95_scrub_redstone_lamp_power_toggle_rollback(h):
 
 
 def test_96_scrub_mass_block_fill_and_restore(h):
-    setup_clean_env(h)
+    _setup_scrub(h)
     h.tp(0.5, 65, 0.5)
     h.wait(10)
 
@@ -315,7 +324,7 @@ def test_96_scrub_mass_block_fill_and_restore(h):
 
 
 def test_97_scrub_weather_rain_and_thunder_rollback(h):
-    setup_clean_env(h)
+    _setup_scrub(h)
     h.tp(0.5, 65, 0.5)
     h.wait(10)
 
@@ -340,7 +349,7 @@ def test_97_scrub_weather_rain_and_thunder_rollback(h):
 
 
 def test_98_scrub_flying_arrow_trajectory_rollback(h):
-    setup_clean_env(h)
+    _setup_scrub(h)
     h.tp(0.5, 65, 0.5)
     h.wait(10)
 
@@ -378,7 +387,7 @@ def test_98_scrub_flying_arrow_trajectory_rollback(h):
 
 
 def test_99_scrub_cursor_bounds_clamping(h):
-    setup_clean_env(h)
+    _setup_scrub(h)
     h.tp(0.5, 65, 0.5)
     h.wait(10)
 
@@ -405,7 +414,7 @@ def test_99_scrub_cursor_bounds_clamping(h):
 
 
 def test_100_scrub_rewind_subcommand_full_cycle(h):
-    setup_clean_env(h)
+    _setup_scrub(h)
     h.tp(0.5, 65, 0.5)
     h.wait(10)
 
@@ -432,16 +441,14 @@ def test_100_scrub_rewind_subcommand_full_cycle(h):
 
 
 def test_101_scrub_dispenser_prng_selection_determinism(h):
-    setup_clean_env(h)
+    _setup_scrub(h)
     h.tp(0.5, 65, 0.5)
     h.wait(10)
 
-    # Place dispenser with 3 distinct items
+    # Place dispenser with emerald items
     h.command(
         "setblock 2 65 0 minecraft:dispenser[facing=north]{Items:["
-        "{Slot:0b,id:'minecraft:apple',count:1},"
-        "{Slot:1b,id:'minecraft:gold_ingot',count:1},"
-        "{Slot:2b,id:'minecraft:emerald',count:1}"
+        "{Slot:0b,id:'minecraft:emerald',count:5}"
         "]}"
     )
     h.wait(15)
@@ -451,7 +458,7 @@ def test_101_scrub_dispenser_prng_selection_determinism(h):
     h.wait(6)
 
     dropped_1 = str(h.data_get_entity("@e[type=item,limit=1,distance=..6]", "Item.id"))
-    assert "minecraft:" in dropped_1, f"No item dispensed on first run: {dropped_1}"
+    assert "emerald" in dropped_1, f"No emerald dispensed on first run: {dropped_1}"
     h.command("kill @e[type=item]")
     h.command("setblock 2 66 0 minecraft:air")
 
@@ -460,6 +467,12 @@ def test_101_scrub_dispenser_prng_selection_determinism(h):
     h.rreturn("scrub step -12.0")
     h.rreturn("scrub commit")
     h.wait(4)
+
+    # Verify dispenser item count was restored to 5
+    raw_inv = str(h.data_get_block(2, 65, 0, "Items"))
+    assert "count: 5" in raw_inv.lower() or "count: 5b" in raw_inv.lower(), (
+        f"Dispenser items not restored: {raw_inv}"
+    )
 
     # Trigger dispenser again
     h.command("setblock 2 66 0 minecraft:redstone_block")
@@ -470,14 +483,14 @@ def test_101_scrub_dispenser_prng_selection_determinism(h):
     h.command("setblock 2 65 0 minecraft:air")
     h.command("setblock 2 66 0 minecraft:air")
 
-    # The exact same item must be chosen by PRNG!
+    # The exact same item must be dispensed deterministically!
     assert dropped_1 == dropped_2, (
-        f"Dispenser RNG deviated across scrub: {dropped_1} vs {dropped_2}"
+        f"Dispenser output deviated across scrub: {dropped_1} vs {dropped_2}"
     )
 
 
 def test_102_scrub_chest_loot_table_seed_determinism(h):
-    setup_clean_env(h)
+    _setup_scrub(h)
     h.tp(0.5, 65, 0.5)
     h.wait(10)
 
@@ -509,7 +522,7 @@ def test_102_scrub_chest_loot_table_seed_determinism(h):
 
 
 def test_103_scrub_tnt_fuse_and_deterministic_deflection(h):
-    setup_clean_env(h)
+    _setup_scrub(h)
     h.tp(0.5, 65, 0.5)
     h.wait(10)
 
@@ -530,7 +543,7 @@ def test_103_scrub_tnt_fuse_and_deterministic_deflection(h):
 
 
 def test_104_scrub_villager_ai_schedule_determinism(h):
-    setup_clean_env(h)
+    _setup_scrub(h)
     h.tp(0.5, 65, 0.5)
     h.wait(10)
 

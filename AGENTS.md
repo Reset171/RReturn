@@ -32,10 +32,10 @@ Native timeline-rewind mod for **Horizon** (Minecraft: Java Edition **26.3**).
   - `scrub_interpolate.rs` — Sub-tick interpolation for mob poses, animations, and sound triggers.
   - `scrub.rs` — Interactive timeline scrubbing controller, UI overlay, and jog wheel handling.
   - `scrub_perf.rs` — Microsecond phase breakdown and performance diagnostics for scrub timeline.
-  - `benchmark.rs` — Phase timers and log output (`logs/rreturn.log`, `saves/<World>/rreturn/benchmark.log`).
+  - `benchmark.rs` — Phase timers and log output (`logs/rreturn/rreturn.log`, `saves/<World>/logs/rreturn/benchmark.log`).
   - `hooks.rs` — `handle_lifecycle`, `handle_tick`, `intercept_guest_die`, `handle_key`.
 - `src/lib.rs` — Standalone unit-test crate for slot name validation and atomic checkpoint I/O helpers.
-- `tools/` — `package.py` (deterministic `.hmod` packager), `pr_ready.py` (pre-commit check), `rreturn_harness.py` (control socket client), `rreturn_e2e.py` & `tools/tests/` (104 E2E tests), `rreturn_bench.py` (stress benchmark), `rreturn_spark.py` (CPU profiler).
+- `tools/` — `package.py` (deterministic `.hmod` packager), `pr_ready.py` (pre-commit check), `rreturn_harness.py` (control socket client), `rreturn_e2e.py` & `tools/tests/` (105 E2E tests), `rreturn_bench.py` (stress benchmark), `rreturn_spark.py` (CPU profiler).
 
 ```sh
 python3 tools/pr_ready.py --quick

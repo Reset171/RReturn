@@ -4064,6 +4064,9 @@ pub fn cached_server_scrub_time_range() -> Option<(i64, i64)> {
 }
 
 pub fn record_server_tick(game: &Game<'_>) {
+    if !with_state(|st| st.scrub_enabled) {
+        return;
+    }
     if !game.clock.runs_normally() {
         return;
     }
@@ -4075,6 +4078,9 @@ pub fn record_server_tick(game: &Game<'_>) {
 }
 
 pub fn handle_server_chunk_unload(game: &mut Game<'_>, dimension: &str, chunk: [i32; 2]) {
+    if !with_state(|st| st.scrub_enabled) {
+        return;
+    }
     let dim = Dim::from_id(dimension);
     let now = game.world.game_time;
     SERVER_JOURNAL.with(|cell| {

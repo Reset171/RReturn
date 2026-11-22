@@ -299,6 +299,7 @@ pub struct RReturnState {
     pub last_benchmark: Option<RollbackBenchmark>,
     pub f3_loop_hitboxes: bool,
     pub dev_mode: bool,
+    pub scrub_enabled: bool,
 }
 
 impl Default for RReturnState {
@@ -317,6 +318,7 @@ impl Default for RReturnState {
             post_combat_save_pct: 70,
             save_on_boss_defeat: true,
             logs: false,
+            scrub_enabled: false,
             policy: RollbackPolicy::default(),
             anchor: AnchorSettings::default(),
             anchor_ids: HashSet::new(),
@@ -352,6 +354,12 @@ pub fn with_state<R>(f: impl FnOnce(&RReturnState) -> R) -> R {
 pub fn with_state_mut<R>(f: impl FnOnce(&mut RReturnState) -> R) -> R {
     let mut guard = state_lock().lock().unwrap_or_else(|e| e.into_inner());
     f(&mut guard)
+}
+
+pub fn mod_chat(game: &mut Game<'_>, msg: &str) {
+    if with_state(|st| st.dev_mode) {
+        game.native_chat(msg);
+    }
 }
 
 pub fn raids_dat_path(world_root: &Path, dim: Dim) -> PathBuf {

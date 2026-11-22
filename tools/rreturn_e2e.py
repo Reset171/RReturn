@@ -50,6 +50,8 @@ from tools.tests.test_world_settings import (
     test_21_schedule_function_cancellation,
     test_22_fillbiome_rollback,
     test_23_weather_and_thunder_rollback,
+    test_105_dev_mode_chat_filtering,
+    test_106_logs_directory_structure,
 )
 from tools.tests.test_portals import (
     test_24_nether_portal_cold_chunk,
@@ -286,6 +288,8 @@ def build_test_catalog():
         (102, "Test 102: Scrub Chest Loot Table Seed Determinism", "determinism", test_102_scrub_chest_loot_table_seed_determinism),
         (103, "Test 103: Scrub TNT Fuse and Deterministic Deflection", "determinism", test_103_scrub_tnt_fuse_and_deterministic_deflection),
         (104, "Test 104: Scrub Villager AI Schedule Determinism", "determinism", test_104_scrub_villager_ai_schedule_determinism),
+        (105, "Test 105: Dev Mode Chat Filtering", "world_settings", test_105_dev_mode_chat_filtering),
+        (106, "Test 106: Logs Directory Structure", "world_settings", test_106_logs_directory_structure),
     ]
 
 

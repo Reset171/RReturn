@@ -3,7 +3,11 @@ use super::capture::*;
 use super::policy::*;
 use super::restore::*;
 use super::restore_client::*;
+use super::scrub::*;
+use super::scrub_audio::*;
 use super::scrub_perf::*;
+use super::scrub_server::*;
+use super::scrub_timeline::*;
 use super::snapshots::*;
 use super::storage::*;
 use super::telemetry::*;
@@ -129,7 +133,7 @@ pub fn execute_rreturn_command(
             };
             tr_args("command.rreturn.dev.status", &[&state_str])
         }
-        _ => "[RReturn] Usage: /rreturn <set|load|json|status|slot|policy|metrics|anchor|autosave|bench|f3|dev>".to_owned(),
+        _ => "[RReturn] Usage: /rreturn <set|load|json|status|slot|policy|metrics|anchor|autosave|scrub|bench|f3|dev>".to_owned(),
     };
     vec![reply]
 }
@@ -438,15 +442,17 @@ pub fn handle_client_command(game: &mut Game<'_>, command: &str, ran: &mut bool)
     }
     *ran = true;
 
+    let is_dev_cmd = trimmed.starts_with("rreturn dev");
+
     if trimmed.starts_with("rreturn scrub") {
         let permitted = has_level_4_permission(game, None);
         if !permitted {
-            game.native_chat(&tr("command.rreturn.no_permission"));
+            mod_chat(game, &tr("command.rreturn.no_permission"));
             return;
         }
         let lines = execute_rreturn_command(game, None, trimmed);
         for line in lines {
-            game.native_chat(&line);
+            mod_chat(game, &line);
         }
         return;
     }
@@ -486,7 +492,11 @@ pub fn handle_client_command(game: &mut Game<'_>, command: &str, ran: &mut bool)
                 apply_client_level_rollback(game, &slot);
             }
             for line in lines {
-                game.native_chat(&line);
+                if is_dev_cmd {
+                    game.native_chat(&line);
+                } else {
+                    mod_chat(game, &line);
+                }
             }
         }
     } else {
@@ -496,7 +506,11 @@ pub fn handle_client_command(game: &mut Game<'_>, command: &str, ran: &mut bool)
             has_cheat_permission(game, None)
         };
         if !permitted {
-            game.native_chat(&tr("command.rreturn.no_permission"));
+            if is_dev_cmd {
+                game.native_chat(&tr("command.rreturn.no_permission"));
+            } else {
+                mod_chat(game, &tr("command.rreturn.no_permission"));
+            }
             return;
         }
         if is_rollback {
@@ -509,7 +523,11 @@ pub fn handle_client_command(game: &mut Game<'_>, command: &str, ran: &mut bool)
             apply_client_level_rollback(game, &slot);
         }
         for line in lines {
-            game.native_chat(&line);
+            if is_dev_cmd {
+                game.native_chat(&line);
+            } else {
+                mod_chat(game, &line);
+            }
         }
     }
 }
@@ -524,15 +542,19 @@ pub fn intercept_owner_console_command(
     }
     let owner = game.serving.as_ref().map(|s| s.owner);
     let lines = execute_rreturn_command(game, owner, trimmed);
+    let is_dev_cmd = trimmed.starts_with("rreturn dev");
+    let should_send = with_state(|st| st.dev_mode) || is_dev_cmd;
     if let Some(host) = &game.lan
         && let Some(owner_uuid) = owner
         && let Some(g) = host.hub.guests.iter().find(|g| g.uuid == owner_uuid)
     {
-        for line in &lines {
-            g.send(&C::SystemChat(play::SystemChat {
-                content: literal(line),
-                overlay: false,
-            }));
+        if should_send {
+            for line in &lines {
+                g.send(&C::SystemChat(play::SystemChat {
+                    content: literal(line),
+                    overlay: false,
+                }));
+            }
         }
     }
     ControlFlow::Break(lines)
@@ -544,11 +566,86 @@ fn handle_scrub_subcommand(game: &mut Game<'_>, args: &[&str], requester: Option
     }
     let sub = args.first().copied().unwrap_or("status");
     match sub {
+        "on" | "enable" | "1" | "true" => {
+            with_state_mut(|st| st.scrub_enabled = true);
+            if game.audio.capture.is_none() {
+                game.audio.capture = Some(Vec::new());
+            }
+            game.audio.record_heard = true;
+            if let Some(server) = &game.integrated {
+                let _ = server.call(|_| {
+                    with_state_mut(|st| st.scrub_enabled = true);
+                });
+            }
+            save_current_settings(game);
+            let state_str = tr("ui.rreturn.on");
+            tr_args("command.rreturn.scrub.status", &[&state_str])
+        }
+        "off" | "disable" | "0" | "false" => {
+            if is_scrubbing() {
+                cancel_scrub(game);
+            }
+            with_state_mut(|st| st.scrub_enabled = false);
+            with_scrub_ring_mut(|r| r.clear());
+            clear_server_scrub();
+            clear_reverse_audio_cache();
+            game.audio.capture = None;
+            game.audio.record_heard = false;
+            if let Some(server) = &game.integrated {
+                let _ = server.call(|_| {
+                    with_state_mut(|st| st.scrub_enabled = false);
+                    clear_server_scrub();
+                });
+            }
+            save_current_settings(game);
+            let state_str = tr("ui.rreturn.off");
+            tr_args("command.rreturn.scrub.status", &[&state_str])
+        }
+        "toggle" => {
+            let next = with_state(|st| !st.scrub_enabled);
+            if !next && is_scrubbing() {
+                cancel_scrub(game);
+            }
+            with_state_mut(|st| st.scrub_enabled = next);
+            if !next {
+                with_scrub_ring_mut(|r| r.clear());
+                clear_server_scrub();
+                clear_reverse_audio_cache();
+                game.audio.capture = None;
+                game.audio.record_heard = false;
+            } else {
+                if game.audio.capture.is_none() {
+                    game.audio.capture = Some(Vec::new());
+                }
+                game.audio.record_heard = true;
+            }
+            if let Some(server) = &game.integrated {
+                let _ = server.call(move |_| {
+                    with_state_mut(|st| st.scrub_enabled = next);
+                    if !next {
+                        clear_server_scrub();
+                    }
+                });
+            }
+            save_current_settings(game);
+            let state_str = if next {
+                tr("ui.rreturn.on")
+            } else {
+                tr("ui.rreturn.off")
+            };
+            tr_args("command.rreturn.scrub.status", &[&state_str])
+        }
         "start" => {
+            if !with_state(|st| st.scrub_enabled) {
+                return tr("command.rreturn.scrub.disabled");
+            }
             start_scrub(game);
             "[RReturn] Scrub mode started. Rotate mouse wheel to rewind/advance.".to_owned()
         }
         "step" => {
+            if !with_state(|st| st.scrub_enabled) {
+                return tr("command.rreturn.scrub.disabled");
+            }
             let val: f64 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(-1.0);
             on_mouse_scroll(game, [0.0, val], [0, val.round() as i32]);
             snap_scrub_time_to_target();
@@ -568,6 +665,7 @@ fn handle_scrub_subcommand(game: &mut Game<'_>, args: &[&str], requester: Option
             "[RReturn] Scrub cancelled.".to_owned()
         }
         "status" => {
+            let enabled = with_state(|st| st.scrub_enabled);
             let swinging = game.swing.current.is_some();
             let swing_anim = game.swing.animation;
             let p_count = game.particle_count();
@@ -586,18 +684,21 @@ fn handle_scrub_subcommand(game: &mut Game<'_>, args: &[&str], requester: Option
             };
             if let Some((curr, min_t, max_t)) = get_scrub_info() {
                 format!(
-                    r#"{{"active":true,"current_time":{:.2},"min_tick":{},"anchor_tick":{},"server_min_tick":{},"server_max_tick":{},"day_time":{},"rain_level":{:.3},"swinging":{},"swing_anim":{:.2},"particles":{},"sounds":{},"fov_modifier":{:.3},"walk_dist":{:.3}}}"#,
-                    curr, min_t, max_t, srv_range.0, srv_range.1, day_time, rain_level, swinging, swing_anim, p_count, s_count, fov, walk_dist
+                    r#"{{"enabled":{},"active":true,"current_time":{:.2},"min_tick":{},"anchor_tick":{},"server_min_tick":{},"server_max_tick":{},"day_time":{},"rain_level":{:.3},"swinging":{},"swing_anim":{:.2},"particles":{},"sounds":{},"fov_modifier":{:.3},"walk_dist":{:.3}}}"#,
+                    enabled, curr, min_t, max_t, srv_range.0, srv_range.1, day_time, rain_level, swinging, swing_anim, p_count, s_count, fov, walk_dist
                 )
             } else {
                 let range = with_scrub_ring(|r| r.time_range()).unwrap_or((0, 0));
                 format!(
-                    r#"{{"active":false,"min_tick":{},"max_tick":{},"server_min_tick":{},"server_max_tick":{},"day_time":{},"rain_level":{:.3},"swinging":{},"swing_anim":{:.2},"particles":{},"sounds":{},"fov_modifier":{:.3},"walk_dist":{:.3}}}"#,
-                    range.0, range.1, srv_range.0, srv_range.1, day_time, rain_level, swinging, swing_anim, p_count, s_count, fov, walk_dist
+                    r#"{{"enabled":{},"active":false,"min_tick":{},"max_tick":{},"server_min_tick":{},"server_max_tick":{},"day_time":{},"rain_level":{:.3},"swinging":{},"swing_anim":{:.2},"particles":{},"sounds":{},"fov_modifier":{:.3},"walk_dist":{:.3}}}"#,
+                    enabled, range.0, range.1, srv_range.0, srv_range.1, day_time, rain_level, swinging, swing_anim, p_count, s_count, fov, walk_dist
                 )
             }
         }
         "rewind" => {
+            if !with_state(|st| st.scrub_enabled) {
+                return tr("command.rreturn.scrub.disabled");
+            }
             let secs: f64 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(5.0);
             start_scrub(game);
             let ticks = secs * 20.0;
@@ -608,6 +709,9 @@ fn handle_scrub_subcommand(game: &mut Game<'_>, args: &[&str], requester: Option
             format!("[RReturn] Scrubbed back by {:.1} seconds.", secs)
         }
         "rewind_ticks" => {
+            if !with_state(|st| st.scrub_enabled) {
+                return tr("command.rreturn.scrub.disabled");
+            }
             let ticks: f64 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(20.0);
             start_scrub(game);
             step_scrub_ticks(-ticks);
@@ -616,7 +720,7 @@ fn handle_scrub_subcommand(game: &mut Game<'_>, args: &[&str], requester: Option
             commit_scrub(game);
             format!("[RReturn] Scrubbed back by {:.0} ticks.", ticks)
         }
-        _ => "[RReturn] Usage: /rreturn scrub [start|step <N>|commit|cancel|status|rewind <sec>]".to_owned(),
+        _ => "[RReturn] Usage: /rreturn scrub [on|off|toggle|start|step <N>|commit|cancel|status|rewind <sec>]".to_owned(),
     }
 }
 
@@ -655,26 +759,32 @@ pub fn intercept_guest_command(
     let has_op = host.hub.guest(conn).is_some_and(|g| {
         g.permission >= min_op || host.hub.ops.get(&g.uuid).copied().unwrap_or(0) >= min_op
     });
+    let is_dev_cmd = trimmed.starts_with("rreturn dev");
+    let should_send = with_state(|st| st.dev_mode) || is_dev_cmd;
     let allowed = has_op || (is_owner && game.allow_commands());
     if !allowed {
-        if let Some(g) = host.hub.guest(conn) {
-            let msg = tr("command.rreturn.no_permission");
-            g.send(&C::SystemChat(play::SystemChat {
-                content: literal(&msg),
-                overlay: false,
-            }));
+        if should_send {
+            if let Some(g) = host.hub.guest(conn) {
+                let msg = tr("command.rreturn.no_permission");
+                g.send(&C::SystemChat(play::SystemChat {
+                    content: literal(&msg),
+                    overlay: false,
+                }));
+            }
         }
         return ControlFlow::Break(());
     }
     let lines = execute_rreturn_command(game, requester, trimmed);
-    if let Some(host) = game.lan.as_ref()
-        && let Some(g) = host.hub.guest(conn)
-    {
-        for line in lines {
-            g.send(&C::SystemChat(play::SystemChat {
-                content: literal(&line),
-                overlay: false,
-            }));
+    if should_send {
+        if let Some(host) = game.lan.as_ref()
+            && let Some(g) = host.hub.guest(conn)
+        {
+            for line in lines {
+                g.send(&C::SystemChat(play::SystemChat {
+                    content: literal(&line),
+                    overlay: false,
+                }));
+            }
         }
     }
     ControlFlow::Break(())

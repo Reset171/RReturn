@@ -92,6 +92,7 @@ pub fn report_status_json(game: &Game<'_>) -> String {
         intensity,
         peak,
         current_slot,
+        scrub_enabled,
     ) = with_state(|st| {
         (
             st.has_checkpoint,
@@ -104,6 +105,7 @@ pub fn report_status_json(game: &Game<'_>) -> String {
             st.current_intensity,
             st.peak_intensity,
             st.current_slot.clone(),
+            st.scrub_enabled,
         )
     });
 
@@ -151,6 +153,7 @@ pub fn report_status_json(game: &Game<'_>) -> String {
         "auto_save": auto_save,
         "adaptive_mode": adaptive,
         "fixed_interval_seconds": interval_sec,
+        "scrub_enabled": scrub_enabled,
         "combat_intensity": intensity,
         "peak_intensity": peak,
         "player": player_json,

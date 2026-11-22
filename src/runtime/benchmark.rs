@@ -286,18 +286,17 @@ pub fn append_to_rreturn_log(world_root: &std::path::Path, text: &str) {
     use std::io::Write;
 
     if let Some(instance_dir) = world_root.parent().and_then(|p| p.parent()) {
-        let logs_dir = instance_dir.join("logs");
-        if logs_dir.is_dir() {
-            let log_file = logs_dir.join("rreturn.log");
-            if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(log_file) {
-                let _ = writeln!(f, "{}", text);
-            }
+        let logs_dir = instance_dir.join("logs").join("rreturn");
+        let _ = std::fs::create_dir_all(&logs_dir);
+        let log_file = logs_dir.join("rreturn.log");
+        if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(log_file) {
+            let _ = writeln!(f, "{}", text);
         }
     }
 
-    let rreturn_dir = world_root.join("rreturn");
-    let _ = std::fs::create_dir_all(&rreturn_dir);
-    let world_log = rreturn_dir.join("benchmark.log");
+    let world_logs_dir = world_root.join("logs").join("rreturn");
+    let _ = std::fs::create_dir_all(&world_logs_dir);
+    let world_log = world_logs_dir.join("benchmark.log");
     if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(world_log) {
         let _ = writeln!(f, "{}", text);
     }

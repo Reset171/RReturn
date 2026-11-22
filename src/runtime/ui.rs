@@ -1,4 +1,7 @@
 use super::super::Game;
+use super::scrub_audio::clear_reverse_audio_cache;
+use super::scrub_server::clear_server_scrub;
+use super::scrub_timeline::with_scrub_ring_mut;
 use super::types::*;
 use std::{
     fs,
@@ -34,6 +37,9 @@ pub fn load_saved_settings(game: &Game<'_>) {
     let dev_mode = game
         .setting(MOD_ID, "dev_mode")
         .map(|v| v == "true");
+    let scrub_enabled = game
+        .setting(MOD_ID, "scrub_enabled")
+        .map(|v| v == "true" || v == "1");
 
     let json_cfg = fs::read_to_string(Path::new("config").join("rreturn.json"))
         .ok()
@@ -106,6 +112,14 @@ pub fn load_saved_settings(game: &Game<'_>) {
                 }
                 st.save_on_boss_defeat = b(&ad["save_on_boss_defeat"], st.save_on_boss_defeat);
             }
+            let sc = &v["scrub"];
+            if sc.is_object() {
+                if let Some(en) = sc["enabled"].as_bool() {
+                    st.scrub_enabled = en;
+                }
+            } else if let Some(en) = v["scrub_enabled"].as_bool() {
+                st.scrub_enabled = en;
+            }
         }
         if let Some(v) = auto_save {
             st.auto_save = v;
@@ -137,7 +151,16 @@ pub fn load_saved_settings(game: &Game<'_>) {
         } else if std::env::var_os("RRETURN_DEV").is_some_and(|v| v == "1" || v == "true") {
             st.dev_mode = true;
         }
+        if let Some(v) = scrub_enabled {
+            st.scrub_enabled = v;
+        }
     });
+
+    if !with_state(|st| st.scrub_enabled) {
+        with_scrub_ring_mut(|r| r.clear());
+        clear_server_scrub();
+        clear_reverse_audio_cache();
+    }
 }
 
 pub fn save_current_settings(game: &Game<'_>) {
@@ -188,6 +211,11 @@ pub fn save_current_settings(game: &Game<'_>) {
             MOD_ID,
             "dev_mode",
             if st.dev_mode { "true" } else { "false" },
+        );
+        game.set_setting(
+            MOD_ID,
+            "scrub_enabled",
+            if st.scrub_enabled { "true" } else { "false" },
         );
     });
 }

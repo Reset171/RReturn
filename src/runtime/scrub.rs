@@ -406,12 +406,16 @@ pub fn step_scrub_ticks(ticks: f64) {
 }
 
 pub fn start_scrub(game: &mut Game<'_>) {
+    if !with_state(|st| st.scrub_enabled) {
+        mod_chat(game, &tr("command.rreturn.scrub.disabled"));
+        return;
+    }
     if !has_level_4_permission(game, None) {
-        game.native_chat(&tr("command.rreturn.no_permission"));
+        mod_chat(game, &tr("command.rreturn.no_permission"));
         return;
     }
     if game.remote.is_some() && game.integrated.is_none() {
-        game.native_chat(&tr("command.rreturn.no_permission"));
+        mod_chat(game, &tr("command.rreturn.no_permission"));
         return;
     }
     let server_range = if let Some(server) = &game.integrated {
@@ -504,6 +508,9 @@ pub fn start_scrub(game: &mut Game<'_>) {
 }
 
 pub fn on_mouse_scroll(_game: &mut Game<'_>, scroll: [f64; 2], accumulated: [i32; 2]) -> bool {
+    if !with_state(|st| st.scrub_enabled) {
+        return false;
+    }
     let mut s = match session_lock().lock() {
         Ok(guard) => guard,
         Err(_) => return false,
@@ -541,6 +548,9 @@ pub fn on_mouse_scroll(_game: &mut Game<'_>, scroll: [f64; 2], accumulated: [i32
 }
 
 pub fn on_frame_render_pre(game: &mut Game<'_>, _world_partial: f32, _partial: f32) {
+    if !with_state(|st| st.scrub_enabled) {
+        return;
+    }
     let mut s = match session_lock().lock() {
         Ok(guard) => guard,
         Err(_) => return,
@@ -706,7 +716,7 @@ pub fn commit_scrub(game: &mut Game<'_>) {
 
         let dt = (anchor - final_tick) as f64 / 20.0;
         let dt_str = format!("{:.1}", dt);
-        game.native_chat(&tr_args("message.rreturn.scrub.commit", &[&dt_str]));
+        mod_chat(game, &tr_args("message.rreturn.scrub.commit", &[&dt_str]));
     } else {
         if let Some(anchor_state) = saved_anchor {
             restore_anchor_client_state(game, anchor_state);
@@ -784,10 +794,13 @@ pub fn cancel_scrub(game: &mut Game<'_>) {
             }
         });
     }
-    game.native_chat(&tr("message.rreturn.scrub.cancel"));
+    mod_chat(game, &tr("message.rreturn.scrub.cancel"));
 }
 
 pub fn render_hud(game: &Game<'_>, draw: &mut horizon_client::hud::HudBatch) {
+    if !with_state(|st| st.scrub_enabled) {
+        return;
+    }
     let Some((curr, min_t, max_t)) = get_scrub_info() else {
         return;
     };

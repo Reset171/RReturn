@@ -29,6 +29,12 @@ pub fn handle_key(game: &mut Game<'_>, key: &str, action: mod_api::KeyAction) {
         || key.eq_ignore_ascii_case("u");
 
     if is_scrub_key {
+        if !with_state(|st| st.scrub_enabled) {
+            if matches!(action, mod_api::KeyAction::Press) {
+                mod_chat(game, &tr("command.rreturn.scrub.disabled"));
+            }
+            return;
+        }
         match action {
             mod_api::KeyAction::Press => {
                 if is_scrubbing() {
@@ -105,10 +111,10 @@ pub fn handle_key(game: &mut Game<'_>, key: &str, action: mod_api::KeyAction) {
                 }
             });
             if let Some(text) = msg {
-                game.native_chat(&text);
+                mod_chat(game, &text);
             }
         } else if !has_cheat_permission(game, None) {
-            game.native_chat(&tr("command.rreturn.no_permission"));
+            mod_chat(game, &tr("command.rreturn.no_permission"));
         } else {
             with_state_mut(|st| st.pending_save_request = true);
         }
@@ -137,10 +143,10 @@ pub fn handle_key(game: &mut Game<'_>, key: &str, action: mod_api::KeyAction) {
                     let slot = with_state(|st| st.current_slot.clone());
                     apply_client_level_rollback(game, &slot);
                 }
-                game.native_chat(&text);
+                mod_chat(game, &text);
             }
         } else if !has_level_4_permission(game, None) {
-            game.native_chat(&tr("command.rreturn.no_permission"));
+            mod_chat(game, &tr("command.rreturn.no_permission"));
         } else {
             game.close_container();
             game.screen = super::super::Screen::Playing;
@@ -155,7 +161,7 @@ pub fn handle_key(game: &mut Game<'_>, key: &str, action: mod_api::KeyAction) {
             has_cheat_permission(game, None)
         };
         if !allowed {
-            game.native_chat(&tr("gui.rreturn.anchor.no_permission"));
+            mod_chat(game, &tr("gui.rreturn.anchor.no_permission"));
             return;
         }
         let next_mode = with_state_mut(|st| {
@@ -164,7 +170,7 @@ pub fn handle_key(game: &mut Game<'_>, key: &str, action: mod_api::KeyAction) {
         });
         save_current_settings(game);
         let mode_label = tr(next_mode.lang_key());
-        game.native_chat(&tr_args("command.rreturn.anchor.mode", &[&mode_label]));
+        mod_chat(game, &tr_args("command.rreturn.anchor.mode", &[&mode_label]));
     }
 }
 
@@ -175,7 +181,15 @@ pub fn handle_server_started(game: &mut Game<'_>) {
     with_scrub_ring_mut(|r| r.clear());
     clear_server_scrub();
     clear_reverse_audio_cache();
-    game.audio.record_heard = true;
+    let scrub_en = with_state(|st| st.scrub_enabled);
+    game.audio.record_heard = scrub_en;
+    if scrub_en {
+        if game.audio.capture.is_none() {
+            game.audio.capture = Some(Vec::new());
+        }
+    } else {
+        game.audio.capture = None;
+    }
     let has_disk_cp = has_disk_checkpoint(&game.world_root);
     let mut restored_anchors = HashSet::new();
     let mut restored_save_tick = game.world.game_time;
@@ -207,7 +221,7 @@ pub fn handle_server_started(game: &mut Game<'_>) {
     });
 }
 
-pub fn handle_lifecycle(_game: &mut Game<'_>, phase: WorldPhase) {
+pub fn handle_lifecycle(game: &mut Game<'_>, phase: WorldPhase) {
     match phase {
         WorldPhase::WorldCloseFinal
         | WorldPhase::WorldCloseFailed
@@ -217,6 +231,8 @@ pub fn handle_lifecycle(_game: &mut Game<'_>, phase: WorldPhase) {
             with_scrub_ring_mut(|r| r.clear());
             clear_server_scrub();
             clear_reverse_audio_cache();
+            game.audio.capture = None;
+            game.audio.record_heard = false;
             with_state_mut(|st| {
                 st.pending_death_rollback = None;
             });
@@ -226,11 +242,25 @@ pub fn handle_lifecycle(_game: &mut Game<'_>, phase: WorldPhase) {
 }
 
 pub fn handle_tick(game: &mut Game<'_>) {
-    if game.audio.capture.is_none() {
-        game.audio.capture = Some(Vec::new());
+    let scrub_en = with_state(|st| st.scrub_enabled);
+    if scrub_en {
+        if game.audio.capture.is_none() {
+            game.audio.capture = Some(Vec::new());
+        }
+        if !game.audio.record_heard {
+            game.audio.record_heard = true;
+        }
+    } else {
+        if game.audio.capture.is_some() {
+            game.audio.capture = None;
+        }
+        if game.audio.record_heard {
+            game.audio.record_heard = false;
+        }
     }
 
-    if !is_scrubbing()
+    if scrub_en
+        && !is_scrubbing()
         && game.native_window()
         && game.screen == super::super::Screen::Playing
     {
@@ -288,7 +318,7 @@ pub fn handle_tick(game: &mut Game<'_>) {
 }
 
 pub fn handle_server_tick(game: &mut Game<'_>, world_running: bool) {
-    if !is_scrubbing() && world_running {
+    if with_state(|st| st.scrub_enabled) && !is_scrubbing() && world_running {
         record_server_tick(game);
     }
 
@@ -420,6 +450,9 @@ pub fn handle_mouse_scrolling(
     scroll: [f64; 2],
     accumulated: [i32; 2],
 ) -> bool {
+    if !with_state(|st| st.scrub_enabled) {
+        return false;
+    }
     on_mouse_scroll(game, scroll, accumulated)
 }
 
@@ -428,6 +461,9 @@ pub fn handle_frame_render_pre(
     world_partial: f32,
     partial: f32,
 ) {
+    if !with_state(|st| st.scrub_enabled) {
+        return;
+    }
     on_frame_render_pre(game, world_partial, partial);
 }
 
@@ -435,6 +471,9 @@ pub fn handle_render_gui_post(
     game: &Game<'_>,
     draw: &mut horizon_client::hud::HudBatch,
 ) {
+    if !with_state(|st| st.scrub_enabled) {
+        return;
+    }
     render_hud(game, draw);
 }
 

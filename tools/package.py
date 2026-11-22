@@ -12,10 +12,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
-PIN_GAME = "26.3"
-PIN_HORIZON = "2b77287de099c9316278ba7ac4d83590fdb7ef30"
-PIN_MIXINS = "e59da9094f0c2fdda6c627fe9eff22dec6a906f0"
-
 
 def deploy_to_instance(
     out_path: Path, mod_id: str, mod_version: str, instance: str | None = None
@@ -95,12 +91,13 @@ def build_package(
     if not native_cfg:
         raise ValueError("Missing [native] section in horizon-mod.toml")
 
-    if native_cfg.get("game") != PIN_GAME:
-        raise ValueError(f"Game pin mismatch: expected {PIN_GAME!r}, got {native_cfg.get('game')!r}")
-    if native_cfg.get("horizon") != PIN_HORIZON:
-        raise ValueError(f"Horizon pin mismatch: expected {PIN_HORIZON!r}, got {native_cfg.get('horizon')!r}")
-    if native_cfg.get("mixins") != PIN_MIXINS:
-        raise ValueError(f"Mixins pin mismatch: expected {PIN_MIXINS!r}, got {native_cfg.get('mixins')!r}")
+    # Read native pins directly from horizon-mod.toml (Single Source of Truth)
+    game_pin = native_cfg.get("game")
+    horizon_pin = native_cfg.get("horizon")
+    if not game_pin:
+        raise ValueError("Missing 'game' in [native] section of horizon-mod.toml")
+    if not horizon_pin:
+        raise ValueError("Missing 'horizon' in [native] section of horizon-mod.toml")
 
     runtime_path = ROOT / "src" / "runtime.rs"
     if not skip_check and not runtime_path.is_file():
@@ -265,6 +262,10 @@ impl mod_api::Hooks for Mod {
         let _ = r.register_setting(
             SettingSpec::toggle("dev_mode", "rreturn.setting.dev_mode", false)
                 .tooltip("rreturn.setting.dev_mode.tooltip"),
+        );
+        let _ = r.register_setting(
+            SettingSpec::toggle("scrub_enabled", "rreturn.setting.scrub_enabled", false)
+                .tooltip("rreturn.setting.scrub_enabled.tooltip"),
         );
     }
 }

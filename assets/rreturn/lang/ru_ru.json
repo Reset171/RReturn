@@ -1,7 +1,7 @@
 {
   "mod.rreturn.description": "Посмертный возврат. Полностью откатывает время и состояние мира к последней точке сохранения при гибели.",
   "key.category.rreturn": "RReturn",
-  "key.rreturn.scrub": "Управление временем (Time Scrub)",
+  "key.rreturn.scrub": "Управление временем",
   "key.rreturn.save": "Создать точку сохранения",
   "key.rreturn.load": "Вернуться к точке сохранения",
   "key.rreturn.anchor_menu": "Меню ключевых игроков",
@@ -20,9 +20,11 @@
   "rreturn.setting.f3_loop_hitboxes": "Подсветка петель F3+B",
   "rreturn.setting.f3_loop_hitboxes.tooltip": "Отображение цветных хитбоксов при сравнении временных петель",
   "rreturn.setting.logs": "Логирование в файл",
-  "rreturn.setting.logs.tooltip": "Запись детальных событий отката и бенчмарков в logs/rreturn.log",
+  "rreturn.setting.logs.tooltip": "Запись детальных событий отката и бенчмарков в logs/rreturn/rreturn.log",
   "rreturn.setting.dev_mode": "Режим разработчика",
   "rreturn.setting.dev_mode.tooltip": "Разрешить отладочные команды без проверки оператора",
+  "rreturn.setting.scrub_enabled": "Управление временем",
+  "rreturn.setting.scrub_enabled.tooltip": "Включить запись временной шкалы и интерактивную перемотку времени (клавиша U)",
   "rreturn.mode.nearest": "Ближайший игрок",
   "rreturn.mode.manual": "Фиксированный якорь",
   "rreturn.mode.loop": "Петля времени",
@@ -44,6 +46,7 @@
   "ui.rreturn.logs": "Логи: %s",
   "ui.rreturn.f3_hitboxes": "Подсветка петель F3+B: %s",
   "ui.rreturn.dev_mode": "Режим разработчика: %s",
+  "ui.rreturn.scrub": "Управление временем: %s",
   "command.rreturn.no_permission": "[RReturn] У вас нет прав оператора (включите читы в мире для ручного управления).",
   "command.rreturn.set.success": "[RReturn] Точка сохранения успешно создана.",
   "command.rreturn.set.failed": "[RReturn] Не удалось создать точку сохранения (ошибка записи на диск).",
@@ -56,6 +59,8 @@
   "command.rreturn.anchor.mode": "[RReturn] Режим ключевого игрока: %s",
   "command.rreturn.f3.status": "[RReturn] Подсветка петель F3+B: %s",
   "command.rreturn.dev.status": "[RReturn] Режим разработчика: %s",
+  "command.rreturn.scrub.disabled": "[RReturn] Перемотка времени отключена в настройках.",
+  "command.rreturn.scrub.status": "[RReturn] Управление временем: %s",
   "message.rreturn.scrub.commit": "[RReturn] Время успешно перемотано на %sс назад.",
   "message.rreturn.scrub.cancel": "[RReturn] Перемотка времени отменена."
 }

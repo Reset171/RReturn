@@ -10,6 +10,7 @@ def setup_clean_env(h):
     h.rreturn("policy reset")
     h.rreturn("slot select default")
     h.rreturn("autosave off")
+    h.rreturn("scrub off")
 
     st = h.state()
     if st.get("screen") not in ("playing", None):

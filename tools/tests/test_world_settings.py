@@ -1,5 +1,6 @@
 """Tests 19-23: World Settings, Commands, Tick Rate, Weather, Biomes, Schedule."""
 
+from tools.rreturn_harness import default_saves_dir
 from . import setup_clean_env
 
 
@@ -132,3 +133,84 @@ def test_23_weather_and_thunder_rollback(h):
     st_clear = h.state().get("weather", {})
     assert not st_clear.get("thundering", False), f"Thunder weather not rolled back: {st_clear}"
     assert not st_clear.get("raining", False), f"Rain weather not rolled back: {st_clear}"
+
+
+def test_105_dev_mode_chat_filtering(h):
+    setup_clean_env(h)
+
+    # 1. Dev mode is currently ON (set by setup_clean_env).
+    # Commands should output chat messages.
+    res_on = h.command("rreturn status")
+    assert len(res_on.get("chat", [])) > 0, f"Expected chat messages when dev mode is ON: {res_on}"
+
+    # 2. Turn dev mode OFF. The dev command itself still reports its status in chat.
+    res_dev_off = h.command("rreturn dev off")
+    chat_off = res_dev_off.get("chat", [])
+    assert len(chat_off) > 0, f"Expected dev toggle response in chat: {res_dev_off}"
+    assert "off" in chat_off[0].lower() or "выкл" in chat_off[0].lower(), f"Unexpected dev off message: {chat_off}"
+
+    # 3. With dev mode OFF, subsequent commands must NOT output to chat.
+    res_silent_status = h.command("rreturn status")
+    chat_after_status = res_silent_status.get("chat", [])
+    assert chat_after_status == chat_off, (
+        f"New chat message was added while dev mode was OFF: {chat_after_status}"
+    )
+
+    res_silent_save = h.command("rreturn set")
+    chat_after_save = res_silent_save.get("chat", [])
+    assert chat_after_save == chat_off, (
+        f"Save message was added to chat while dev mode was OFF: {chat_after_save}"
+    )
+
+    res_silent_scrub = h.command("rreturn scrub status")
+    chat_after_scrub = res_silent_scrub.get("chat", [])
+    assert chat_after_scrub == chat_off, (
+        f"Scrub status was added to chat while dev mode was OFF: {chat_after_scrub}"
+    )
+
+    # 4. Turn dev mode back ON.
+    res_dev_on = h.command("rreturn dev on")
+    chat_on = res_dev_on.get("chat", [])
+    assert len(chat_on) > 0, f"Expected dev toggle response in chat: {res_dev_on}"
+    assert "on" in chat_on[0].lower() or "вкл" in chat_on[0].lower(), f"Unexpected dev on message: {chat_on}"
+
+    # 5. Subsequent commands should output to chat again.
+    res_after = h.command("rreturn status")
+    assert len(res_after.get("chat", [])) > 0, f"Expected chat output after reenabling dev mode: {res_after}"
+
+
+def test_106_logs_directory_structure(h):
+    setup_clean_env(h)
+
+    world_dir = default_saves_dir(h.instance) / h.world
+    instance_dir = world_dir.parent.parent
+
+    # Clear old files if any existed from previous runs
+    world_old_log = world_dir / "rreturn" / "benchmark.log"
+    if world_old_log.exists():
+        try:
+            world_old_log.unlink()
+        except Exception:
+            pass
+    instance_old_log = instance_dir / "logs" / "rreturn.log"
+    if instance_old_log.exists():
+        try:
+            instance_old_log.unlink()
+        except Exception:
+            pass
+
+    # Trigger checkpoint creation which calls append_to_rreturn_log
+    h.rreturn("set")
+    h.wait(4)
+
+    # 1. World-level log must be under saves/<world>/logs/rreturn/benchmark.log
+    world_new_log = world_dir / "logs" / "rreturn" / "benchmark.log"
+    assert world_new_log.exists(), f"Expected world log at {world_new_log}, but it was not found"
+    assert not world_old_log.exists(), f"Old world log at {world_old_log} should NOT exist"
+
+    # 2. Instance-level log must be under <instance>/logs/rreturn/rreturn.log
+    if (instance_dir / "logs").is_dir():
+        instance_new_log = instance_dir / "logs" / "rreturn" / "rreturn.log"
+        assert instance_new_log.exists(), f"Expected instance log at {instance_new_log}, but it was not found"
+        assert not instance_old_log.exists(), f"Old instance log at {instance_old_log} should NOT exist"
+

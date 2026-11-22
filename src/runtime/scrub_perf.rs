@@ -170,8 +170,8 @@ pub struct ScrubMemDiagnostics {
 pub fn append_diag_log(text: &str) {
     use std::fs::OpenOptions;
     use std::io::Write;
-    let _ = std::fs::create_dir_all("logs");
-    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open("logs/rreturn.log") {
+    let _ = std::fs::create_dir_all("logs/rreturn");
+    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open("logs/rreturn/rreturn.log") {
         let _ = writeln!(f, "{}", text);
     }
     log::info!("{}", text);

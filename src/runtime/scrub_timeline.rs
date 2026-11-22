@@ -643,6 +643,9 @@ impl ScrubHistoryRing {
     }
 
     pub fn record_tick(&mut self, game: &mut Game<'_>) {
+        if !with_state(|st| st.scrub_enabled) {
+            return;
+        }
         if !game.clock.runs_normally() {
             return;
         }
@@ -1322,6 +1325,9 @@ pub fn with_scrub_ring_mut<R>(f: impl FnOnce(&mut ScrubHistoryRing) -> R) -> R {
 }
 
 pub fn record_scrub_checkpoint_marker(tick: i64) {
+    if !with_state(|st| st.scrub_enabled) {
+        return;
+    }
     with_scrub_ring_mut(|r| {
         if r.checkpoint_markers.last().copied() != Some(tick) {
             r.checkpoint_markers.push(tick);
@@ -1330,6 +1336,9 @@ pub fn record_scrub_checkpoint_marker(tick: i64) {
 }
 
 pub fn handle_client_chunk_unload(_game: &mut Game<'_>, _dimension: &str, chunk: [i32; 2]) {
+    if !with_state(|st| st.scrub_enabled) {
+        return;
+    }
     with_scrub_ring_mut(|r| {
         r.reference_chunks.remove(&(chunk[0], chunk[1]));
     });

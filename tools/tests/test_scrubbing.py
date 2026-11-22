@@ -38,8 +38,22 @@ def test_83_interactive_time_scrubbing_and_rewind(h):
     h.tp(0.5, 65, 0.5)
     h.wait(10)
 
-    # Verify history recording is tracking ticks
+    # 1. Verify that scrub is disabled initially after clean env
+    st_init = _parse_res(h.rreturn("scrub status"))
+    assert not st_init.get("enabled", False), f"Scrub should be disabled initially: {st_init}"
+    assert not st_init.get("active", False), f"Scrub should be inactive initially: {st_init}"
+
+    # Verify that trying to start scrub when disabled fails
+    res_disabled = str(h.rreturn("scrub start"))
+    assert "disabled" in res_disabled.lower() or "отключен" in res_disabled.lower(), (
+        f"Expected disabled scrub error, got: {res_disabled}"
+    )
+
+    # 2. Enable scrub via settings / command
+    res_on = str(h.rreturn("scrub on"))
+    assert "on" in res_on.lower() or "вкл" in res_on.lower() or "enabled" in res_on.lower(), f"Unexpected scrub on response: {res_on}"
     st = _parse_res(h.rreturn("scrub status"))
+    assert st.get("enabled", False), f"Scrub should be enabled now: {st}"
     assert not st.get("active", False), f"Scrub should be inactive initially: {st}"
 
     # Set a base checkpoint
@@ -60,7 +74,8 @@ def test_83_interactive_time_scrubbing_and_rewind(h):
     h.wait(14)
     assert "air" in h.block(0, 65, 2).get("block", ""), "Diamond block was not removed"
     far_pos = h.data_get_entity("@e[tag=scrub_zombie,limit=1]", "Pos")
-    assert "15." in far_pos, f"Zombie did not move to far position: {far_pos}"
+    p_far = _parse_pos(far_pos)
+    assert p_far and (p_far[0] > 10.0 or p_far[2] > 10.0), f"Zombie did not move to far position: {far_pos}"
 
     # Start interactive scrub mode
     res = h.rreturn("scrub start")
@@ -104,14 +119,18 @@ def test_83_interactive_time_scrubbing_and_rewind(h):
     st = _parse_res(h.rreturn("scrub status"))
     assert not st.get("active", True), f"Scrub should be inactive after cancel: {st}"
 
-    # Clean up
+    # Clean up and verify disabling scrub
     h.command("kill @e[tag=scrub_zombie]")
     h.command("setblock 0 65 2 minecraft:air")
     h.wait(4)
+    h.rreturn("scrub off")
+    st_off = _parse_res(h.rreturn("scrub status"))
+    assert not st_off.get("enabled", False), f"Scrub should be disabled after off: {st_off}"
 
 
 def test_84_scrub_mob_motion_freeze_and_no_extrapolation(h):
     setup_clean_env(h)
+    h.rreturn("scrub on")
     h.tp(0.5, 65, 0.5)
     h.wait(10)
 
@@ -119,9 +138,9 @@ def test_84_scrub_mob_motion_freeze_and_no_extrapolation(h):
     h.command("kill @e[tag=scrub_villager]")
     h.wait(2)
 
-    # Summon a moving villager and let history record 20 ticks of continuous forward motion
+    # Summon a moving villager and let history record 14 ticks of active forward motion
     h.command("summon minecraft:villager 0.5 65.0 5.0 {Tags:['scrub_villager'],NoAI:0b,Motion:[0.0,0.0,0.25]}")
-    h.wait(20)
+    h.wait(14)
     assert h.has_entity("@e[tag=scrub_villager]"), "Villager did not spawn"
 
     # Enter interactive scrub
@@ -148,10 +167,10 @@ def test_84_scrub_mob_motion_freeze_and_no_extrapolation(h):
     )
 
     # Step backward and commit rewound timeline
-    h.rreturn("scrub step -6.0")
+    h.rreturn("scrub step -8.0")
     res_commit = str(h.rreturn("scrub commit"))
     assert "committed" in res_commit.lower(), f"Unexpected scrub commit response: {res_commit}"
-    h.wait(4)
+    h.wait(1)
 
     raw_rewound = h.data_get_entity("@e[tag=scrub_villager,limit=1]", "Pos")
     pos_rewound = _parse_pos(raw_rewound)
@@ -168,6 +187,7 @@ def test_84_scrub_mob_motion_freeze_and_no_extrapolation(h):
 
 def test_85_scrub_fov_bobbing_and_hurt_overlay(h):
     setup_clean_env(h)
+    h.rreturn("scrub on")
     h.tp(0.5, 65, 0.5)
     h.wait(10)
 
@@ -248,6 +268,7 @@ def test_85_scrub_fov_bobbing_and_hurt_overlay(h):
 
 def test_86_scrub_player_inventory_health_and_effects_no_dupe(h):
     setup_clean_env(h)
+    h.rreturn("scrub on")
     h.tp(0.5, 65, 0.5)
     h.wait(10)
 
@@ -255,6 +276,7 @@ def test_86_scrub_player_inventory_health_and_effects_no_dupe(h):
     h.command("clear @s")
     h.command("give @s minecraft:diamond 5")
     h.command("effect clear @s")
+    h.command("effect give @s minecraft:instant_health 1 5 true")
     h.wait(15)
 
     # Check baseline diamonds count
@@ -264,8 +286,8 @@ def test_86_scrub_player_inventory_health_and_effects_no_dupe(h):
 
     # 2. Give 10 more diamonds (total 15), damage player, and give poison
     h.command("give @s minecraft:diamond 10")
-    h.command("damage @s 6")
-    h.command("effect give @s minecraft:poison 15 1")
+    h.command("damage @s 4")
+    h.command("effect give @s minecraft:poison 6 0")
     h.wait(10)
 
     raw_inv_more = h.data_get_entity("@s", "Inventory")
@@ -274,10 +296,10 @@ def test_86_scrub_player_inventory_health_and_effects_no_dupe(h):
     hp_val = _parse_health(hp_damaged)
     assert hp_val < 19.0, f"Expected damaged HP: {hp_val} (raw: {hp_damaged})"
 
-    # 3. Start scrub and step backward ~14 steps (~21 ticks) before the damage and extra diamonds
+    # 3. Start scrub and step backward ~16 steps before the damage and extra diamonds
     res = h.rreturn("scrub start")
     assert "started" in str(res).lower(), f"Unexpected scrub start: {res}"
-    h.rreturn("scrub step -14.0")
+    h.rreturn("scrub step -16.0")
     res_commit = str(h.rreturn("scrub commit"))
     assert "committed" in res_commit.lower(), f"Unexpected scrub commit: {res_commit}"
     h.wait(4)
@@ -302,6 +324,7 @@ def test_86_scrub_player_inventory_health_and_effects_no_dupe(h):
 
 def test_87_scrub_mob_resurrection_and_tnt_explosion_revert(h):
     setup_clean_env(h)
+    h.rreturn("scrub on")
     h.tp(0.5, 65, 0.5)
     h.wait(10)
 

@@ -333,6 +333,7 @@ pub fn apply_level_snapshot_in_place(
             m.previous_head_yaw = m.head_yaw;
             m.velocity = Default::default();
             m.extra.previous_velocity = Default::default();
+            m.extra.static_env_stamp = None;
             m.needs_sync = true;
             m.sync_position = true;
         }
@@ -471,6 +472,7 @@ pub fn apply_level_snapshot_in_place(
     game.world.loaded_chunks.clear();
     game.world.modified.clear();
     if policy.blocks {
+        game.world.immediate_sections.clear();
         game.world.watched_writes.clear();
         if let Some(writes) = game.world.path_writes.as_mut() {
             writes.clear();

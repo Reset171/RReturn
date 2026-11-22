@@ -30,5 +30,6 @@ impl RemoteExt for Remote {
         self.stop_mining = false;
         self.placing = None;
         self.death_message = None;
+        self.splash_sound = Default::default();
     }
 }

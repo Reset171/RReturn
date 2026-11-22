@@ -72,6 +72,7 @@ pub fn apply_client_level_rollback(game: &mut Game<'_>, slot: &str) {
     game.particles.sounds.clear();
     game.pickups.clear();
     game.transient_blocks.clear();
+    game.world.immediate_sections.clear();
     game.destroying.clear();
     game.item_activation.reset();
     game.titles = Default::default();

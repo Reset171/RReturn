@@ -235,7 +235,7 @@ pub fn apply_timeline_snapshot_on_server(
     game.sculk.tracker_loaded = true;
     game.sculk.darkness = snap.sculk_darkness;
     game.adv.toasts.clear();
-    game.adv.last_inventory = 0;
+    game.adv.last_inventory = None;
     game.adv.levitation = None;
     game.adv.marks = Default::default();
     game.adv.changed.clear();

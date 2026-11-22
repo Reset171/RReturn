@@ -13,7 +13,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 PIN_GAME = "26.3"
-PIN_HORIZON = "8f83e5c85ae3b9a117f742e8d91170c5c9080a06"
+PIN_HORIZON = "2b77287de099c9316278ba7ac4d83590fdb7ef30"
 PIN_MIXINS = "e59da9094f0c2fdda6c627fe9eff22dec6a906f0"
 
 

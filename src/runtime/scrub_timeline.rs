@@ -80,25 +80,10 @@ pub struct ArmSwingRecord {
     pub height_off: f32,
 }
 
-#[derive(Clone, Copy, Debug)]
-pub struct MobPoseRecord {
-    pub id: u32,
-    pub pos: [f64; 3],
-    pub yaw: f32,
-    pub body_yaw: f32,
-    pub head_yaw: f32,
-    pub head_pitch: f32,
-    pub limb_position: f32,
-    pub limb_speed: f32,
-    pub attack_anim: f32,
-    pub swell: f32,
-    pub health: f32,
-    pub alive: bool,
-    pub hurt_time: i32,
-    pub death_time: i32,
-    pub sheared: bool,
-    pub color: u8,
-    pub size: i32,
+#[derive(Clone)]
+pub enum MobPoseFrameRef {
+    Inline(Vec<MobPoseRecord>),
+    RrtlSealed { segment_id: u64, offset: usize },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -136,16 +121,22 @@ pub struct SoundRecord {
 }
 
 #[derive(Clone)]
+pub enum ParticleFrameRef {
+    Inline(Vec<ParticleTickState>),
+    RrtlSealed { segment_id: u64, offset: usize },
+}
+
+#[derive(Clone)]
 pub struct TickHistoryFrame {
     pub game_time: i64,
     pub dim: Dim,
     pub day_time: i64,
     pub weather: Weather,
-    pub border: WorldBorder,
+    pub border: Arc<WorldBorder>,
     pub boss_overlay: BossOverlay,
     pub sculk_darkness: (f32, f32),
     pub flash: u32,
-    pub be_anims: BlockEntityAnims,
+    pub be_anims: Arc<BlockEntityAnims>,
     pub spawner_spins: Vec<SpawnerSpinRecord>,
     pub moving_pistons: Vec<([i32; 3], MovingPistonState)>,
     pub player_pos: [f64; 3],
@@ -165,7 +156,7 @@ pub struct TickHistoryFrame {
     pub player_ticks_frozen: i32,
     pub player_sneaking: bool,
     pub player_fall_flying: bool,
-    pub mobs: Vec<MobPoseRecord>,
+    pub mobs: MobPoseFrameRef,
     pub items: Vec<EntityPoseRecord>,
     pub orbs: Vec<EntityPoseRecord>,
     pub tnts: Vec<EntityPoseRecord>,
@@ -191,7 +182,7 @@ pub struct TickHistoryFrame {
     pub biome_deltas: Vec<BiomeDeltaRecord>,
     pub break_progress: Vec<BreakProgressRecord>,
     pub arm_swing: ArmSwingRecord,
-    pub particles: Vec<Particle>,
+    pub particles: ParticleFrameRef,
     pub elder_guardians: Vec<i32>,
     pub sounds: Vec<SoundRecord>,
     pub fov_modifier: f32,
@@ -309,9 +300,17 @@ pub struct ScrubHistoryRing {
     pub reference_chunks: FxHashMap<(i32, i32), Arc<Chunk>>,
     pub dim_snapshots: HashMap<Dim, FxHashMap<(i32, i32), Arc<Chunk>>>,
     pub entity_pool: PreviewEntityPool,
+    pub particle_templates: Vec<Particle>,
+    pub prev_particle_positions:
+        Vec<(u32, u32, horizon_client::particles::ParticleType, i32, [u64; 3])>,
+    pub next_particle_id: u32,
+    pub next_client_seg_id: u64,
+    pub unsealed_inline_frames: usize,
     pub checkpoint_markers: Vec<i64>,
     pub dim_markers: Vec<(i64, Dim)>,
     pub damage_markers: Vec<i64>,
+    last_border_tag: Option<Tag>,
+    last_border: Option<Arc<WorldBorder>>,
     last_inventory: Option<Arc<Vec<Option<ItemStack>>>>,
     last_armor: Option<Arc<[Option<ItemStack>; 4]>>,
     last_offhand: Option<Arc<Option<ItemStack>>>,
@@ -423,9 +422,16 @@ impl ScrubHistoryRing {
             reference_chunks: FxHashMap::default(),
             dim_snapshots: HashMap::new(),
             entity_pool: PreviewEntityPool::default(),
+            particle_templates: Vec::new(),
+            prev_particle_positions: Vec::new(),
+            next_particle_id: 1,
+            next_client_seg_id: 1,
+            unsealed_inline_frames: 0,
             checkpoint_markers: Vec::new(),
             dim_markers: Vec::new(),
             damage_markers: Vec::new(),
+            last_border_tag: None,
+            last_border: None,
             last_inventory: None,
             last_armor: None,
             last_offhand: None,
@@ -450,9 +456,17 @@ impl ScrubHistoryRing {
         self.reference_chunks.clear();
         self.dim_snapshots.clear();
         self.entity_pool.clear();
+        self.particle_templates.clear();
+        self.prev_particle_positions.clear();
+        self.next_particle_id = 1;
+        self.next_client_seg_id = 1;
+        self.unsealed_inline_frames = 0;
+        rrtl_clear_client();
         self.checkpoint_markers.clear();
         self.dim_markers.clear();
         self.damage_markers.clear();
+        self.last_border_tag = None;
+        self.last_border = None;
         self.last_inventory = None;
         self.last_armor = None;
         self.last_offhand = None;
@@ -475,11 +489,165 @@ impl ScrubHistoryRing {
         Some((first, last))
     }
 
+    pub fn resolve_particles(&self, pref: &ParticleFrameRef) -> Vec<ParticleTickState> {
+        match pref {
+            ParticleFrameRef::Inline(v) => v.clone(),
+            ParticleFrameRef::RrtlSealed { segment_id, offset } => {
+                rrtl_load_particle_frame(*segment_id, *offset)
+            }
+        }
+    }
+
+    pub fn resolve_mobs(&self, mref: &MobPoseFrameRef) -> Vec<MobPoseRecord> {
+        match mref {
+            MobPoseFrameRef::Inline(v) => v.clone(),
+            MobPoseFrameRef::RrtlSealed { segment_id, offset } => {
+                rrtl_load_client_mobs_frame(*segment_id, *offset)
+            }
+        }
+    }
+
+    fn intern_particle_template(&mut self, p: &Particle) -> u32 {
+        let g_bits = p.gravity.to_bits();
+        let uv_bits = [
+            p.uv[0].to_bits(),
+            p.uv[1].to_bits(),
+            p.uv[2].to_bits(),
+            p.uv[3].to_bits(),
+        ];
+        for (idx, t) in self.particle_templates.iter().enumerate() {
+            if t.ty == p.ty
+                && t.lifetime == p.lifetime
+                && t.gravity.to_bits() == g_bits
+                && t.uv[0].to_bits() == uv_bits[0]
+                && t.uv[1].to_bits() == uv_bits[1]
+                && t.uv[2].to_bits() == uv_bits[2]
+                && t.uv[3].to_bits() == uv_bits[3]
+            {
+                return idx as u32;
+            }
+        }
+        let idx = self.particle_templates.len() as u32;
+        self.particle_templates.push(p.clone());
+        idx
+    }
+
+    fn track_live_particles(&mut self, game: &Game<'_>) -> Vec<ParticleTickState> {
+        let mut prev_map: FxHashMap<
+            (u64, u64, u64),
+            VecDeque<(u32, u32, horizon_client::particles::ParticleType, i32)>,
+        > = FxHashMap::default();
+        for &(id, tpl_id, ty, lifetime, pos_bits) in &self.prev_particle_positions {
+            prev_map
+                .entry((pos_bits[0], pos_bits[1], pos_bits[2]))
+                .or_default()
+                .push_back((id, tpl_id, ty, lifetime));
+        }
+
+        let mut next_prev = Vec::new();
+        let mut states = Vec::new();
+        for p in game.particles.live() {
+            let prev_key = (
+                p.previous[0].to_bits(),
+                p.previous[1].to_bits(),
+                p.previous[2].to_bits(),
+            );
+            let mut matched = None;
+            if let Some(bucket) = prev_map.get_mut(&prev_key)
+                && let Some(pos) = bucket
+                    .iter()
+                    .position(|&(_, _, ty, lt)| ty == p.ty && lt == p.lifetime)
+            {
+                let (id, tpl_id, _, _) = bucket.remove(pos).unwrap();
+                matched = Some((id, tpl_id));
+            }
+            let (id, template_id) = match matched {
+                Some(existing) => existing,
+                None => {
+                    let id = self.next_particle_id;
+                    self.next_particle_id = self.next_particle_id.wrapping_add(1).max(1);
+                    let tpl_id = self.intern_particle_template(p);
+                    (id, tpl_id)
+                }
+            };
+            let cur_bits = [
+                p.position[0].to_bits(),
+                p.position[1].to_bits(),
+                p.position[2].to_bits(),
+            ];
+            next_prev.push((id, template_id, p.ty, p.lifetime, cur_bits));
+            states.push(ParticleTickState {
+                id,
+                template_id,
+                pos: p.position,
+                vel: p.velocity,
+                size: p.size,
+                rgba: p.rgba,
+                age: p.age,
+            });
+        }
+        self.prev_particle_positions = next_prev;
+        states
+    }
+
+    fn maybe_seal_client_segment(&mut self) {
+        if self.unsealed_inline_frames < RRTL_SEGMENT_TICKS * 2 {
+            return;
+        }
+        let mut indices = Vec::with_capacity(RRTL_SEGMENT_TICKS);
+        for (i, f) in self.frames.iter().enumerate() {
+            if matches!(f.particles, ParticleFrameRef::Inline(_)) {
+                indices.push(i);
+                if indices.len() >= RRTL_SEGMENT_TICKS {
+                    break;
+                }
+            }
+        }
+        if indices.len() < RRTL_SEGMENT_TICKS {
+            return;
+        }
+        let seg_id = self.next_client_seg_id;
+        self.next_client_seg_id += 1;
+        let start_tick = self.frames[indices[0]].game_time;
+        let end_tick = self.frames[*indices.last().unwrap()].game_time;
+        let mut p_batch = Vec::with_capacity(RRTL_SEGMENT_TICKS);
+        let mut m_batch = Vec::with_capacity(RRTL_SEGMENT_TICKS);
+        for (offset, &frame_idx) in indices.iter().enumerate() {
+            let old_p = std::mem::replace(
+                &mut self.frames[frame_idx].particles,
+                ParticleFrameRef::RrtlSealed {
+                    segment_id: seg_id,
+                    offset,
+                },
+            );
+            if let ParticleFrameRef::Inline(states) = old_p {
+                p_batch.push(states);
+            } else {
+                p_batch.push(Vec::new());
+            }
+            let old_m = std::mem::replace(
+                &mut self.frames[frame_idx].mobs,
+                MobPoseFrameRef::RrtlSealed {
+                    segment_id: seg_id,
+                    offset,
+                },
+            );
+            if let MobPoseFrameRef::Inline(mobs) = old_m {
+                m_batch.push(mobs);
+            } else {
+                m_batch.push(Vec::new());
+            }
+        }
+        self.unsealed_inline_frames = self.unsealed_inline_frames.saturating_sub(indices.len());
+        rrtl_seal_client_segment(seg_id, start_tick, end_tick, p_batch, m_batch);
+    }
+
     pub fn record_tick(&mut self, game: &mut Game<'_>) {
         if !game.clock.runs_normally() {
             return;
         }
         let t_client_start = std::time::Instant::now();
+        let m_cli_0 = StatmMem::current();
         let now = game.world.game_time;
 
         if let Some(back) = self.frames.back() {
@@ -488,6 +656,7 @@ impl ScrubHistoryRing {
             }
             if now < back.game_time {
                 self.frames.retain(|f| f.game_time < now);
+                rrtl_truncate_client_after(now - 1);
                 self.checkpoint_markers.retain(|&t| t < now);
                 self.dim_markers.retain(|&(t, _)| t < now);
                 self.damage_markers.retain(|&t| t < now);
@@ -923,7 +1092,8 @@ impl ScrubHistoryRing {
         let t_poses = t_poses_0.elapsed();
 
         let t_part_0 = std::time::Instant::now();
-        let particles = game.particles.live().cloned().collect::<Vec<_>>();
+        let particle_states = self.track_live_particles(game);
+        let live_particle_count = particle_states.len();
         let elder_guardians = game.particles.elder_guardians().to_vec();
 
         game.audio.record_heard = true;
@@ -960,21 +1130,52 @@ impl ScrubHistoryRing {
         }
 
         if self.frames.len() >= MAX_SCRUB_TICKS {
-            self.frames.pop_front();
+            if let Some(evicted) = self.frames.pop_front()
+                && matches!(evicted.particles, ParticleFrameRef::Inline(_))
+            {
+                self.unsealed_inline_frames = self.unsealed_inline_frames.saturating_sub(1);
+            }
         }
 
+        let b_tag = game.border.pack();
+        let border = if self.last_border_tag.as_ref() == Some(&b_tag)
+            && let Some(prev) = &self.last_border
+        {
+            Arc::clone(prev)
+        } else {
+            let arc = Arc::new(game.border.clone());
+            self.last_border_tag = Some(b_tag);
+            self.last_border = Some(Arc::clone(&arc));
+            arc
+        };
+
         let boss_overlay = game.boss_overlay.clone();
+        let saved_kinds = std::mem::take(&mut game.be_anims.kinds);
+        let be_anims = if game.be_anims.chests.is_empty()
+            && game.be_anims.books.is_empty()
+            && game.be_anims.shulkers.is_empty()
+            && game.be_anims.bells.is_empty()
+            && game.be_anims.conduits.is_empty()
+            && game.be_anims.skulls.is_empty()
+            && game.be_anims.pots.is_empty()
+            && game.be_anims.gateways.is_empty()
+        {
+            empty_client_be_anims()
+        } else {
+            Arc::new(game.be_anims.clone())
+        };
+        game.be_anims.kinds = saved_kinds;
 
         self.frames.push_back(TickHistoryFrame {
             game_time: now,
             dim: game.dim,
             day_time: game.world.day_time,
             weather: game.world.weather,
-            border: game.border.clone(),
+            border,
             boss_overlay,
             sculk_darkness: game.sculk.darkness,
             flash: game.flash,
-            be_anims: game.be_anims.clone(),
+            be_anims,
             spawner_spins,
             moving_pistons: game.world.moving_pistons.clone(),
             player_pos: p_pos,
@@ -994,7 +1195,7 @@ impl ScrubHistoryRing {
             player_ticks_frozen,
             player_sneaking,
             player_fall_flying,
-            mobs,
+            mobs: MobPoseFrameRef::Inline(mobs),
             items,
             orbs,
             tnts,
@@ -1020,7 +1221,7 @@ impl ScrubHistoryRing {
             biome_deltas,
             break_progress,
             arm_swing,
-            particles,
+            particles: ParticleFrameRef::Inline(particle_states),
             elder_guardians,
             sounds,
             fov_modifier,
@@ -1030,6 +1231,8 @@ impl ScrubHistoryRing {
             player_hurt_time,
             player_hurt_dir,
         });
+        self.unsealed_inline_frames += 1;
+        self.maybe_seal_client_segment();
         let t_part = t_part_0.elapsed();
         let t_total = t_client_start.elapsed();
         let t_sub = t_deltas + t_entity_pool + t_poses + t_part;
@@ -1042,6 +1245,8 @@ impl ScrubHistoryRing {
             t_part.as_micros() as u64,
             t_misc.as_micros() as u64,
         );
+        let m_cli_1 = StatmMem::current();
+        record_mem_client_tick(now, m_cli_0, m_cli_1, self.frames.len(), live_particle_count);
     }
 
     pub fn find_frame_pair(
@@ -1097,6 +1302,11 @@ impl ScrubHistoryRing {
 
         Some((left, right, alpha))
     }
+}
+
+fn empty_client_be_anims() -> Arc<BlockEntityAnims> {
+    static E: OnceLock<Arc<BlockEntityAnims>> = OnceLock::new();
+    Arc::clone(E.get_or_init(|| Arc::new(BlockEntityAnims::default())))
 }
 
 thread_local! {

@@ -24,6 +24,7 @@ const RUNTIME_FILES: &[&str] = &[
     "commands.rs",
     "ui.rs",
     "tracker.rs",
+    "rrtl.rs",
     "scrub_audio.rs",
     "scrub_timeline.rs",
     "scrub_server.rs",
@@ -117,7 +118,7 @@ use horizon_client::{
     particles::Particle,
     raid::Raids,
     recipe_book::Settings as RecipeBookSettings,
-    save::{item_from_nbt, read_dat, write_dat, Level},
+    save::{block_entity_encode, item_from_nbt, read_dat, write_dat, Level},
     scoreboard::Scoreboard,
     sculk::WardenSpawnTracker,
     stopwatches::Stopwatches,
@@ -126,7 +127,7 @@ use horizon_client::{
 };
 use horizon_core::{
     geometry::{Direction, Vec3},
-    nbt::Tag,
+    nbt::{self, Limits as NbtLimits, Tag},
     position::{BlockPos, ChunkPos},
     random::{LegacyRandom, LevelRandom, RandomSource},
     ticks::ChunkTicks,
@@ -149,8 +150,8 @@ use horizon_world::{
 use std::{
     cell::RefCell,
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
-    fs::{self, OpenOptions},
-    io::{Cursor, Write},
+    fs::{self, File, OpenOptions},
+    io::{Cursor, Read, Seek, SeekFrom, Write},
     ops::ControlFlow,
     path::{Path, PathBuf},
     sync::{

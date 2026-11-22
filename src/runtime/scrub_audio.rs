@@ -9,11 +9,13 @@ use std::{
 };
 
 const MAX_AUDIO_CACHE_ENTRIES: usize = 128;
+const MAX_AUDIO_CACHE_BYTES: usize = 32 * 1024 * 1024;
 
 struct ReverseAudioCache {
     map: FxHashMap<String, (Arc<Vec<f32>>, u32)>,
     order: VecDeque<String>,
     in_flight: Vec<String>,
+    total_bytes: usize,
 }
 
 impl Default for ReverseAudioCache {
@@ -22,6 +24,7 @@ impl Default for ReverseAudioCache {
             map: FxHashMap::default(),
             order: VecDeque::new(),
             in_flight: Vec::new(),
+            total_bytes: 0,
         }
     }
 }
@@ -103,13 +106,27 @@ fn audio_worker_tx() -> &'static mpsc::Sender<DecodeAudioJob> {
                     if let Ok(mut cache) = audio_cache().lock() {
                         cache.in_flight.retain(|k| k != &job.key);
                         if let Some((samples, rate)) = decoded {
-                            if !cache.map.contains_key(&job.key) {
+                            let new_bytes = samples.len().saturating_mul(4);
+                            if let Some((old_samples, _)) = cache.map.remove(&job.key) {
+                                cache.total_bytes = cache
+                                    .total_bytes
+                                    .saturating_sub(old_samples.len().saturating_mul(4));
+                            } else {
                                 cache.order.push_back(job.key.clone());
                             }
+                            cache.total_bytes = cache.total_bytes.saturating_add(new_bytes);
                             cache.map.insert(job.key, (Arc::new(samples), rate));
-                            while cache.order.len() > MAX_AUDIO_CACHE_ENTRIES {
+                            while cache.order.len() > MAX_AUDIO_CACHE_ENTRIES
+                                || cache.total_bytes > MAX_AUDIO_CACHE_BYTES
+                            {
                                 if let Some(oldest) = cache.order.pop_front() {
-                                    cache.map.remove(&oldest);
+                                    if let Some((evicted, _)) = cache.map.remove(&oldest) {
+                                        cache.total_bytes = cache
+                                            .total_bytes
+                                            .saturating_sub(evicted.len().saturating_mul(4));
+                                    }
+                                } else {
+                                    break;
                                 }
                             }
                         }
@@ -127,6 +144,9 @@ pub fn prewarm_reverse_sound(game: &Game<'_>, identifier: &str) {
     } else {
         format!("minecraft:{identifier}")
     };
+    if norm.starts_with("minecraft:music.") || norm.starts_with("minecraft:music_disc.") {
+        return;
+    }
     let Some(sound_def) = game.audio.engine.registry.sound(&norm, &mut rng) else {
         return;
     };
@@ -226,5 +246,6 @@ pub fn clear_reverse_audio_cache() {
         c.map.clear();
         c.order.clear();
         c.in_flight.clear();
+        c.total_bytes = 0;
     }
 }

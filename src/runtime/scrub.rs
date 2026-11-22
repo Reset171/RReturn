@@ -701,6 +701,8 @@ pub fn commit_scrub(game: &mut Game<'_>) {
             r.last_world_revision = game.world.revision;
             r.last_dim = Some(game.dim);
         });
+        rrtl_truncate_client_after(final_tick);
+        horizon_threads::release_free_memory();
 
         let dt = (anchor - final_tick) as f64 / 20.0;
         let dt_str = format!("{:.1}", dt);

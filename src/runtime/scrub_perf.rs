@@ -1,3 +1,4 @@
+use super::rrtl::*;
 use std::sync::Mutex;
 
 #[derive(Default, Clone)]
@@ -76,12 +77,220 @@ pub struct CommitPerf {
     pub client_rollback: SubCounter,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct StatmMem {
+    pub vmsize_kb: u64,
+    pub vmrss_kb: u64,
+}
+
+impl StatmMem {
+    pub fn current() -> Self {
+        if let Ok(s) = std::fs::read_to_string("/proc/self/statm") {
+            let mut parts = s.split_ascii_whitespace();
+            if let (Some(size_str), Some(rss_str)) = (parts.next(), parts.next()) {
+                if let (Ok(pages), Ok(rss)) = (size_str.parse::<u64>(), rss_str.parse::<u64>()) {
+                    return StatmMem {
+                        vmsize_kb: pages * 4,
+                        vmrss_kb: rss * 4,
+                    };
+                }
+            }
+        }
+        StatmMem::default()
+    }
+
+    pub fn delta_rss_kb(&self, before: &StatmMem) -> i64 {
+        self.vmrss_kb as i64 - before.vmrss_kb as i64
+    }
+
+    pub fn delta_size_kb(&self, before: &StatmMem) -> i64 {
+        self.vmsize_kb as i64 - before.vmsize_kb as i64
+    }
+}
+
+#[derive(Default, Clone)]
+pub struct MemBucketAcc {
+    pub delta_rss_kb: i64,
+    pub delta_size_kb: i64,
+    pub count: u64,
+}
+
+impl MemBucketAcc {
+    pub fn add(&mut self, rss_kb: i64, size_kb: i64) {
+        self.delta_rss_kb += rss_kb;
+        self.delta_size_kb += size_kb;
+        self.count += 1;
+    }
+
+    pub fn reset(&mut self) {
+        self.delta_rss_kb = 0;
+        self.delta_size_kb = 0;
+        self.count = 0;
+    }
+
+    pub fn mb_rss(&self) -> f64 {
+        self.delta_rss_kb as f64 / 1024.0
+    }
+
+    pub fn mb_size(&self) -> f64 {
+        self.delta_size_kb as f64 / 1024.0
+    }
+}
+
+#[derive(Default)]
+pub struct ScrubMemDiagnostics {
+    pub window_ticks: u32,
+    pub window_start_tick: i64,
+    pub window_start_mem: Option<StatmMem>,
+    pub last_server_tick_end_mem: Option<StatmMem>,
+
+    pub outside_rreturn: MemBucketAcc,
+    pub server_unloaded: MemBucketAcc,
+    pub server_globals: MemBucketAcc,
+    pub server_cow_chunks: MemBucketAcc,
+    pub server_cow_block_entities: MemBucketAcc,
+    pub server_cow_mobs: MemBucketAcc,
+    pub server_cow_persist: MemBucketAcc,
+    pub server_cow_ticks: MemBucketAcc,
+    pub server_cow_other: MemBucketAcc,
+    pub client_record_tick: MemBucketAcc,
+
+    pub baselines_count: usize,
+    pub history_entries_count: usize,
+    pub cow_chunks_total: usize,
+    pub cow_chunks_changes: usize,
+    pub be_total: usize,
+    pub be_cloned_ticks: u32,
+    pub mobs_count: usize,
+    pub persist_raw_count: usize,
+    pub client_frames: usize,
+    pub client_particles: usize,
+}
+
+pub fn append_diag_log(text: &str) {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+    let _ = std::fs::create_dir_all("logs");
+    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open("logs/rreturn.log") {
+        let _ = writeln!(f, "{}", text);
+    }
+    log::info!("{}", text);
+    eprintln!("{}", text);
+}
+
+fn log_mem_alert(tick: i64, step: &str, delta_rss_kb: i64, current_mem: StatmMem, details: &str) {
+    let msg = format!(
+        "[RRETURN MEM SPIKE] Tick {}: {} spiked +{:.2} MB RSS (Current VmRSS: {:.1} MB, VmSize: {:.1} MB) | {}",
+        tick,
+        step,
+        delta_rss_kb as f64 / 1024.0,
+        current_mem.vmrss_kb as f64 / 1024.0,
+        current_mem.vmsize_kb as f64 / 1024.0,
+        details
+    );
+    append_diag_log(&msg);
+}
+
+fn flush_window_summary(d: &mut ScrubMemDiagnostics, current_tick: i64, cur_mem: StatmMem) {
+    if d.window_ticks == 0 {
+        return;
+    }
+    let start_mem = d.window_start_mem.unwrap_or(cur_mem);
+    let total_rss_delta_mb = cur_mem.delta_rss_kb(&start_mem) as f64 / 1024.0;
+    let total_size_delta_mb = cur_mem.delta_size_kb(&start_mem) as f64 / 1024.0;
+    let mi_live_mb = horizon_threads::allocator_stats::live_bytes()
+        .map(|b| b as f64 / 1_048_576.0)
+        .unwrap_or(0.0);
+    let (mi_commit, _) = horizon_threads::allocator_commit();
+    let mi_commit_mb = mi_commit as f64 / 1_048_576.0;
+    let rrtl = rrtl_memory_stats();
+    let mob_ratio = if rrtl.server_ram_bytes + rrtl.server_disk_bytes > 0 {
+        rrtl.server_raw_bytes as f64 / (rrtl.server_ram_bytes + rrtl.server_disk_bytes) as f64
+    } else {
+        1.0
+    };
+
+    let summary = format!(
+        "[RRETURN MEM SUMMARY] Ticks {}..{} ({} ticks) | VmRSS: {:.1} MB ({:+.1} MB) | mi_live: {:.1} MB | mi_commit: {:.1} MB | VmSize: {:.1} MB ({:+.1} MB)\n\
+         ├── RRTL (branch #{} / {} branches): srv_ram={:.2} MB, srv_disk={:.2} MB ({:.1}x, {} segs) | cli_ram={:.2} MB, cli_disk={:.2} MB ({} segs, {} spills)\n\
+         ├── outside_rreturn:       {:+.2} MB RSS ({:+.2} MB size)\n\
+         ├── server.unloaded:       {:+.2} MB RSS (baselines: {}, history: {})\n\
+         ├── server.globals:        {:+.2} MB RSS (raw persist: {})\n\
+         ├── server.cow.chunks:     {:+.2} MB RSS (live: {}, changes: {})\n\
+         ├── server.cow.block_ents: {:+.2} MB RSS (changed: {}, dirty {}/{} ticks)\n\
+         ├── server.cow.mobs:       {:+.2} MB RSS (changed: {})\n\
+         ├── server.cow.persist:    {:+.2} MB RSS\n\
+         ├── server.cow.ticks:      {:+.2} MB RSS\n\
+         ├── server.cow.other:      {:+.2} MB RSS\n\
+         └── client.record_tick:    {:+.2} MB RSS (frames: {}, particles: {})",
+        d.window_start_tick,
+        current_tick,
+        d.window_ticks,
+        cur_mem.vmrss_kb as f64 / 1024.0,
+        total_rss_delta_mb,
+        mi_live_mb,
+        mi_commit_mb,
+        cur_mem.vmsize_kb as f64 / 1024.0,
+        total_size_delta_mb,
+        rrtl.active_branch_id,
+        rrtl.branch_count,
+        rrtl.server_ram_bytes as f64 / 1_048_576.0,
+        rrtl.server_disk_bytes as f64 / 1_048_576.0,
+        mob_ratio,
+        rrtl.server_sealed_segments,
+        rrtl.client_ram_bytes as f64 / 1_048_576.0,
+        rrtl.client_disk_bytes as f64 / 1_048_576.0,
+        rrtl.client_sealed_segments,
+        rrtl.spilled_blobs,
+        d.outside_rreturn.mb_rss(),
+        d.outside_rreturn.mb_size(),
+        d.server_unloaded.mb_rss(),
+        d.baselines_count,
+        d.history_entries_count,
+        d.server_globals.mb_rss(),
+        d.persist_raw_count,
+        d.server_cow_chunks.mb_rss(),
+        d.cow_chunks_total,
+        d.cow_chunks_changes,
+        d.server_cow_block_entities.mb_rss(),
+        d.be_total,
+        d.be_cloned_ticks,
+        d.window_ticks,
+        d.server_cow_mobs.mb_rss(),
+        d.mobs_count,
+        d.server_cow_persist.mb_rss(),
+        d.server_cow_ticks.mb_rss(),
+        d.server_cow_other.mb_rss(),
+        d.client_record_tick.mb_rss(),
+        d.client_frames,
+        d.client_particles,
+    );
+
+    append_diag_log(&summary);
+
+    d.window_ticks = 0;
+    d.window_start_tick = current_tick;
+    d.window_start_mem = Some(cur_mem);
+    d.outside_rreturn.reset();
+    d.server_unloaded.reset();
+    d.server_globals.reset();
+    d.server_cow_chunks.reset();
+    d.server_cow_block_entities.reset();
+    d.server_cow_mobs.reset();
+    d.server_cow_persist.reset();
+    d.server_cow_ticks.reset();
+    d.server_cow_other.reset();
+    d.client_record_tick.reset();
+    d.be_cloned_ticks = 0;
+}
+
 #[derive(Default)]
 pub struct ScrubPerfState {
     pub server_tick: ServerTickPerf,
     pub client_tick: ClientTickPerf,
     pub frame_render: FrameRenderPerf,
     pub commit: CommitPerf,
+    pub mem_diag: ScrubMemDiagnostics,
 }
 
 static PERF_STATE: Mutex<Option<ScrubPerfState>> = Mutex::new(None);
@@ -166,6 +375,241 @@ pub fn record_commit_perf(
         s.commit.materialize.record(mat_us);
         s.commit.server_rollback.record(server_rb_us);
         s.commit.client_rollback.record(client_rb_us);
+    });
+}
+
+pub fn record_mem_server_tick_start(now_tick: i64) -> StatmMem {
+    let m = StatmMem::current();
+    with_perf(|s| {
+        let d = &mut s.mem_diag;
+        if d.window_start_mem.is_none() {
+            d.window_start_mem = Some(m);
+            d.window_start_tick = now_tick;
+        }
+        if let Some(last_end) = d.last_server_tick_end_mem {
+            let delta_rss = m.delta_rss_kb(&last_end);
+            let delta_size = m.delta_size_kb(&last_end);
+            d.outside_rreturn.add(delta_rss, delta_size);
+            if delta_rss > 2048 {
+                log_mem_alert(
+                    now_tick,
+                    "outside_rreturn (Horizon engine between server ticks)",
+                    delta_rss,
+                    m,
+                    &format!("delta_size: {:+.2} MB", delta_size as f64 / 1024.0),
+                );
+            }
+        }
+    });
+    m
+}
+
+pub fn record_mem_unloaded(
+    now_tick: i64,
+    m0: StatmMem,
+    m1: StatmMem,
+    baselines: usize,
+    history: usize,
+) {
+    let delta_rss = m1.delta_rss_kb(&m0);
+    let delta_size = m1.delta_size_kb(&m0);
+    with_perf(|s| {
+        let d = &mut s.mem_diag;
+        d.server_unloaded.add(delta_rss, delta_size);
+        d.baselines_count = baselines;
+        d.history_entries_count = history;
+        if delta_rss > 2048 {
+            log_mem_alert(
+                now_tick,
+                "server.unloaded_observe",
+                delta_rss,
+                m1,
+                &format!("baselines: {}, history: {}", baselines, history),
+            );
+        }
+    });
+}
+
+pub fn record_mem_globals(
+    now_tick: i64,
+    m0: StatmMem,
+    m1: StatmMem,
+    guests: usize,
+    persist_raw: usize,
+) {
+    let delta_rss = m1.delta_rss_kb(&m0);
+    let delta_size = m1.delta_size_kb(&m0);
+    with_perf(|s| {
+        let d = &mut s.mem_diag;
+        d.server_globals.add(delta_rss, delta_size);
+        d.persist_raw_count = persist_raw;
+        if delta_rss > 2048 {
+            log_mem_alert(
+                now_tick,
+                "server.guests_and_globals",
+                delta_rss,
+                m1,
+                &format!("guests: {}, raw: {}", guests, persist_raw),
+            );
+        }
+    });
+}
+
+pub fn record_mem_cow_chunks(
+    now_tick: i64,
+    m0: StatmMem,
+    m1: StatmMem,
+    total: usize,
+    changes: usize,
+) {
+    let delta_rss = m1.delta_rss_kb(&m0);
+    let delta_size = m1.delta_size_kb(&m0);
+    with_perf(|s| {
+        let d = &mut s.mem_diag;
+        d.server_cow_chunks.add(delta_rss, delta_size);
+        d.cow_chunks_total = total;
+        d.cow_chunks_changes = changes;
+        if delta_rss > 2048 {
+            log_mem_alert(
+                now_tick,
+                "server.cow_chunks",
+                delta_rss,
+                m1,
+                &format!("live: {}, changes: {}", total, changes),
+            );
+        }
+    });
+}
+
+pub fn record_mem_cow_be(
+    now_tick: i64,
+    m0: StatmMem,
+    m1: StatmMem,
+    be_count: usize,
+    be_dirty: bool,
+) {
+    let delta_rss = m1.delta_rss_kb(&m0);
+    let delta_size = m1.delta_size_kb(&m0);
+    with_perf(|s| {
+        let d = &mut s.mem_diag;
+        d.server_cow_block_entities.add(delta_rss, delta_size);
+        d.be_total = be_count;
+        if be_dirty {
+            d.be_cloned_ticks += 1;
+        }
+        if delta_rss > 2048 {
+            log_mem_alert(
+                now_tick,
+                "server.cow_block_entities",
+                delta_rss,
+                m1,
+                &format!("be_count: {}, be_dirty: {}", be_count, be_dirty),
+            );
+        }
+    });
+}
+
+pub fn record_mem_cow_mobs(now_tick: i64, m0: StatmMem, m1: StatmMem, mobs_count: usize) {
+    let delta_rss = m1.delta_rss_kb(&m0);
+    let delta_size = m1.delta_size_kb(&m0);
+    with_perf(|s| {
+        let d = &mut s.mem_diag;
+        d.server_cow_mobs.add(delta_rss, delta_size);
+        d.mobs_count = mobs_count;
+        if delta_rss > 2048 {
+            log_mem_alert(
+                now_tick,
+                "server.cow_mobs",
+                delta_rss,
+                m1,
+                &format!("mobs: {}", mobs_count),
+            );
+        }
+    });
+}
+
+pub fn record_mem_cow_persist(now_tick: i64, m0: StatmMem, m1: StatmMem, raw_count: usize) {
+    let delta_rss = m1.delta_rss_kb(&m0);
+    let delta_size = m1.delta_size_kb(&m0);
+    with_perf(|s| {
+        let d = &mut s.mem_diag;
+        d.server_cow_persist.add(delta_rss, delta_size);
+        if delta_rss > 2048 {
+            log_mem_alert(
+                now_tick,
+                "server.cow_persist",
+                delta_rss,
+                m1,
+                &format!("raw: {}", raw_count),
+            );
+        }
+    });
+}
+
+pub fn record_mem_cow_ticks(now_tick: i64, m0: StatmMem, m1: StatmMem, ticks_count: usize) {
+    let delta_rss = m1.delta_rss_kb(&m0);
+    let delta_size = m1.delta_size_kb(&m0);
+    with_perf(|s| {
+        let d = &mut s.mem_diag;
+        d.server_cow_ticks.add(delta_rss, delta_size);
+        if delta_rss > 2048 {
+            log_mem_alert(
+                now_tick,
+                "server.cow_chunk_ticks",
+                delta_rss,
+                m1,
+                &format!("ticks: {}", ticks_count),
+            );
+        }
+    });
+}
+
+pub fn record_mem_cow_other(now_tick: i64, m0: StatmMem, m1: StatmMem) {
+    let delta_rss = m1.delta_rss_kb(&m0);
+    let delta_size = m1.delta_size_kb(&m0);
+    with_perf(|s| {
+        let d = &mut s.mem_diag;
+        d.server_cow_other.add(delta_rss, delta_size);
+        if delta_rss > 2048 {
+            log_mem_alert(now_tick, "server.cow_other", delta_rss, m1, "");
+        }
+    });
+}
+
+pub fn record_mem_client_tick(
+    now_tick: i64,
+    m0: StatmMem,
+    m1: StatmMem,
+    frames: usize,
+    particles: usize,
+) {
+    let delta_rss = m1.delta_rss_kb(&m0);
+    let delta_size = m1.delta_size_kb(&m0);
+    with_perf(|s| {
+        let d = &mut s.mem_diag;
+        d.client_record_tick.add(delta_rss, delta_size);
+        d.client_frames = frames;
+        d.client_particles = particles;
+        if delta_rss > 2048 {
+            log_mem_alert(
+                now_tick,
+                "client.record_tick",
+                delta_rss,
+                m1,
+                &format!("frames: {}, particles: {}", frames, particles),
+            );
+        }
+    });
+}
+
+pub fn record_mem_server_tick_end(now_tick: i64, m_end: StatmMem) {
+    with_perf(|s| {
+        let d = &mut s.mem_diag;
+        d.last_server_tick_end_mem = Some(m_end);
+        d.window_ticks += 1;
+        if d.window_ticks >= 20 {
+            flush_window_summary(d, now_tick, m_end);
+        }
     });
 }
 
@@ -358,9 +802,40 @@ pub fn get_perf_report_tree() -> String {
     ));
     let com_c_rb = s.commit.client_rollback.avg_ms();
     out.push_str(&format!(
-        "│   └── client_rollback (apply_client_level_rollback section diffs): {:.3}ms ({:.1}%)\n",
+        "│   └── client_rollback (apply_client_level_rollback section diffs): {:.3}ms ({:.1}%)\n\n",
         com_c_rb,
         pct(com_c_rb, com_tot)
+    ));
+
+    let rrtl = rrtl_memory_stats();
+    let res_mb = horizon_threads::process_memory::resident_bytes()
+        .map(|b| b as f64 / 1_048_576.0)
+        .unwrap_or(0.0);
+    let live_mb = horizon_threads::allocator_stats::live_bytes()
+        .map(|b| b as f64 / 1_048_576.0)
+        .unwrap_or(0.0);
+    let (commit, peak) = horizon_threads::allocator_commit();
+    out.push_str(&format!(
+        "[Phase 5] RRTL Memory & Mimalloc Allocator\n\
+         ├── Process RSS: {:.1} MB | mimalloc live: {:.1} MB | commit: {:.1} MB (peak: {:.1} MB)\n\
+         ├── RRTL Branch: #{} (total branches: {}, spilled blobs: {})\n\
+         ├── RRTL Server Stream: ram={:.2} MB | disk={:.2} MB | raw={:.2} MB | sealed_segs={}\n\
+         └── RRTL Client Stream: ram={:.2} MB | disk={:.2} MB | raw={:.2} MB | sealed_segs={}\n",
+        res_mb,
+        live_mb,
+        commit as f64 / 1_048_576.0,
+        peak as f64 / 1_048_576.0,
+        rrtl.active_branch_id,
+        rrtl.branch_count,
+        rrtl.spilled_blobs,
+        rrtl.server_ram_bytes as f64 / 1_048_576.0,
+        rrtl.server_disk_bytes as f64 / 1_048_576.0,
+        rrtl.server_raw_bytes as f64 / 1_048_576.0,
+        rrtl.server_sealed_segments,
+        rrtl.client_ram_bytes as f64 / 1_048_576.0,
+        rrtl.client_disk_bytes as f64 / 1_048_576.0,
+        rrtl.client_raw_bytes as f64 / 1_048_576.0,
+        rrtl.client_sealed_segments,
     ));
 
     out

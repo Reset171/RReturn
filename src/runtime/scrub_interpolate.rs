@@ -1,7 +1,16 @@
-use super::super::{Game, Mob};
+use super::super::Game;
+use super::rrtl::{MobPoseRecord, ParticleTickState};
 use super::scrub_audio::play_scrub_sounds;
-use super::scrub_timeline::{with_scrub_ring, MobPoseRecord};
-use horizon_client::fast_hash::FxHashMap;
+use super::scrub_timeline::{with_scrub_ring, EntityPoseRecord};
+use horizon_client::{
+    block_entity_anim::ChestLid,
+    containers::BlockEntity,
+    fast_hash::FxHashMap,
+    particles::Particle,
+};
+use horizon_core::geometry::Vec3;
+use horizon_world::registry::BlockStateId;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug)]
@@ -19,6 +28,9 @@ pub struct InterpolatedMobPose {
     pub alive: bool,
     pub hurt_time: i32,
     pub death_time: i32,
+    pub sheared: bool,
+    pub color: u8,
+    pub size: i32,
 }
 
 #[inline]
@@ -48,8 +60,13 @@ pub fn lerp_angle(a: f32, b: f32, t: f32) -> f32 {
     a + wrap_degrees(b - a) * t
 }
 
-pub fn interpolate_mob_pose(left: &MobPoseRecord, right: &MobPoseRecord, alpha: f32) -> InterpolatedMobPose {
+pub fn interpolate_mob_pose(
+    left: &MobPoseRecord,
+    right: &MobPoseRecord,
+    alpha: f32,
+) -> InterpolatedMobPose {
     let a64 = f64::from(alpha);
+    let pick_right = alpha > 0.5;
     InterpolatedMobPose {
         pos: [
             lerp_f64(left.pos[0], right.pos[0], a64),
@@ -65,21 +82,224 @@ pub fn interpolate_mob_pose(left: &MobPoseRecord, right: &MobPoseRecord, alpha: 
         attack_anim: lerp_f32(left.attack_anim, right.attack_anim, alpha),
         swell: lerp_f32(left.swell, right.swell, alpha),
         health: lerp_f32(left.health, right.health, alpha),
-        alive: if alpha > 0.5 { right.alive } else { left.alive },
-        hurt_time: if alpha > 0.5 { right.hurt_time } else { left.hurt_time },
-        death_time: if alpha > 0.5 { right.death_time } else { left.death_time },
+        alive: if pick_right { right.alive } else { left.alive },
+        hurt_time: if pick_right {
+            right.hurt_time
+        } else {
+            left.hurt_time
+        },
+        death_time: if pick_right {
+            right.death_time
+        } else {
+            left.death_time
+        },
+        sheared: if pick_right {
+            right.sheared
+        } else {
+            left.sheared
+        },
+        color: if pick_right { right.color } else { left.color },
+        size: if pick_right { right.size } else { left.size },
     }
 }
 
+fn interpolate_entity_poses(
+    left: &[EntityPoseRecord],
+    right: &[EntityPoseRecord],
+    alpha: f32,
+) -> FxHashMap<u32, EntityPoseRecord> {
+    let a64 = f64::from(alpha);
+    let mut right_map: FxHashMap<u32, &EntityPoseRecord> = FxHashMap::default();
+    for r in right {
+        right_map.insert(r.id, r);
+    }
+    let mut out = FxHashMap::default();
+    for l in left {
+        if let Some(r) = right_map.get(&l.id) {
+            out.insert(
+                l.id,
+                EntityPoseRecord {
+                    id: l.id,
+                    pos: [
+                        lerp_f64(l.pos[0], r.pos[0], a64),
+                        lerp_f64(l.pos[1], r.pos[1], a64),
+                        lerp_f64(l.pos[2], r.pos[2], a64),
+                    ],
+                    vel: [
+                        lerp_f64(l.vel[0], r.vel[0], a64),
+                        lerp_f64(l.vel[1], r.vel[1], a64),
+                        lerp_f64(l.vel[2], r.vel[2], a64),
+                    ],
+                    yaw: lerp_angle(l.yaw, r.yaw, alpha),
+                    pitch: lerp_f32(l.pitch, r.pitch, alpha),
+                    extra_i32: lerp_f32(l.extra_i32 as f32, r.extra_i32 as f32, alpha).round()
+                        as i32,
+                },
+            );
+        } else if alpha <= 0.5 {
+            out.insert(l.id, *l);
+        }
+    }
+    if alpha > 0.5 {
+        for r in right {
+            out.entry(r.id).or_insert(*r);
+        }
+    }
+    out
+}
+
+fn interpolate_thrown_potions(
+    left: &[(u32, [f64; 3], [f64; 3], u32)],
+    right: &[(u32, [f64; 3], [f64; 3], u32)],
+    alpha: f32,
+) -> Vec<(u32, [f64; 3], u32)> {
+    let a64 = f64::from(alpha);
+    let mut right_map: FxHashMap<u32, ([f64; 3], u32)> = FxHashMap::default();
+    for &(id, pos, _, age) in right {
+        right_map.insert(id, (pos, age));
+    }
+    let mut out = Vec::with_capacity(left.len().max(right.len()));
+    let mut seen = HashSet::new();
+    for &(id, lpos, _, lage) in left {
+        if let Some(&(rpos, rage)) = right_map.get(&id) {
+            seen.insert(id);
+            out.push((
+                id,
+                [
+                    lerp_f64(lpos[0], rpos[0], a64),
+                    lerp_f64(lpos[1], rpos[1], a64),
+                    lerp_f64(lpos[2], rpos[2], a64),
+                ],
+                if alpha > 0.5 { rage } else { lage },
+            ));
+        } else if alpha <= 0.5 {
+            seen.insert(id);
+            out.push((id, lpos, lage));
+        }
+    }
+    if alpha > 0.5 {
+        for &(id, rpos, _, rage) in right {
+            if !seen.contains(&id) {
+                out.push((id, rpos, rage));
+            }
+        }
+    }
+    out
+}
+
 pub fn apply_interpolated_poses_to_game(game: &mut Game<'_>, target_time: f64) {
-    let Some((left_frame, right_frame, alpha)) = with_scrub_ring(|ring| {
-        ring.find_frame_pair(target_time)
-            .map(|(l, r, a)| (l.clone(), r.clone(), a))
-    }) else {
+    let Some((
+        left_frame,
+        right_frame,
+        alpha,
+        left_particles,
+        right_particles,
+        left_mobs,
+        right_mobs,
+    )) = with_scrub_ring(|ring| {
+        let (l, r, a) = ring.find_frame_pair(target_time)?;
+        let lp = ring.resolve_particles(&l.particles);
+        let rp = ring.resolve_particles(&r.particles);
+        let lm = ring.resolve_mobs(&l.mobs);
+        let rm = ring.resolve_mobs(&r.mobs);
+        Some((l.clone(), r.clone(), a, lp, rp, lm, rm))
+    })
+    else {
         return;
     };
 
     let a64 = f64::from(alpha);
+    let chosen_frame = if alpha > 0.5 {
+        &right_frame
+    } else {
+        &left_frame
+    };
+
+    if chosen_frame.dim != game.dim {
+        let target_chunks =
+            with_scrub_ring(|ring| ring.dim_snapshots.get(&chosen_frame.dim).cloned());
+        if let Some(chunks) = target_chunks {
+            game.dim = chosen_frame.dim;
+            game.world.chunks = Default::default();
+            let num_sections = game.world.layout().sections() as i32;
+            for ((cx, cz), chunk) in chunks {
+                game.world.chunks.insert((cx, cz), chunk);
+                for s in 0..num_sections {
+                    game.world.dirty_sections.insert((cx, s, cz));
+                }
+            }
+            game.world.revision = game.world.revision.wrapping_add(1);
+        }
+    }
+
+    game.extras.frame_partial_ticks = Some((alpha, alpha));
+
+    game.world.day_time = left_frame.day_time;
+
+    let l_rain = left_frame.weather.rain_level.1;
+    let r_rain = right_frame.weather.rain_level.1;
+    let l_thunder = left_frame.weather.thunder_level.1;
+    let r_thunder = right_frame.weather.thunder_level.1;
+    game.world.weather = left_frame.weather;
+    game.world.weather.rain_level = (l_rain, r_rain);
+    game.world.weather.thunder_level = (l_thunder, r_thunder);
+
+    game.border = (*chosen_frame.border).clone();
+    game.boss_overlay = chosen_frame.boss_overlay.clone();
+    game.sculk.darkness = (
+        lerp_f32(left_frame.sculk_darkness.0, right_frame.sculk_darkness.0, alpha),
+        lerp_f32(left_frame.sculk_darkness.1, right_frame.sculk_darkness.1, alpha),
+    );
+    game.flash = chosen_frame.flash;
+
+    let mut be_anims = (*left_frame.be_anims).clone();
+    for (&pos, right_lid) in &right_frame.be_anims.chests {
+        let entry = be_anims.chests.entry(pos).or_insert(ChestLid::default());
+        entry.o_openness = entry.openness;
+        entry.openness = right_lid.openness;
+        entry.should_be_open = right_lid.should_be_open;
+    }
+    for (&pos, right_shulker) in &right_frame.be_anims.shulkers {
+        if let Some(left_shulker) = be_anims.shulkers.get_mut(&pos) {
+            left_shulker.progress_old = left_shulker.progress;
+            left_shulker.progress = right_shulker.progress;
+            left_shulker.status = right_shulker.status;
+        }
+    }
+    for (&pos, right_book) in &right_frame.be_anims.books {
+        if let Some(left_book) = be_anims.books.get_mut(&pos) {
+            left_book.o_open = left_book.open;
+            left_book.open = right_book.open;
+            left_book.o_flip = left_book.flip;
+            left_book.flip = right_book.flip;
+            left_book.o_rot = left_book.rot;
+            left_book.rot = right_book.rot;
+        }
+    }
+    let preserved_kinds = std::mem::take(&mut game.be_anims.kinds);
+    game.be_anims = be_anims;
+    game.be_anims.kinds = preserved_kinds;
+
+    let mut right_spawners = FxHashMap::default();
+    for sp in &right_frame.spawner_spins {
+        right_spawners.insert(sp.pos, *sp);
+    }
+    for lsp in &left_frame.spawner_spins {
+        if let Some(BlockEntity::Spawner(sp)) =
+            game.world
+                .block_entities
+                .get_mut(&(lsp.pos[0], lsp.pos[1], lsp.pos[2]))
+        {
+            sp.o_spin = lsp.spin;
+            sp.spin = right_spawners
+                .get(&lsp.pos)
+                .map_or(lsp.spin, |rsp| rsp.spin);
+            sp.client_delay = lsp.client_delay;
+        }
+    }
+
+    game.world.moving_pistons = left_frame.moving_pistons.clone();
+
     let interp_p_pos = [
         lerp_f64(left_frame.player_pos[0], right_frame.player_pos[0], a64),
         lerp_f64(left_frame.player_pos[1], right_frame.player_pos[1], a64),
@@ -88,20 +308,29 @@ pub fn apply_interpolated_poses_to_game(game: &mut Game<'_>, target_time: f64) {
     let interp_p_yaw = lerp_angle(left_frame.player_yaw, right_frame.player_yaw, alpha);
     let interp_p_pitch = lerp_f32(left_frame.player_pitch, right_frame.player_pitch, alpha);
 
-    // Dynamic FOV interpolation (e.g. wider FOV while sprinting/speed)
     let interp_fov = lerp_f32(left_frame.fov_modifier, right_frame.fov_modifier, alpha);
     if interp_fov > 0.05 {
         game.view.fov_modifier = interp_fov;
         game.view.old_fov_modifier = interp_fov;
     }
 
-    // Camera view bobbing and hand movement interpolation
-    let interp_walk = lerp_f32(left_frame.avatar_walk_dist, right_frame.avatar_walk_dist, alpha);
+    let interp_walk = lerp_f32(
+        left_frame.avatar_walk_dist,
+        right_frame.avatar_walk_dist,
+        alpha,
+    );
     let interp_bob = lerp_f32(left_frame.avatar_bob, right_frame.avatar_bob, alpha);
     game.avatar.walk_dist = interp_walk;
     game.avatar.walk_dist_o = interp_walk;
     game.avatar.bob = interp_bob;
     game.avatar.bob_o = interp_bob;
+
+    game.selected = chosen_frame.player_selected;
+    game.inventory = (*chosen_frame.player_inventory).clone();
+    game.armor = (*chosen_frame.player_armor).clone();
+    game.offhand = (*chosen_frame.player_offhand).clone();
+    game.using = chosen_frame.player_using;
+    game.use_duration = chosen_frame.player_use_duration;
 
     if let Some(p) = game.player.as_mut() {
         p.position.x = interp_p_pos[0];
@@ -114,9 +343,17 @@ pub fn apply_interpolated_poses_to_game(game: &mut Game<'_>, target_time: f64) {
         p.pitch = interp_p_pitch;
         p.teleported = true;
         p.teleported_delta = [false; 3];
-        p.sprinting = if alpha > 0.5 { right_frame.player_sprinting } else { left_frame.player_sprinting };
-        p.health.hurt_animation_time = if alpha > 0.5 { right_frame.player_hurt_time } else { left_frame.player_hurt_time };
-        p.health.hurt_dir = if alpha > 0.5 { right_frame.player_hurt_dir } else { left_frame.player_hurt_dir };
+        p.sprinting = chosen_frame.player_sprinting;
+        p.local_crouching = chosen_frame.player_sneaking;
+        p.fall_flying = chosen_frame.player_fall_flying;
+        p.fire_ticks = chosen_frame.player_fire_ticks;
+        p.air = chosen_frame.player_air;
+        p.ticks_frozen = chosen_frame.player_ticks_frozen;
+        let _ = p.set_health(chosen_frame.player_health.max(1.0), false);
+        let _ = p.internal_set_absorption(chosen_frame.player_absorption);
+        p.health.food.food = chosen_frame.player_food;
+        p.health.hurt_animation_time = chosen_frame.player_hurt_time;
+        p.health.hurt_dir = chosen_frame.player_hurt_dir;
         game.previous_position = p.position;
     }
     game.yaw = interp_p_yaw;
@@ -124,16 +361,16 @@ pub fn apply_interpolated_poses_to_game(game: &mut Game<'_>, target_time: f64) {
     game.snap_player_model_pitch();
 
     let mut right_mobs_by_id: FxHashMap<u32, &MobPoseRecord> = FxHashMap::default();
-    for m in &right_frame.mobs {
+    for m in &right_mobs {
         right_mobs_by_id.insert(m.id, m);
     }
 
-    let mut interpolated: FxHashMap<u32, InterpolatedMobPose> = FxHashMap::default();
-    for left_mob in &left_frame.mobs {
+    let mut interpolated_mobs: FxHashMap<u32, InterpolatedMobPose> = FxHashMap::default();
+    for left_mob in &left_mobs {
         if let Some(right_mob) = right_mobs_by_id.get(&left_mob.id) {
-            interpolated.insert(left_mob.id, interpolate_mob_pose(left_mob, right_mob, alpha));
-        } else {
-            interpolated.insert(
+            interpolated_mobs.insert(left_mob.id, interpolate_mob_pose(left_mob, right_mob, alpha));
+        } else if alpha <= 0.5 {
+            interpolated_mobs.insert(
                 left_mob.id,
                 InterpolatedMobPose {
                     pos: left_mob.pos,
@@ -149,65 +386,458 @@ pub fn apply_interpolated_poses_to_game(game: &mut Game<'_>, target_time: f64) {
                     alive: left_mob.alive,
                     hurt_time: left_mob.hurt_time,
                     death_time: left_mob.death_time,
+                    sheared: left_mob.sheared,
+                    color: left_mob.color,
+                    size: left_mob.size,
                 },
             );
         }
     }
+    if alpha > 0.5 {
+        for rm in &right_mobs {
+            interpolated_mobs.entry(rm.id).or_insert(InterpolatedMobPose {
+                pos: rm.pos,
+                yaw: rm.yaw,
+                body_yaw: rm.body_yaw,
+                head_yaw: rm.head_yaw,
+                head_pitch: rm.head_pitch,
+                limb_position: rm.limb_position,
+                limb_speed: rm.limb_speed,
+                attack_anim: rm.attack_anim,
+                swell: rm.swell,
+                health: rm.health,
+                alive: rm.alive,
+                hurt_time: rm.hurt_time,
+                death_time: rm.death_time,
+                sheared: rm.sheared,
+                color: rm.color,
+                size: rm.size,
+            });
+        }
+    }
 
-    for live_mob in game.mobs.iter_mut() {
-        if let Some(pose) = interpolated.get(&live_mob.id) {
-            live_mob.position.x = pose.pos[0];
-            live_mob.position.y = pose.pos[1];
-            live_mob.position.z = pose.pos[2];
-            live_mob.previous.x = pose.pos[0];
-            live_mob.previous.y = pose.pos[1];
-            live_mob.previous.z = pose.pos[2];
-            live_mob.velocity = Default::default();
-            live_mob.extra.previous_velocity = Default::default();
+    let mut present_mobs = HashSet::new();
+    game.mobs.retain_mut(|live_mob| {
+        if let Some(pose) = interpolated_mobs.get(&live_mob.id) {
+            present_mobs.insert(live_mob.id);
+            apply_mob_pose(live_mob, pose);
+            true
+        } else {
+            false
+        }
+    });
+    with_scrub_ring(|ring| {
+        for (&id, pose) in &interpolated_mobs {
+            if !present_mobs.contains(&id)
+                && let Some(template) = ring.entity_pool.mobs.get(&id)
+            {
+                let mut resurrected = template.clone();
+                resurrected.removed = false;
+                apply_mob_pose(&mut resurrected, pose);
+                game.mobs.push(resurrected);
+            }
+        }
+    });
 
-            live_mob.yaw = pose.yaw;
-            live_mob.previous_yaw = pose.yaw;
+    let interp_items = interpolate_entity_poses(&left_frame.items, &right_frame.items, alpha);
+    let mut present_items = HashSet::new();
+    game.dropped.retain_mut(|item| {
+        if let Some(pose) = interp_items.get(&item.id) {
+            present_items.insert(item.id);
+            item.position = Vec3::new(pose.pos[0], pose.pos[1], pose.pos[2]);
+            item.previous = item.position;
+            item.velocity = Vec3::ZERO;
+            item.ticks = pose.extra_i32.max(0) as u32;
+            true
+        } else {
+            false
+        }
+    });
+    with_scrub_ring(|ring| {
+        for (&id, pose) in &interp_items {
+            if !present_items.contains(&id)
+                && let Some(template) = ring.entity_pool.dropped.get(&id)
+            {
+                let mut d = template.clone();
+                d.position = Vec3::new(pose.pos[0], pose.pos[1], pose.pos[2]);
+                d.previous = d.position;
+                d.velocity = Vec3::ZERO;
+                d.ticks = pose.extra_i32.max(0) as u32;
+                game.dropped.push(d);
+            }
+        }
+    });
 
-            live_mob.body_yaw = pose.body_yaw;
-            live_mob.previous_body_yaw = pose.body_yaw;
+    let interp_orbs = interpolate_entity_poses(&left_frame.orbs, &right_frame.orbs, alpha);
+    let mut present_orbs = HashSet::new();
+    game.orbs.retain_mut(|orb| {
+        if let Some(pose) = interp_orbs.get(&orb.id) {
+            present_orbs.insert(orb.id);
+            orb.position = Vec3::new(pose.pos[0], pose.pos[1], pose.pos[2]);
+            orb.previous = orb.position;
+            orb.velocity = Vec3::ZERO;
+            orb.ticks = pose.extra_i32.max(0) as u32;
+            true
+        } else {
+            false
+        }
+    });
+    with_scrub_ring(|ring| {
+        for (&id, pose) in &interp_orbs {
+            if !present_orbs.contains(&id)
+                && let Some(template) = ring.entity_pool.orbs.get(&id)
+            {
+                let mut o = template.clone();
+                o.position = Vec3::new(pose.pos[0], pose.pos[1], pose.pos[2]);
+                o.previous = o.position;
+                o.velocity = Vec3::ZERO;
+                o.ticks = pose.extra_i32.max(0) as u32;
+                game.orbs.push(o);
+            }
+        }
+    });
 
-            live_mob.head_yaw = pose.head_yaw;
-            live_mob.previous_head_yaw = pose.head_yaw;
+    let interp_tnts = interpolate_entity_poses(&left_frame.tnts, &right_frame.tnts, alpha);
+    let mut present_tnts = HashSet::new();
+    game.tnts.retain_mut(|tnt| {
+        if let Some(pose) = interp_tnts.get(&tnt.id) {
+            present_tnts.insert(tnt.id);
+            tnt.position = Vec3::new(pose.pos[0], pose.pos[1], pose.pos[2]);
+            tnt.previous = tnt.position;
+            tnt.velocity = Vec3::ZERO;
+            tnt.fuse = pose.extra_i32;
+            true
+        } else {
+            false
+        }
+    });
+    with_scrub_ring(|ring| {
+        for (&id, pose) in &interp_tnts {
+            if !present_tnts.contains(&id)
+                && let Some(template) = ring.entity_pool.tnts.get(&id)
+            {
+                let mut t = template.clone();
+                t.position = Vec3::new(pose.pos[0], pose.pos[1], pose.pos[2]);
+                t.previous = t.position;
+                t.velocity = Vec3::ZERO;
+                t.fuse = pose.extra_i32;
+                game.tnts.push(t);
+            }
+        }
+    });
 
-            live_mob.head_pitch = pose.head_pitch;
-            live_mob.previous_head_pitch = pose.head_pitch;
+    let interp_falling =
+        interpolate_entity_poses(&left_frame.falling, &right_frame.falling, alpha);
+    game.falling.clear();
+    with_scrub_ring(|ring| {
+        for (&id, pose) in &interp_falling {
+            if let Some(template) = ring.entity_pool.falling.get(&id) {
+                let mut f = template.clone();
+                f.position = Vec3::new(pose.pos[0], pose.pos[1], pose.pos[2]);
+                f.previous = f.position;
+                f.velocity = Vec3::ZERO;
+                f.age = pose.extra_i32;
+                game.falling.push(f);
+            }
+        }
+    });
 
-            live_mob.limb_position = pose.limb_position;
-            live_mob.limb_speed = pose.limb_speed;
-            live_mob.previous_limb_speed = pose.limb_speed;
+    let interp_boats = interpolate_entity_poses(&left_frame.boats, &right_frame.boats, alpha);
+    game.boats.clear();
+    with_scrub_ring(|ring| {
+        for (&id, pose) in &interp_boats {
+            if let Some(template) = ring.entity_pool.boats.get(&id) {
+                let mut b = template.clone();
+                b.position = Vec3::new(pose.pos[0], pose.pos[1], pose.pos[2]);
+                b.previous = b.position;
+                b.velocity = Vec3::ZERO;
+                b.yaw = pose.yaw;
+                b.previous_yaw = pose.yaw;
+                b.hurt_time = pose.extra_i32;
+                game.boats.push(b);
+            }
+        }
+    });
 
-            live_mob.swell = pose.swell.round() as i32;
-            live_mob.previous_swell = live_mob.swell;
+    let interp_carts = interpolate_entity_poses(&left_frame.carts, &right_frame.carts, alpha);
+    game.carts.clear();
+    with_scrub_ring(|ring| {
+        for (&id, pose) in &interp_carts {
+            if let Some(template) = ring.entity_pool.carts.get(&id) {
+                let mut c = template.clone();
+                c.position = Vec3::new(pose.pos[0], pose.pos[1], pose.pos[2]);
+                c.previous = c.position;
+                c.velocity = Vec3::ZERO;
+                c.yaw = pose.yaw;
+                c.previous_yaw = pose.yaw;
+                c.pitch = pose.pitch;
+                c.previous_pitch = pose.pitch;
+                c.hurt_time = pose.extra_i32;
+                game.carts.push(c);
+            }
+        }
+    });
 
-            live_mob.anim.attack_anim = pose.attack_anim;
-            live_mob.anim.attack_anim_o = pose.attack_anim;
+    let interp_proj =
+        interpolate_entity_poses(&left_frame.projectiles, &right_frame.projectiles, alpha);
+    game.creatures.projectiles.clear();
+    with_scrub_ring(|ring| {
+        for (&id, pose) in &interp_proj {
+            if let Some(template) = ring.entity_pool.projectiles.get(&id) {
+                let mut p = template.clone();
+                p.position = Vec3::new(pose.pos[0], pose.pos[1], pose.pos[2]);
+                p.previous = p.position;
+                p.velocity = Vec3::ZERO;
+                p.yaw = pose.yaw;
+                p.previous_yaw = pose.yaw;
+                p.pitch = pose.pitch;
+                p.previous_pitch = pose.pitch;
+                p.age = pose.extra_i32.max(0) as u32;
+                game.creatures.projectiles.push(p);
+            }
+        }
+    });
 
-            live_mob.health = pose.health;
-            live_mob.hurt_time = pose.hurt_time;
-            live_mob.death_time = pose.death_time;
+    let interp_tridents =
+        interpolate_entity_poses(&left_frame.tridents, &right_frame.tridents, alpha);
+    let registry = game.pack.assets.registry;
+    game.tridents.clear();
+    with_scrub_ring(|ring| {
+        for (&id, pose) in &interp_tridents {
+            if let Some(ts) = ring.entity_pool.tridents.get(&id)
+                && let Some(n) = horizon_client::entity_nbt::trident_from_nbt(&ts.nbt)
+            {
+                let mut tr =
+                    horizon_gameplay::trident::ThrownTrident::from_nbt(n, &ts.nbt, registry);
+                tr.id = id;
+                tr.position = Vec3::new(pose.pos[0], pose.pos[1], pose.pos[2]);
+                tr.previous = tr.position;
+                tr.velocity = Vec3::ZERO;
+                tr.yaw = pose.yaw;
+                tr.pitch = pose.pitch;
+                tr.in_ground_time = pose.extra_i32;
+                game.tridents.push(tr);
+            }
+        }
+    });
+
+    let interp_rockets =
+        interpolate_entity_poses(&left_frame.rockets, &right_frame.rockets, alpha);
+    game.rockets.clear();
+    with_scrub_ring(|ring| {
+        for (&id, pose) in &interp_rockets {
+            if let Some(rs) = ring.entity_pool.rockets.get(&id)
+                && let Some(rn) =
+                    horizon_client::entity_nbt::firework_rocket_from_nbt(&rs.nbt, None)
+            {
+                let mut r = horizon_gameplay::fireworks::Rocket::from_nbt(rn);
+                r.id = id;
+                r.position = Vec3::new(pose.pos[0], pose.pos[1], pose.pos[2]);
+                r.previous = r.position;
+                r.velocity = Vec3::ZERO;
+                r.rotation = [pose.yaw, pose.pitch];
+                r.life = pose.extra_i32;
+                game.rockets.push(r);
+            }
+        }
+    });
+
+    let interp_crystals =
+        interpolate_entity_poses(&left_frame.crystals, &right_frame.crystals, alpha);
+    let mut present_crystals = HashSet::new();
+    game.crystals.retain_mut(|c| {
+        if let Some(pose) = interp_crystals.get(&c.id) {
+            present_crystals.insert(c.id);
+            c.position = Vec3::new(pose.pos[0], pose.pos[1], pose.pos[2]);
+            true
+        } else {
+            false
+        }
+    });
+    with_scrub_ring(|ring| {
+        for (&id, pose) in &interp_crystals {
+            if !present_crystals.contains(&id)
+                && let Some(template) = ring.entity_pool.crystals.get(&id)
+            {
+                let mut c = template.clone();
+                c.position = Vec3::new(pose.pos[0], pose.pos[1], pose.pos[2]);
+                game.crystals.push(c);
+            }
+        }
+    });
+
+    game.paintings.clear();
+    for p in chosen_frame.paintings.iter() {
+        game.paintings.push(p.clone());
+    }
+
+    game.item_frames.clear();
+    for f in chosen_frame.item_frames.iter() {
+        game.item_frames.push(f.clone());
+    }
+
+    game.armor_stands.clear();
+    let mut right_stands: FxHashMap<u32, &horizon_client::entities::ArmorStand> =
+        FxHashMap::default();
+    for rs in right_frame.armor_stands.iter() {
+        right_stands.insert(rs.id, rs);
+    }
+    for ls in left_frame.armor_stands.iter() {
+        let mut s = ls.clone();
+        if let Some(rs) = right_stands.get(&ls.id) {
+            s.position = Vec3::new(
+                lerp_f64(ls.position.x, rs.position.x, a64),
+                lerp_f64(ls.position.y, rs.position.y, a64),
+                lerp_f64(ls.position.z, rs.position.z, a64),
+            );
+            s.previous = s.position;
+            s.yaw = lerp_angle(ls.yaw, rs.yaw, alpha);
+            s.previous_yaw = s.yaw;
+            if alpha > 0.5 {
+                s.equipment = rs.equipment.clone();
+                s.pose = rs.pose;
+            }
+        } else {
+            s.previous = s.position;
+            s.previous_yaw = s.yaw;
+        }
+        game.armor_stands.push(s);
+    }
+
+    game.cushions.clear();
+    for c in chosen_frame.cushions.iter() {
+        game.cushions.push(c.clone());
+    }
+
+    game.others.clear();
+    for o in chosen_frame.others.iter() {
+        game.others.push(o.clone());
+    }
+
+    if let Some(d_snap) = &chosen_frame.dragon {
+        if let Some(d) = d_snap.to_live(game.level.seed) {
+            game.dragon.replace(d);
+        }
+    } else {
+        game.dragon.discard();
+    }
+
+    game.breath_clouds.clear();
+    for bs in chosen_frame.breath_clouds.iter() {
+        if let Some((_, mut cloud)) = super::super::potions::potion_cloud_from_nbt(&bs.nbt) {
+            cloud.id = bs.id;
+            cloud.motion = bs.motion;
+            cloud.from_dragon = bs.from_dragon;
+            cloud.victims = bs.victims.clone();
+            game.breath_clouds.push(cloud);
+        } else if bs.from_dragon || bs.potion_none {
+            game.breath_clouds.push(super::super::dragon::Breath {
+                attachment_lifetime: Default::default(),
+                join: Default::default(),
+                id: bs.id,
+                at: bs.at,
+                motion: bs.motion,
+                radius: bs.radius,
+                age: bs.age,
+                duration: bs.duration,
+                from_dragon: bs.from_dragon,
+                victims: bs.victims.clone(),
+                potion: None,
+            });
+        }
+    }
+
+    game.fangs.list.clear();
+    for f in chosen_frame.fangs.iter() {
+        game.fangs.list.push(f.clone());
+    }
+
+    let potion_poses = interpolate_thrown_potions(
+        &left_frame.thrown_potions,
+        &right_frame.thrown_potions,
+        alpha,
+    );
+    with_scrub_ring(|ring| {
+        game.potions
+            .rreturn_apply_thrown_preview(&ring.entity_pool.thrown_potions, &potion_poses);
+    });
+
+    match (&left_frame.hook, &right_frame.hook) {
+        (Some(lh), Some(rh)) if lh.id == rh.id => {
+            let hpos = [
+                lerp_f64(lh.pos[0], rh.pos[0], a64),
+                lerp_f64(lh.pos[1], rh.pos[1], a64),
+                lerp_f64(lh.pos[2], rh.pos[2], a64),
+            ];
+            game.rreturn_restore_hook_full(
+                lh.id,
+                hpos,
+                hpos,
+                [0.0; 3],
+                0,
+                if alpha > 0.5 { rh.nibble } else { lh.nibble },
+                0,
+                0,
+                0.0,
+                true,
+                if alpha > 0.5 { rh.bobbing } else { lh.bobbing },
+            );
+        }
+        (Some(lh), _) if alpha <= 0.5 => {
+            game.rreturn_restore_hook_full(
+                lh.id,
+                lh.pos,
+                lh.pos,
+                [0.0; 3],
+                0,
+                lh.nibble,
+                0,
+                0,
+                0.0,
+                true,
+                lh.bobbing,
+            );
+        }
+        (_, Some(rh)) if alpha > 0.5 => {
+            game.rreturn_restore_hook_full(
+                rh.id,
+                rh.pos,
+                rh.pos,
+                [0.0; 3],
+                0,
+                rh.nibble,
+                0,
+                0,
+                0.0,
+                true,
+                rh.bobbing,
+            );
+        }
+        _ => {
+            game.hook.discard();
         }
     }
 
     if let Some(r) = game.remote.as_mut() {
         r.stepped.clear();
+        r.lerps.clear();
+        r.cart_lerps.clear();
+        r.head_lerps.clear();
     }
 
-    // Restore block breaking crack stages for target time
     game.destroying.clear();
-    let chosen_frame = if alpha > 0.5 { &right_frame } else { &left_frame };
     for bp in &chosen_frame.break_progress {
-        game.destroying.insert(bp.breaker, (bp.pos, bp.stage, chosen_frame.game_time));
+        game.destroying
+            .insert(bp.breaker, (bp.pos, bp.stage, chosen_frame.game_time));
     }
 
-    // First-person hand and arm swing interpolation
-    let chosen_swing = if alpha > 0.5 { &right_frame.arm_swing } else { &left_frame.arm_swing };
+    let chosen_swing = &chosen_frame.arm_swing;
     if chosen_swing.swinging {
-        let anim = lerp_f32(left_frame.arm_swing.animation, right_frame.arm_swing.animation, alpha);
+        let anim = lerp_f32(
+            left_frame.arm_swing.animation,
+            right_frame.arm_swing.animation,
+            alpha,
+        );
         game.swing.current = Some(horizon_client::first_person::SwingDescription {
             hand: if chosen_swing.hand == 1 {
                 horizon_client::first_person::Hand::Off
@@ -226,21 +856,27 @@ pub fn apply_interpolated_poses_to_game(game: &mut Game<'_>, target_time: f64) {
         game.swing.old_animation = 0.0;
         game.swing.ticks = 0;
     }
-    game.heights.main = lerp_f32(left_frame.arm_swing.height_main, right_frame.arm_swing.height_main, alpha);
-    game.heights.old_main = game.heights.main;
-    game.heights.off = lerp_f32(left_frame.arm_swing.height_off, right_frame.arm_swing.height_off, alpha);
-    game.heights.old_off = game.heights.off;
-
-    // Seamless particle playback on scrub: interpolate particles across sub-tick time
-    let interpolated_particles = interpolate_timeline_particles(
-        &left_frame.particles,
-        &right_frame.particles,
+    game.heights.main = lerp_f32(
+        left_frame.arm_swing.height_main,
+        right_frame.arm_swing.height_main,
         alpha,
     );
+    game.heights.old_main = game.heights.main;
+    game.heights.off = lerp_f32(
+        left_frame.arm_swing.height_off,
+        right_frame.arm_swing.height_off,
+        alpha,
+    );
+    game.heights.old_off = game.heights.off;
 
+    let interpolated_particles =
+        interpolate_lossless_particles(&left_particles, &right_particles, alpha);
     game.particles.clear();
     for p in interpolated_particles {
         game.particles.push(p);
+    }
+    for _ in 0..chosen_frame.elder_guardians.len() {
+        game.particles.elder_guardian();
     }
     let world = &game.world;
     let facts = game.res.facts();
@@ -260,110 +896,159 @@ pub fn apply_interpolated_poses_to_game(game: &mut Game<'_>, target_time: f64) {
     game.particles.sounds.clear();
 }
 
-pub fn interpolate_timeline_particles(
-    left_particles: &[horizon_client::particles::Particle],
-    right_particles: &[horizon_client::particles::Particle],
+fn apply_mob_pose(live_mob: &mut super::super::Mob, pose: &InterpolatedMobPose) {
+    live_mob.position.x = pose.pos[0];
+    live_mob.position.y = pose.pos[1];
+    live_mob.position.z = pose.pos[2];
+    live_mob.previous.x = pose.pos[0];
+    live_mob.previous.y = pose.pos[1];
+    live_mob.previous.z = pose.pos[2];
+    live_mob.velocity = Default::default();
+    live_mob.extra.previous_velocity = Default::default();
+
+    live_mob.yaw = pose.yaw;
+    live_mob.previous_yaw = pose.yaw;
+
+    live_mob.body_yaw = pose.body_yaw;
+    live_mob.previous_body_yaw = pose.body_yaw;
+
+    live_mob.head_yaw = pose.head_yaw;
+    live_mob.previous_head_yaw = pose.head_yaw;
+
+    live_mob.head_pitch = pose.head_pitch;
+    live_mob.previous_head_pitch = pose.head_pitch;
+
+    live_mob.limb_position = pose.limb_position;
+    live_mob.limb_speed = pose.limb_speed;
+    live_mob.previous_limb_speed = pose.limb_speed;
+
+    live_mob.swell = pose.swell.round() as i32;
+    live_mob.previous_swell = live_mob.swell;
+
+    live_mob.anim.attack_anim = pose.attack_anim;
+    live_mob.anim.attack_anim_o = pose.attack_anim;
+
+    live_mob.health = pose.health;
+    live_mob.hurt_time = pose.hurt_time;
+    live_mob.death_time = pose.death_time;
+    live_mob.extra.sheared = pose.sheared;
+    live_mob.extra.color = pose.color;
+    live_mob.extra.size = pose.size;
+}
+
+pub fn interpolate_lossless_particles(
+    left_states: &[ParticleTickState],
+    right_states: &[ParticleTickState],
     alpha: f32,
-) -> Vec<horizon_client::particles::Particle> {
-    if left_particles.is_empty() && right_particles.is_empty() {
+) -> Vec<Particle> {
+    if left_states.is_empty() && right_states.is_empty() {
         return Vec::new();
     }
-    if right_particles.is_empty() || alpha <= 0.0 {
-        let mut cloned = left_particles.to_vec();
-        for p in &mut cloned {
-            p.previous = p.position;
-        }
-        return cloned;
-    }
-    if left_particles.is_empty() || alpha >= 1.0 {
-        let mut cloned = right_particles.to_vec();
-        for p in &mut cloned {
-            p.previous = p.position;
-        }
-        return cloned;
-    }
-
     let a64 = f64::from(alpha);
-    let mut result = Vec::with_capacity(left_particles.len().max(right_particles.len()));
-    let mut matched_right = vec![false; right_particles.len()];
+    let mut right_map: FxHashMap<u32, &ParticleTickState> = FxHashMap::default();
+    for r in right_states {
+        right_map.insert(r.id, r);
+    }
 
-    for left_p in left_particles {
-        let mut best_match: Option<usize> = None;
-        let mut min_dist_sq = 9.0;
+    with_scrub_ring(|ring| {
+        let mut out = Vec::with_capacity(left_states.len().max(right_states.len()));
+        let mut seen = HashSet::with_capacity(left_states.len());
 
-        for (r_idx, right_p) in right_particles.iter().enumerate() {
-            if matched_right[r_idx] {
+        for l in left_states {
+            let Some(template) = ring.particle_templates.get(l.template_id as usize) else {
                 continue;
-            }
-            if right_p.ty == left_p.ty
-                && right_p.lifetime == left_p.lifetime
-                && (right_p.age == left_p.age + 1 || (right_p.age == left_p.age && (alpha - 0.5).abs() < 0.49))
-            {
-                let dx = right_p.position[0] - left_p.position[0];
-                let dy = right_p.position[1] - left_p.position[1];
-                let dz = right_p.position[2] - left_p.position[2];
-                let dist_sq = dx * dx + dy * dy + dz * dz;
-                if dist_sq < min_dist_sq {
-                    min_dist_sq = dist_sq;
-                    best_match = Some(r_idx);
+            };
+            seen.insert(l.id);
+            let mut p = template.clone();
+            if let Some(r) = right_map.get(&l.id) {
+                let pos = [
+                    lerp_f64(l.pos[0], r.pos[0], a64),
+                    lerp_f64(l.pos[1], r.pos[1], a64),
+                    lerp_f64(l.pos[2], r.pos[2], a64),
+                ];
+                p.position = pos;
+                p.previous = pos;
+                p.velocity = [
+                    lerp_f64(l.vel[0], r.vel[0], a64),
+                    lerp_f64(l.vel[1], r.vel[1], a64),
+                    lerp_f64(l.vel[2], r.vel[2], a64),
+                ];
+                p.size = lerp_f32(l.size, r.size, alpha);
+                p.rgba = [
+                    lerp_f32(l.rgba[0], r.rgba[0], alpha),
+                    lerp_f32(l.rgba[1], r.rgba[1], alpha),
+                    lerp_f32(l.rgba[2], r.rgba[2], alpha),
+                    lerp_f32(l.rgba[3], r.rgba[3], alpha),
+                ];
+                p.age = if alpha > 0.5 { r.age } else { l.age };
+                out.push(p);
+            } else {
+                let pos = [
+                    l.pos[0] + l.vel[0] * a64,
+                    l.pos[1] + l.vel[1] * a64,
+                    l.pos[2] + l.vel[2] * a64,
+                ];
+                p.position = pos;
+                p.previous = pos;
+                p.size = l.size;
+                p.rgba = [
+                    l.rgba[0],
+                    l.rgba[1],
+                    l.rgba[2],
+                    (l.rgba[3] * (1.0 - alpha)).clamp(0.0, 1.0),
+                ];
+                p.age = l.age;
+                if p.rgba[3] > 0.01 {
+                    out.push(p);
                 }
             }
         }
 
-        if let Some(r_idx) = best_match {
-            matched_right[r_idx] = true;
-            let right_p = &right_particles[r_idx];
-            let mut interp = left_p.clone();
-            let interp_pos = [
-                lerp_f64(left_p.position[0], right_p.position[0], a64),
-                lerp_f64(left_p.position[1], right_p.position[1], a64),
-                lerp_f64(left_p.position[2], right_p.position[2], a64),
-            ];
-            interp.position = interp_pos;
-            interp.previous = interp_pos;
-            interp.size = lerp_f32(left_p.size, right_p.size, alpha);
-            interp.rgba = [
-                lerp_f32(left_p.rgba[0], right_p.rgba[0], alpha),
-                lerp_f32(left_p.rgba[1], right_p.rgba[1], alpha),
-                lerp_f32(left_p.rgba[2], right_p.rgba[2], alpha),
-                lerp_f32(left_p.rgba[3], right_p.rgba[3], alpha),
-            ];
-            result.push(interp);
-        } else {
-            let mut interp = left_p.clone();
-            let interp_pos = [
-                left_p.position[0] + left_p.velocity[0] * a64,
-                left_p.position[1] + left_p.velocity[1] * a64,
-                left_p.position[2] + left_p.velocity[2] * a64,
-            ];
-            interp.position = interp_pos;
-            interp.previous = interp_pos;
-            interp.rgba[3] = (interp.rgba[3] * (1.0 - alpha)).clamp(0.0, 1.0);
-            if interp.rgba[3] > 0.02 {
-                result.push(interp);
+        for r in right_states {
+            if seen.contains(&r.id) {
+                continue;
             }
-        }
-    }
-
-    for (r_idx, right_p) in right_particles.iter().enumerate() {
-        if !matched_right[r_idx] {
-            let mut interp = right_p.clone();
+            let Some(template) = ring.particle_templates.get(r.template_id as usize) else {
+                continue;
+            };
+            let mut p = template.clone();
             let back = 1.0 - a64;
-            let interp_pos = [
-                right_p.position[0] - right_p.velocity[0] * back,
-                right_p.position[1] - right_p.velocity[1] * back,
-                right_p.position[2] - right_p.velocity[2] * back,
+            let pos = [
+                r.pos[0] - r.vel[0] * back,
+                r.pos[1] - r.vel[1] * back,
+                r.pos[2] - r.vel[2] * back,
             ];
-            interp.position = interp_pos;
-            interp.previous = interp_pos;
-            interp.rgba[3] = (interp.rgba[3] * alpha).clamp(0.0, 1.0);
-            if interp.rgba[3] > 0.02 {
-                result.push(interp);
+            p.position = pos;
+            p.previous = pos;
+            p.size = r.size;
+            p.rgba = [
+                r.rgba[0],
+                r.rgba[1],
+                r.rgba[2],
+                (r.rgba[3] * alpha).clamp(0.0, 1.0),
+            ];
+            p.age = r.age;
+            if p.rgba[3] > 0.01 {
+                out.push(p);
+            }
+        }
+
+        out
+    })
+}
+
+fn mark_section_dirty_3x3(game: &mut Game<'_>, cx: i32, s_idx: usize, cz: i32) {
+    let num_sections = game.world.layout().sections() as i32;
+    for dz in -1..=1 {
+        for dy in -1..=1 {
+            for dx in -1..=1 {
+                let s = s_idx as i32 + dy;
+                if (0..num_sections).contains(&s) {
+                    game.world.dirty_sections.insert((cx + dx, s, cz + dz));
+                }
             }
         }
     }
-
-    result
 }
 
 pub fn apply_block_rewind_to_game(game: &mut Game<'_>, from_tick: i64, to_tick: i64) {
@@ -371,79 +1056,87 @@ pub fn apply_block_rewind_to_game(game: &mut Game<'_>, from_tick: i64, to_tick: 
         return;
     }
 
+    let current_dim = game.dim;
+    let mut coalesced_blocks: FxHashMap<(i32, i32, i32), u32> = FxHashMap::default();
+    let mut section_swaps: FxHashMap<(i32, i32, usize), Arc<horizon_client::chunk::Section>> =
+        FxHashMap::default();
+    let mut biome_swaps: FxHashMap<(i32, i32, usize), Arc<horizon_client::chunk::Section>> =
+        FxHashMap::default();
+
     with_scrub_ring(|ring| {
         if ring.frames.is_empty() {
             return;
         }
-
         if to_tick < from_tick {
-            // Rewinding backwards in time: apply old_state in reverse chronological order
             for frame in ring.frames.iter().rev() {
                 if frame.game_time <= to_tick {
                     break;
                 }
-                if frame.game_time <= from_tick {
+                if frame.game_time <= from_tick && frame.dim == current_dim {
                     for swap in frame.section_swaps.iter().rev() {
-                        if let Some(chunk_arc) = game.world.chunks.get_mut(&(swap.cx, swap.cz)) {
-                            if let Some(chunk) = Arc::get_mut(chunk_arc) {
-                                if let Some(sec) = chunk.sections.get_mut(swap.s_idx) {
-                                    *sec = swap.old_section.clone();
-                                }
-                            } else {
-                                let mut chunk = (**chunk_arc).clone();
-                                if let Some(sec) = chunk.sections.get_mut(swap.s_idx) {
-                                    *sec = swap.old_section.clone();
-                                }
-                                *chunk_arc = Arc::new(chunk);
-                            }
-                            game.world.dirty_sections.insert((swap.cx, swap.s_idx as i32, swap.cz));
-                        }
+                        section_swaps
+                            .insert((swap.cx, swap.cz, swap.s_idx), Arc::clone(&swap.old_section));
+                    }
+                    for b in frame.biome_deltas.iter().rev() {
+                        biome_swaps.insert((b.cx, b.cz, b.s_idx), Arc::clone(&b.old_section));
                     }
                     for delta in frame.block_deltas.iter().rev() {
-                        let _ = game.world.set(
-                            delta.x,
-                            delta.y,
-                            delta.z,
-                            horizon_world::registry::BlockStateId(delta.old_state),
-                        );
+                        coalesced_blocks.insert((delta.x, delta.y, delta.z), delta.old_state);
                     }
                 }
             }
         } else {
-            // Scrubbing forwards in time: apply new_state in forward chronological order
             for frame in ring.frames.iter() {
                 if frame.game_time > to_tick {
                     break;
                 }
-                if frame.game_time > from_tick {
+                if frame.game_time > from_tick && frame.dim == current_dim {
                     for swap in frame.section_swaps.iter() {
-                        if let Some(chunk_arc) = game.world.chunks.get_mut(&(swap.cx, swap.cz)) {
-                            if let Some(chunk) = Arc::get_mut(chunk_arc) {
-                                if let Some(sec) = chunk.sections.get_mut(swap.s_idx) {
-                                    *sec = swap.new_section.clone();
-                                }
-                            } else {
-                                let mut chunk = (**chunk_arc).clone();
-                                if let Some(sec) = chunk.sections.get_mut(swap.s_idx) {
-                                    *sec = swap.new_section.clone();
-                                }
-                                *chunk_arc = Arc::new(chunk);
-                            }
-                            game.world.dirty_sections.insert((swap.cx, swap.s_idx as i32, swap.cz));
-                        }
+                        section_swaps
+                            .insert((swap.cx, swap.cz, swap.s_idx), Arc::clone(&swap.new_section));
+                    }
+                    for b in frame.biome_deltas.iter() {
+                        biome_swaps.insert((b.cx, b.cz, b.s_idx), Arc::clone(&b.new_section));
                     }
                     for delta in frame.block_deltas.iter() {
-                        let _ = game.world.set(
-                            delta.x,
-                            delta.y,
-                            delta.z,
-                            horizon_world::registry::BlockStateId(delta.new_state),
-                        );
+                        coalesced_blocks.insert((delta.x, delta.y, delta.z), delta.new_state);
                     }
                 }
             }
         }
     });
+
+    if !section_swaps.is_empty() {
+        for ((cx, cz, s_idx), target_sec) in section_swaps {
+            if let Some(live_chunk) = game.world.chunks.get(&(cx, cz)).cloned() {
+                let mut chunk = (*live_chunk).clone();
+                if let Some(sec_slot) = chunk.sections.get_mut(s_idx) {
+                    *sec_slot = target_sec;
+                }
+                game.world.chunks.insert((cx, cz), Arc::new(chunk));
+                mark_section_dirty_3x3(game, cx, s_idx, cz);
+            }
+        }
+        game.world.revision = game.world.revision.wrapping_add(1);
+    }
+
+    for ((x, y, z), state_id) in coalesced_blocks {
+        let _ = game.world.set(x, y, z, BlockStateId(state_id));
+    }
+
+    if !biome_swaps.is_empty() {
+        for ((cx, cz, s_idx), target_sec) in biome_swaps {
+            if let Some(live_chunk) = game.world.chunks.get(&(cx, cz)).cloned() {
+                let mut chunk = (*live_chunk).clone();
+                if let Some(sec_arc) = chunk.sections.get_mut(s_idx) {
+                    Arc::make_mut(sec_arc).biomes = target_sec.biomes.clone();
+                }
+                game.world.chunks.insert((cx, cz), Arc::new(chunk));
+                mark_section_dirty_3x3(game, cx, s_idx, cz);
+            }
+        }
+        game.world.revision = game.world.revision.wrapping_add(1);
+    }
 }
 
 pub fn apply_timeline_sounds_to_game(
@@ -457,14 +1150,11 @@ pub fn apply_timeline_sounds_to_game(
     }
 
     let mut sounds_to_play = Vec::new();
-
     with_scrub_ring(|ring| {
         if ring.frames.is_empty() {
             return;
         }
-
         if to_tick < from_tick {
-            // Rewinding backwards in time: gather sounds in reverse chronological order
             for frame in ring.frames.iter().rev() {
                 if frame.game_time <= to_tick {
                     break;
@@ -476,7 +1166,6 @@ pub fn apply_timeline_sounds_to_game(
                 }
             }
         } else {
-            // Scrubbing forwards in time: gather sounds in forward chronological order
             for frame in ring.frames.iter() {
                 if frame.game_time > to_tick {
                     break;

@@ -28,7 +28,10 @@ Native timeline-rewind mod for **Horizon** (Minecraft: Java Edition **26.3**).
   - `tracker.rs` — `LoopTracker` F3+B hitbox color comparison across loops.
   - `scrub_audio.rs` — Timeline audio prewarming, reversal, and background playback.
   - `scrub_timeline.rs` — Sub-tick ring buffer, MobPoseRecord, SoundRecord, and delta recording.
-  - `scrub_server.rs` — Server-side COW snapshotting, delta compression, and scrub preview.
+  - `scrub_server_types.rs` — CoW records, segments, and tick history data models.
+  - `scrub_server_journal.rs` — Unloaded chunk baseline tracking and history journal.
+  - `scrub_server_diff.rs` — CoW differential capture and level diffing.
+  - `scrub_server.rs` — Server timeline journal coordinator, ring buffer, and materialization.
   - `scrub_interpolate.rs` — Sub-tick interpolation for mob poses, animations, and sound triggers.
   - `scrub.rs` — Interactive timeline scrubbing controller, UI overlay, and jog wheel handling.
   - `scrub_perf.rs` — Microsecond phase breakdown and performance diagnostics for scrub timeline.

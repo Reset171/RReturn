@@ -142,6 +142,8 @@ from tools.tests.test_scrubbing_advanced import (
     test_102_scrub_chest_loot_table_seed_determinism,
     test_103_scrub_tnt_fuse_and_deterministic_deflection,
     test_104_scrub_villager_ai_schedule_determinism,
+    test_107_scrub_seamless_continuity_mobs_particles_and_cracks,
+    test_108_scrub_villager_profession_and_mass_tnt_continuity,
 )
 
 HEAVY_WORLD_GROUPS = {"chunks", "dimensions", "portals"}
@@ -290,6 +292,8 @@ def build_test_catalog():
         (104, "Test 104: Scrub Villager AI Schedule Determinism", "determinism", test_104_scrub_villager_ai_schedule_determinism),
         (105, "Test 105: Dev Mode Chat Filtering", "world_settings", test_105_dev_mode_chat_filtering),
         (106, "Test 106: Logs Directory Structure", "world_settings", test_106_logs_directory_structure),
+        (107, "Test 107: Scrub Seamless Continuity Mobs Particles Cracks", "scrubbing", test_107_scrub_seamless_continuity_mobs_particles_and_cracks),
+        (108, "Test 108: Scrub Villager Profession and Mass TNT Continuity", "scrubbing", test_108_scrub_villager_profession_and_mass_tnt_continuity),
     ]
 
 

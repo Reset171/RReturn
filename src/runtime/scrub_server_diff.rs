@@ -70,6 +70,10 @@ pub fn mob_unchanged(live: &super::super::Mob, prev: &super::super::Mob) -> bool
         && live.extra.rider == prev.extra.rider
         && live.extra.leader == prev.extra.leader
         && live.ai.aggressive == prev.ai.aggressive
+        && live.extra.profession == prev.extra.profession
+        && live.extra.villager_level == prev.extra.villager_level
+        && live.extra.variant == prev.extra.variant
+        && live.extra.variant2 == prev.extra.variant2
 }
 
 pub fn chunk_ticks_eq(live: Option<&ChunkTicks>, cached: &ChunkTicks) -> bool {
@@ -79,7 +83,7 @@ pub fn chunk_ticks_eq(live: Option<&ChunkTicks>, cached: &ChunkTicks) -> bool {
     }
 }
 
-pub fn cow_capture_guests
+pub fn cow_capture_guests(
     game: &Game<'_>,
     prev_map: &mut HashMap<u128, CowGuestPrev>,
     force_full: bool,

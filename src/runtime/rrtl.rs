@@ -44,6 +44,13 @@ pub struct MobPoseRecord {
     pub sheared: bool,
     pub color: u8,
     pub size: i32,
+    pub profession: u8,
+    pub villager_level: i32,
+    pub variant: u8,
+    pub variant2: u8,
+    pub age: i32,
+    pub sitting: bool,
+    pub sitting_pose: bool,
 }
 
 pub fn rrtl_crc32(data: &[u8]) -> u32 {
@@ -702,6 +709,8 @@ fn encode_client_mobs_soa_raw(frames: &[Vec<MobPoseRecord>]) -> Vec<u8> {
     c_i32!(|p: &MobPoseRecord| p.hurt_time);
     c_i32!(|p: &MobPoseRecord| p.death_time);
     c_i32!(|p: &MobPoseRecord| p.size);
+    c_i32!(|p: &MobPoseRecord| p.villager_level);
+    c_i32!(|p: &MobPoseRecord| p.age);
     for p in &flat {
         let mut flags = 0u8;
         if p.alive {
@@ -710,10 +719,25 @@ fn encode_client_mobs_soa_raw(frames: &[Vec<MobPoseRecord>]) -> Vec<u8> {
         if p.sheared {
             flags |= 2;
         }
+        if p.sitting {
+            flags |= 4;
+        }
+        if p.sitting_pose {
+            flags |= 8;
+        }
         raw.push(flags);
     }
     for p in &flat {
         raw.push(p.color);
+    }
+    for p in &flat {
+        raw.push(p.profession);
+    }
+    for p in &flat {
+        raw.push(p.variant);
+    }
+    for p in &flat {
+        raw.push(p.variant2);
     }
     raw
 }
@@ -784,9 +808,18 @@ fn decode_client_mobs_soa_raw(raw: &[u8]) -> Option<Vec<Vec<MobPoseRecord>>> {
     let ht = read_i32_col(raw, &mut pos)?;
     let dt = read_i32_col(raw, &mut pos)?;
     let sz = read_i32_col(raw, &mut pos)?;
+    let vill_lvl = read_i32_col(raw, &mut pos)?;
+    let age = read_i32_col(raw, &mut pos)?;
     let flags = raw.get(pos..pos + total)?;
     pos += total;
     let colors = raw.get(pos..pos + total)?;
+    pos += total;
+    let professions = raw.get(pos..pos + total)?;
+    pos += total;
+    let variants = raw.get(pos..pos + total)?;
+    pos += total;
+    let variants2 = raw.get(pos..pos + total)?;
+    pos += total;
     let mut out = Vec::with_capacity(frame_count);
     let mut cursor = 0usize;
     for len in lens {
@@ -813,6 +846,13 @@ fn decode_client_mobs_soa_raw(raw: &[u8]) -> Option<Vec<Vec<MobPoseRecord>>> {
                 sheared: f & 2 != 0,
                 color: colors[i],
                 size: sz[i],
+                profession: professions[i],
+                villager_level: vill_lvl[i],
+                variant: variants[i],
+                variant2: variants2[i],
+                age: age[i],
+                sitting: f & 4 != 0,
+                sitting_pose: f & 8 != 0,
             });
         }
         out.push(frame);
@@ -978,6 +1018,10 @@ pub struct MobCompactPatch {
     pub aggressive: bool,
     pub vector: [f64; 3],
     pub ints: [i32; 6],
+    pub profession: u8,
+    pub villager_level: i32,
+    pub variant: u8,
+    pub variant2: u8,
 }
 
 impl MobCompactPatch {
@@ -1027,6 +1071,10 @@ impl MobCompactPatch {
             aggressive: m.ai.aggressive,
             vector: m.extra.vector,
             ints: m.extra.ints,
+            profession: m.extra.profession.index().unwrap_or(0),
+            villager_level: m.extra.villager_level,
+            variant: m.extra.variant,
+            variant2: m.extra.variant2,
         }
     }
 
@@ -1079,6 +1127,10 @@ impl MobCompactPatch {
         m.ai.aggressive = self.aggressive;
         m.extra.vector = self.vector;
         m.extra.ints = self.ints;
+        m.extra.profession = horizon_client::mobs::villager::ProfessionState::from_index(self.profession);
+        m.extra.villager_level = self.villager_level;
+        m.extra.variant = self.variant;
+        m.extra.variant2 = self.variant2;
     }
 }
 
@@ -1188,6 +1240,7 @@ pub fn encode_mob_patch_batches_rrtl(
     col_i32!(|p: &MobCompactPatch| p.mount.map_or(-1, |v| v as i32));
     col_i32!(|p: &MobCompactPatch| p.rider.map_or(-1, |v| v as i32));
     col_i32!(|p: &MobCompactPatch| p.leader.map_or(-1, |v| v as i32));
+    col_i32!(|p: &MobCompactPatch| p.villager_level);
 
     col_u64!(|p: &MobCompactPatch| p.rng_state);
     col_u64!(|p: &MobCompactPatch| p.anger_end as u64);
@@ -1214,6 +1267,15 @@ pub fn encode_mob_patch_batches_rrtl(
     }
     for p in &flat {
         raw.push(p.color);
+    }
+    for p in &flat {
+        raw.push(p.profession);
+    }
+    for p in &flat {
+        raw.push(p.variant);
+    }
+    for p in &flat {
+        raw.push(p.variant2);
     }
 
     let raw_len = raw.len();
@@ -1346,6 +1408,7 @@ pub fn decode_mob_patch_batches_rrtl(
     let mount = read_i32_col(&raw, &mut pos)?;
     let rider = read_i32_col(&raw, &mut pos)?;
     let leader = read_i32_col(&raw, &mut pos)?;
+    let vill_lvl = read_i32_col(&raw, &mut pos)?;
 
     let rng_state = read_u64_col(&raw, &mut pos)?;
     let anger_end = read_u64_col(&raw, &mut pos)?;
@@ -1354,6 +1417,13 @@ pub fn decode_mob_patch_batches_rrtl(
     let flags = raw.get(pos..pos + total)?;
     pos += total;
     let colors = raw.get(pos..pos + total)?;
+    pos += total;
+    let professions = raw.get(pos..pos + total)?;
+    pos += total;
+    let variants = raw.get(pos..pos + total)?;
+    pos += total;
+    let variants2 = raw.get(pos..pos + total)?;
+    pos += total;
 
     let mut out = Vec::with_capacity(batch_count);
     let mut cursor = 0usize;
@@ -1408,6 +1478,10 @@ pub fn decode_mob_patch_batches_rrtl(
                 aggressive: f & 8 != 0,
                 vector: [vec0[i], vec1[i], vec2[i]],
                 ints: [i0[i], i1[i], i2[i], i3[i], i4[i], i5[i]],
+                profession: professions[i],
+                villager_level: vill_lvl[i],
+                variant: variants[i],
+                variant2: variants2[i],
             });
         }
         out.push((tick_idx, dim_idx, list));

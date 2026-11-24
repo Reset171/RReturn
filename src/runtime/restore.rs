@@ -55,6 +55,7 @@ pub fn apply_timeline_snapshot_on_server(
     origin: RollbackOrigin<'_>,
 ) -> bool {
     let t_start = std::time::Instant::now();
+    let is_scrub = matches!(origin, RollbackOrigin::ScrubSnapshot { .. });
     let prev_dim = game.dim;
     let bench_name = match origin {
         RollbackOrigin::DiskSlot(slot) => format!("ROLLBACK RESTORE [{}]", slot),
@@ -646,7 +647,7 @@ pub fn apply_timeline_snapshot_on_server(
                     game.save = Arc::new(new_save);
                 }
                 let (b, c, e) =
-                    apply_level_snapshot_in_place(game, dim, level_snap, policy, snap.game_time);
+                    apply_level_snapshot_in_place(game, dim, level_snap, policy, snap.game_time, is_scrub);
                 acc_blocks_ms += b;
                 acc_containers_ms += c;
                 acc_entities_ms += e;
@@ -672,7 +673,7 @@ pub fn apply_timeline_snapshot_on_server(
 
     if let Some(level_snap) = snap.levels.get(&target_dim) {
         let (b, c, e) =
-            apply_level_snapshot_in_place(game, target_dim, level_snap, policy, snap.game_time);
+            apply_level_snapshot_in_place(game, target_dim, level_snap, policy, snap.game_time, is_scrub);
         acc_blocks_ms += b;
         acc_containers_ms += c;
         acc_entities_ms += e;
@@ -740,7 +741,7 @@ pub fn apply_timeline_snapshot_on_server(
     }
 
     let t_player = std::time::Instant::now();
-    restore_players_on_rollback(game, snap, prev_dim, target_dim);
+    restore_players_on_rollback(game, snap, prev_dim, target_dim, is_scrub);
     bench_accum(Phase::PlayersOnline, t_player);
     let player_ms = (std::time::Instant::now() - t_player).as_secs_f64() * 1000.0;
     let total_ms = (std::time::Instant::now() - t_start).as_secs_f64() * 1000.0;

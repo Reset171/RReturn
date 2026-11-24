@@ -11,7 +11,7 @@ use horizon_protocol::packets::{
     recipes,
 };
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs,
     path::PathBuf,
 };
@@ -205,6 +205,7 @@ pub fn restore_players_on_rollback(
     snap: &TimelineSnapshot,
     prev_dim: Dim,
     target_dim: Dim,
+    is_scrub: bool,
 ) {
     let policy = &snap.policy;
     let net_clock_rate = game.network_clock_rate();
@@ -215,16 +216,76 @@ pub fn restore_players_on_rollback(
         if policy.entities_presence {
             host.mob_players = snap.mob_players.clone();
         }
-        host.states.clear();
-        host.states_next_entity = None;
-        host.broken.clear();
-        host.commands.clear();
-        host.poses.clear();
-        host.quiet.clear();
-        host.waypoints.clear();
-        host.waypoint_dead.clear();
-        host.idle_states = Default::default();
+        if !is_scrub {
+            host.states.clear();
+            host.states_next_entity = None;
+            host.broken.clear();
+            host.commands.clear();
+            host.poses.clear();
+            host.quiet.clear();
+            host.waypoints.clear();
+            host.waypoint_dead.clear();
+            host.idle_states = Default::default();
+        }
         host.hub.native_advancement_grants.clear();
+
+        let snap_entity_ids: HashSet<i32> = if is_scrub {
+            let mut ids = HashSet::new();
+            if let Some(level) = snap.levels.get(&target_dim) {
+                for m in &level.mobs {
+                    ids.insert(m.id as i32);
+                }
+                for d in &level.dropped {
+                    ids.insert(d.id as i32);
+                }
+                for o in &level.orbs {
+                    ids.insert(o.id as i32);
+                }
+                for t in &level.tnts {
+                    ids.insert(t.id as i32);
+                }
+                for f in &level.falling {
+                    ids.insert(f.id as i32);
+                }
+                for b in &level.boats {
+                    ids.insert(b.id as i32);
+                }
+                for c in &level.carts {
+                    ids.insert(c.id as i32);
+                }
+                for p in &level.projectiles {
+                    ids.insert(p.id as i32);
+                }
+                for tr in &level.tridents {
+                    ids.insert(tr.id as i32);
+                }
+                for r in &level.rockets {
+                    ids.insert(r.id as i32);
+                }
+                for cr in &level.crystals {
+                    ids.insert(cr.id as i32);
+                }
+                for pt in &level.paintings {
+                    ids.insert(pt.id as i32);
+                }
+                for it in &level.item_frames {
+                    ids.insert(it.id as i32);
+                }
+                for a in &level.armor_stands {
+                    ids.insert(a.id as i32);
+                }
+                for cs in &level.cushions {
+                    ids.insert(cs.id as i32);
+                }
+                for oth in &level.others {
+                    ids.insert(oth.id as i32);
+                }
+            }
+            ids
+        } else {
+            HashSet::new()
+        };
+
         for gi in 0..host.hub.guests.len() {
             if !host.hub.guests[gi].placed {
                 continue;
@@ -232,7 +293,21 @@ pub fn restore_players_on_rollback(
             let uuid = host.hub.guests[gi].uuid;
             let conn = host.hub.guests[gi].conn;
             let tracked = host.hub.guests[gi].tracker.ids();
-            if !tracked.is_empty() {
+            if is_scrub {
+                let to_remove: Vec<i32> = tracked
+                    .into_iter()
+                    .filter(|id| !snap_entity_ids.contains(id))
+                    .collect();
+                if !to_remove.is_empty() {
+                    host.hub.guests[gi]
+                        .send(&C::RemoveEntities(play::RemoveEntities { ids: to_remove.clone() }));
+                    host.hub.guests.update(gi, |g| {
+                        for id in to_remove {
+                            g.tracker.forget(id);
+                        }
+                    });
+                }
+            } else if !tracked.is_empty() {
                 host.hub.guests[gi]
                     .send(&C::RemoveEntities(play::RemoveEntities { ids: tracked }));
                 host.hub.guests.update(gi, |g| g.tracker.clear());

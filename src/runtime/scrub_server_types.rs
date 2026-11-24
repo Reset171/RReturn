@@ -260,7 +260,7 @@ pub struct CowLevelRecord {
     pub dropped: Arc<horizon_client::join_seq::JoinList<super::super::ItemEntity>>,
     pub orbs: Arc<horizon_client::join_seq::JoinList<super::super::ExperienceOrb>>,
     pub projectiles:
-        pub Arc<horizon_client::join_seq::JoinList<horizon_client::projectiles::Projectile, false>>,
+        Arc<horizon_client::join_seq::JoinList<horizon_client::projectiles::Projectile, false>>,
     pub boats: Arc<horizon_client::join_seq::JoinList<horizon_gameplay::boats::Boat, false>>,
     pub carts: Arc<horizon_client::join_seq::JoinList<horizon_gameplay::minecarts::Minecart, false>>,
     pub tnts: Arc<horizon_client::join_seq::JoinList<horizon_gameplay::tnt::PrimedTnt>>,
@@ -448,12 +448,12 @@ pub struct CowLevelPrev {
     pub tnts: Option<Arc<horizon_client::join_seq::JoinList<horizon_gameplay::tnt::PrimedTnt>>>,
     pub proj_stamp: Option<horizon_client::join_seq::ListStamp>,
     pub projectiles:
-        pub Option<Arc<horizon_client::join_seq::JoinList<horizon_client::projectiles::Projectile, false>>>,
+        Option<Arc<horizon_client::join_seq::JoinList<horizon_client::projectiles::Projectile, false>>>,
     pub boats_stamp: Option<horizon_client::join_seq::ListStamp>,
     pub boats: Option<Arc<horizon_client::join_seq::JoinList<horizon_gameplay::boats::Boat, false>>>,
     pub carts_stamp: Option<horizon_client::join_seq::ListStamp>,
     pub carts:
-        pub Option<Arc<horizon_client::join_seq::JoinList<horizon_gameplay::minecarts::Minecart, false>>>,
+        Option<Arc<horizon_client::join_seq::JoinList<horizon_gameplay::minecarts::Minecart, false>>>,
     pub falling_stamp: Option<horizon_client::join_seq::ListStamp>,
     pub falling: Option<Arc<horizon_client::join_seq::JoinList<super::super::FallingBlock, false>>>,
     pub paintings_stamp: Option<horizon_client::join_seq::ListStamp>,

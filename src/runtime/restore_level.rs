@@ -22,6 +22,7 @@ pub fn apply_level_snapshot_in_place(
     snap: &LevelSnapshot,
     policy: &RollbackPolicy,
     snap_game_time: i64,
+    is_scrub: bool,
 ) -> (f64, f64, f64) {
     let old_chunks: FxHashMap<(i32, i32), Arc<Chunk>> = (&*game.world.chunks).clone();
 
@@ -30,7 +31,8 @@ pub fn apply_level_snapshot_in_place(
         let mut changed_coords = Vec::new();
         let mut biome_changed_chunks = Vec::new();
 
-        for (&(cx, cz), snap_chunk) in snap.chunks.iter() {
+        if !is_scrub {
+            for (&(cx, cz), snap_chunk) in snap.chunks.iter() {
             if let Some(live_chunk) = old_chunks.get(&(cx, cz)) {
                 if Arc::ptr_eq(live_chunk, snap_chunk) {
                     continue;
@@ -132,11 +134,12 @@ pub fn apply_level_snapshot_in_place(
                 }
             }
         }
+        }
 
         bench_add_chunks(snap.chunks.len());
         bench_add_blocks_changed(changed_coords.len());
 
-        if policy.blocks {
+        if !is_scrub && policy.blocks {
             game.world.block_log_held.clear();
             for (wx, wy, wz, want) in changed_coords {
                 let _ = game.world.set(wx, wy, wz, BlockStateId(want));
@@ -535,7 +538,9 @@ pub fn apply_level_snapshot_in_place(
     }
     game.lan_cushion_breaks.clear();
     game.lan_global_events.clear();
-    if let Some(host) = game.lan.as_mut() {
+    if !is_scrub
+        && let Some(host) = game.lan.as_mut()
+    {
         host.states.clear();
         host.idle_states = Default::default();
     }
@@ -570,12 +575,14 @@ pub fn apply_level_snapshot_in_place(
 
     game.spill = Default::default();
     game.pending = Default::default();
-    game.particles.clear();
-    game.particles.sounds.clear();
-    game.pickups.clear();
-    game.transient_blocks.clear();
-    game.destroying.clear();
-    game.mining = None;
+    if !is_scrub {
+        game.particles.clear();
+        game.particles.sounds.clear();
+        game.pickups.clear();
+        game.transient_blocks.clear();
+        game.destroying.clear();
+        game.mining = None;
+    }
     game.lan_events.clear();
     game.lan_block_events.clear();
     game.lan_entity_events.clear();

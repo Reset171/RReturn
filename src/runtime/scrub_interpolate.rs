@@ -31,6 +31,13 @@ pub struct InterpolatedMobPose {
     pub sheared: bool,
     pub color: u8,
     pub size: i32,
+    pub profession: u8,
+    pub villager_level: i32,
+    pub variant: u8,
+    pub variant2: u8,
+    pub age: i32,
+    pub sitting: bool,
+    pub sitting_pose: bool,
 }
 
 #[inline]
@@ -100,6 +107,13 @@ pub fn interpolate_mob_pose(
         },
         color: if pick_right { right.color } else { left.color },
         size: if pick_right { right.size } else { left.size },
+        profession: if pick_right { right.profession } else { left.profession },
+        villager_level: if pick_right { right.villager_level } else { left.villager_level },
+        variant: if pick_right { right.variant } else { left.variant },
+        variant2: if pick_right { right.variant2 } else { left.variant2 },
+        age: if pick_right { right.age } else { left.age },
+        sitting: if pick_right { right.sitting } else { left.sitting },
+        sitting_pose: if pick_right { right.sitting_pose } else { left.sitting_pose },
     }
 }
 
@@ -389,6 +403,13 @@ pub fn apply_interpolated_poses_to_game(game: &mut Game<'_>, target_time: f64) {
                     sheared: left_mob.sheared,
                     color: left_mob.color,
                     size: left_mob.size,
+                    profession: left_mob.profession,
+                    villager_level: left_mob.villager_level,
+                    variant: left_mob.variant,
+                    variant2: left_mob.variant2,
+                    age: left_mob.age,
+                    sitting: left_mob.sitting,
+                    sitting_pose: left_mob.sitting_pose,
                 },
             );
         }
@@ -412,6 +433,13 @@ pub fn apply_interpolated_poses_to_game(game: &mut Game<'_>, target_time: f64) {
                 sheared: rm.sheared,
                 color: rm.color,
                 size: rm.size,
+                profession: rm.profession,
+                villager_level: rm.villager_level,
+                variant: rm.variant,
+                variant2: rm.variant2,
+                age: rm.age,
+                sitting: rm.sitting,
+                sitting_pose: rm.sitting_pose,
             });
         }
     }
@@ -838,6 +866,7 @@ pub fn apply_interpolated_poses_to_game(game: &mut Game<'_>, target_time: f64) {
             right_frame.arm_swing.animation,
             alpha,
         );
+        let duration = chosen_swing.duration.max(1);
         game.swing.current = Some(horizon_client::first_person::SwingDescription {
             hand: if chosen_swing.hand == 1 {
                 horizon_client::first_person::Hand::Off
@@ -845,11 +874,11 @@ pub fn apply_interpolated_poses_to_game(game: &mut Game<'_>, target_time: f64) {
                 horizon_client::first_person::Hand::Main
             },
             animation: horizon_client::first_person::SwingAnimation::DEFAULT,
-            duration_ticks: chosen_swing.duration.max(1),
+            duration_ticks: duration,
         });
         game.swing.animation = anim;
         game.swing.old_animation = anim;
-        game.swing.ticks = ((1.0 - anim) * chosen_swing.duration as f32).round() as i32;
+        game.swing.ticks = (anim * duration as f32).round().clamp(0.0, duration as f32) as i32;
     } else {
         game.swing.current = None;
         game.swing.animation = 0.0;
@@ -934,6 +963,14 @@ fn apply_mob_pose(live_mob: &mut super::super::Mob, pose: &InterpolatedMobPose) 
     live_mob.extra.sheared = pose.sheared;
     live_mob.extra.color = pose.color;
     live_mob.extra.size = pose.size;
+    live_mob.extra.profession =
+        horizon_client::mobs::villager::ProfessionState::from_index(pose.profession);
+    live_mob.extra.villager_level = pose.villager_level;
+    live_mob.extra.variant = pose.variant;
+    live_mob.extra.variant2 = pose.variant2;
+    live_mob.extra.age = pose.age;
+    live_mob.extra.sitting = pose.sitting;
+    live_mob.extra.sitting_pose = pose.sitting_pose;
 }
 
 pub fn interpolate_lossless_particles(
@@ -1107,20 +1144,31 @@ pub fn apply_block_rewind_to_game(game: &mut Game<'_>, from_tick: i64, to_tick: 
     });
 
     if !section_swaps.is_empty() {
-        for ((cx, cz, s_idx), target_sec) in section_swaps {
-            if let Some(live_chunk) = game.world.chunks.get(&(cx, cz)).cloned() {
+        for ((cx, cz, s_idx), target_sec) in &section_swaps {
+            if let Some(live_chunk) = game.world.chunks.get(&(*cx, *cz)).cloned() {
                 let mut chunk = (*live_chunk).clone();
-                if let Some(sec_slot) = chunk.sections.get_mut(s_idx) {
-                    *sec_slot = target_sec;
+                if let Some(sec_slot) = chunk.sections.get_mut(*s_idx) {
+                    if !Arc::ptr_eq(sec_slot, target_sec) {
+                        *sec_slot = Arc::clone(target_sec);
+                        game.world.chunks.insert((*cx, *cz), Arc::new(chunk));
+                        mark_section_dirty_3x3(game, *cx, *s_idx, *cz);
+                    }
                 }
-                game.world.chunks.insert((cx, cz), Arc::new(chunk));
-                mark_section_dirty_3x3(game, cx, s_idx, cz);
             }
         }
         game.world.revision = game.world.revision.wrapping_add(1);
     }
 
     for ((x, y, z), state_id) in coalesced_blocks {
+        let cx = x >> 4;
+        let cz = z >> 4;
+        if let Some(live_chunk) = game.world.chunks.get(&(cx, cz)) {
+            if let Some(s_idx) = live_chunk.section_index(y) {
+                if section_swaps.contains_key(&(cx, cz, s_idx)) {
+                    continue;
+                }
+            }
+        }
         let _ = game.world.set(x, y, z, BlockStateId(state_id));
     }
 

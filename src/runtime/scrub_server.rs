@@ -1109,16 +1109,58 @@ pub fn handle_server_chunk_unload(game: &mut Game<'_>, dimension: &str, chunk: [
     });
 }
 
+#[derive(Clone)]
+struct CachedServerScrub {
+    target_tick: i64,
+    result: (Arc<TimelineSnapshot>, Vec<UnloadedChunkRestore>, Vec<PathBuf>),
+}
+
+thread_local! {
+    static CACHED_SERVER_SCRUB: RefCell<Option<CachedServerScrub>> = const { RefCell::new(None) };
+}
+
+pub fn clear_cached_materialization() {
+    CACHED_SERVER_SCRUB.with(|c| *c.borrow_mut() = None);
+}
+
+pub fn pre_materialize_server_scrub(game: &Game<'_>, target_tick: i64) {
+    let already_cached = CACHED_SERVER_SCRUB.with(|c| {
+        c.borrow().as_ref().map_or(false, |m| m.target_tick == target_tick)
+    });
+    if already_cached {
+        return;
+    }
+    let _ = materialize_server_scrub(game, target_tick);
+}
+
 pub fn materialize_server_scrub(
     game: &Game<'_>,
     target_tick: i64,
 ) -> Option<(Arc<TimelineSnapshot>, Vec<UnloadedChunkRestore>, Vec<PathBuf>)> {
+    if let Some(cached) = CACHED_SERVER_SCRUB.with(|c| {
+        c.borrow().as_ref().and_then(|m| {
+            if m.target_tick == target_tick {
+                Some(m.result.clone())
+            } else {
+                None
+            }
+        })
+    }) {
+        return Some(cached);
+    }
     SERVER_JOURNAL.with(|cell| {
         let mut j = cell.borrow_mut();
         let snap = j.materialize_tick(target_tick)?;
         let (touched_unloaded, future_region_files) =
             j.unloaded.build_unloaded_restores(game, snap.game_time);
-        Some((snap, touched_unloaded, future_region_files))
+        let res = (snap, touched_unloaded, future_region_files);
+        CACHED_SERVER_SCRUB.with(|c| {
+            *c.borrow_mut() = Some(CachedServerScrub {
+                target_tick,
+                result: res.clone(),
+            });
+        });
+        Some(res)
     })
 }
 
@@ -1127,6 +1169,7 @@ pub fn get_server_snapshot_for_tick(target_tick: i64) -> Option<Arc<TimelineSnap
 }
 
 pub fn truncate_server_scrub_after(max_tick: i64) {
+    clear_cached_materialization();
     SERVER_JOURNAL.with(|cell| {
         let mut j = cell.borrow_mut();
         j.truncate_after_inner(max_tick);
@@ -1139,6 +1182,7 @@ pub fn server_scrub_time_range() -> Option<(i64, i64)> {
 }
 
 pub fn clear_server_scrub() {
+    clear_cached_materialization();
     SERVER_JOURNAL.with(|cell| {
         let mut j = cell.borrow_mut();
         j.clear_inner();

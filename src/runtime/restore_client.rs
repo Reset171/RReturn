@@ -13,10 +13,13 @@ use std::{
 };
 
 pub fn apply_client_level_rollback(game: &mut Game<'_>, slot: &str) {
+    let is_scrub = slot == "scrub";
     let t_start = std::time::Instant::now();
-    let _ = game.stop_remote_mining();
-    if let Some(r) = game.remote.as_mut() {
-        r.rreturn_reset_client_state();
+    if !is_scrub {
+        let _ = game.stop_remote_mining();
+        if let Some(r) = game.remote.as_mut() {
+            r.rreturn_reset_client_state();
+        }
     }
     for (_, sound_id) in std::mem::take(&mut game.jukebox_sounds) {
         game.audio.stop_and_release(sound_id);
@@ -39,7 +42,9 @@ pub fn apply_client_level_rollback(game: &mut Game<'_>, slot: &str) {
     game.sign_edit = None;
     game.book = None;
     game.command_block_screen = None;
-    game.mining = None;
+    if !is_scrub {
+        game.mining = None;
+    }
     game.clicks.miss_time = 0;
     game.hotbar_pop = [0; 10];
     let prev_vignette = if game.screen_fx.vignette_brightness >= 0.99 {
@@ -68,12 +73,14 @@ pub fn apply_client_level_rollback(game: &mut Game<'_>, slot: &str) {
     game.test_highlights.clear();
     game.spawner_tick_positions.clear();
     game.trial_spawner_tick_positions.clear();
-    game.particles.clear();
-    game.particles.sounds.clear();
-    game.pickups.clear();
-    game.transient_blocks.clear();
-    game.world.immediate_sections.clear();
-    game.destroying.clear();
+    if !is_scrub {
+        game.particles.clear();
+        game.particles.sounds.clear();
+        game.pickups.clear();
+        game.transient_blocks.clear();
+        game.world.immediate_sections.clear();
+        game.destroying.clear();
+    }
     game.item_activation.reset();
     game.titles = Default::default();
     game.flash = 0;

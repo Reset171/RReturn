@@ -397,15 +397,14 @@ pub fn extract_chunk_deltas(
                     }
                 }
             }
-            if overflow {
-                swaps.push(SectionSwapDelta {
-                    cx,
-                    cz,
-                    s_idx,
-                    old_section: Arc::clone(old_sec),
-                    new_section: Arc::clone(live_sec),
-                });
-            } else {
+            swaps.push(SectionSwapDelta {
+                cx,
+                cz,
+                s_idx,
+                old_section: Arc::clone(old_sec),
+                new_section: Arc::clone(live_sec),
+            });
+            if !overflow {
                 deltas.extend(sec_changes);
             }
         }
@@ -835,6 +834,13 @@ impl ScrubHistoryRing {
                 sheared: m.extra.sheared,
                 color: m.extra.color,
                 size: m.extra.size,
+                profession: m.extra.profession.index().unwrap_or(0),
+                villager_level: m.extra.villager_level,
+                variant: m.extra.variant,
+                variant2: m.extra.variant2,
+                age: m.extra.age,
+                sitting: m.extra.sitting,
+                sitting_pose: m.extra.sitting_pose,
             });
         }
 

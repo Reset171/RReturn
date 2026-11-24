@@ -563,3 +563,106 @@ def test_104_scrub_villager_ai_schedule_determinism(h):
     # Lectern must be air, and villager should not exist
     assert "air" in h.block(2, 65, 2).get("block", ""), "Lectern was not rolled back to air"
     assert not h.has_entity("@e[tag=test104_vil]"), "Villager was not rolled back"
+
+
+def test_107_scrub_seamless_continuity_mobs_particles_and_cracks(h):
+    _setup_scrub(h)
+    h.tp(0.5, 65, 0.5)
+    h.wait(10)
+
+    h.command("kill @e[tag=test107_persistent]")
+    h.command("kill @e[tag=test107_future]")
+    h.wait(2)
+
+    # 1. Spawn persistent mob existing in the baseline frame
+    h.command("summon minecraft:cow 1.5 65.0 1.5 {Tags:['test107_persistent'],NoAI:1b}")
+    h.wait(10)
+    assert h.has_entity("@e[tag=test107_persistent]"), "Persistent cow did not spawn"
+
+    cow_pos_before = _parse_pos(h.data_get_entity("@e[tag=test107_persistent,limit=1]", "Pos"))
+    assert cow_pos_before is not None
+
+    # Spawn stone block and visual particles
+    h.command("setblock 1 65 3 minecraft:stone")
+    h.command("particle minecraft:flame 1.5 66.0 1.5 0.1 0.1 0.1 0.01 20")
+    h.wait(10)
+
+    # 2. Spawn future mob (spawned later in timeline)
+    h.command("summon minecraft:pig 2.5 65.0 2.5 {Tags:['test107_future'],NoAI:1b}")
+    h.wait(8)
+    assert h.has_entity("@e[tag=test107_future]"), "Future pig did not spawn"
+
+    # 3. Scrub backward to before the future pig spawned
+    h.rreturn("scrub start")
+    h.rreturn("scrub step -10.0")
+    h.rreturn("scrub commit")
+    h.wait(4)
+
+    # 4. Verify seamless continuity:
+    # - Persistent cow must continuously exist and not die or vanish
+    assert h.has_entity("@e[tag=test107_persistent]"), "Persistent mob disappeared or died after scrub commit!"
+    cow_pos_after = _parse_pos(h.data_get_entity("@e[tag=test107_persistent,limit=1]", "Pos"))
+    assert cow_pos_after is not None
+    assert abs(cow_pos_after[0] - 1.5) < 0.2 and abs(cow_pos_after[2] - 1.5) < 0.2, (
+        f"Cow position drifted unexpectedly: {cow_pos_after}"
+    )
+
+    # - Future mob must be pruned cleanly
+    assert not h.has_entity("@e[tag=test107_future]"), "Future mob was not pruned upon scrub commit!"
+
+    # 5. Clean up
+    h.command("kill @e[tag=test107_persistent]")
+    h.command("setblock 1 65 3 minecraft:air")
+    h.wait(2)
+
+
+def test_108_scrub_villager_profession_and_mass_tnt_continuity(h):
+    _setup_scrub(h)
+    h.tp(0.5, 65, 0.5)
+    h.wait(10)
+
+    h.command("kill @e[tag=test108_vil]")
+    h.wait(2)
+
+    # 1. Spawn a baseline unemployed villager
+    h.command("summon minecraft:villager 1.5 65.0 1.5 {VillagerData:{profession:\"minecraft:none\",level:1},Tags:['test108_vil'],NoAI:1b}")
+    h.wait(30)
+    assert h.has_entity("@e[tag=test108_vil]"), "Villager did not spawn"
+    prof_before = h.data_get_entity("@e[tag=test108_vil,limit=1]", "VillagerData.profession")
+    assert "none" in prof_before.lower(), f"Expected unemployed villager, got {prof_before}"
+
+    # 2. Villager takes a profession (farmer, level 2)
+    h.command("data merge entity @e[tag=test108_vil,limit=1] {VillagerData:{profession:\"minecraft:farmer\",level:2}}")
+    h.wait(10)
+    prof_mid = h.data_get_entity("@e[tag=test108_vil,limit=1]", "VillagerData.profession")
+    assert "farmer" in prof_mid.lower(), f"Expected farmer villager, got {prof_mid}"
+
+    # 3. Fill a mass region with TNT (10x10x10 blocks = 1000 blocks across sections)
+    h.command("fill ~2 ~ ~2 ~11 ~9 ~11 minecraft:tnt")
+    h.wait(10)
+    tnt_block = h.block(2, 65, 2)
+    assert "tnt" in tnt_block.get("block", "").lower(), f"Expected TNT block, got {tnt_block}"
+
+    # 4. Scrub backward to before TNT was placed and before villager took farmer profession
+    h.rreturn("scrub start")
+    h.rreturn("scrub step -18.0")
+    h.rreturn("scrub commit")
+    h.wait(4)
+
+    # 5. Verify villager profession is seamlessly reverted to none/unemployed
+    assert h.has_entity("@e[tag=test108_vil]"), "Villager disappeared after scrub commit"
+    prof_after = h.data_get_entity("@e[tag=test108_vil,limit=1]", "VillagerData.profession")
+    assert "none" in prof_after.lower(), f"Expected villager profession reverted to none, got {prof_after}"
+    lvl_after = h.data_get_entity("@e[tag=test108_vil,limit=1]", "VillagerData.level")
+    assert "1" in lvl_after, f"Expected villager level 1, got {lvl_after}"
+
+    # 6. Verify TNT fill is cleanly rolled back without holes
+    block_restored = h.block(2, 65, 2)
+    assert "tnt" not in block_restored.get("block", "").lower(), f"Expected TNT block removed, got {block_restored}"
+
+    # 7. Clean up
+    h.command("kill @e[tag=test108_vil]")
+    h.command("fill ~2 ~ ~2 ~11 ~9 ~11 minecraft:air")
+    h.wait(2)
+
+

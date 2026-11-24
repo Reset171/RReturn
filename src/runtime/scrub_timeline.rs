@@ -397,14 +397,15 @@ pub fn extract_chunk_deltas(
                     }
                 }
             }
-            swaps.push(SectionSwapDelta {
-                cx,
-                cz,
-                s_idx,
-                old_section: Arc::clone(old_sec),
-                new_section: Arc::clone(live_sec),
-            });
-            if !overflow {
+            if overflow {
+                swaps.push(SectionSwapDelta {
+                    cx,
+                    cz,
+                    s_idx,
+                    old_section: Arc::clone(old_sec),
+                    new_section: Arc::clone(live_sec),
+                });
+            } else {
                 deltas.extend(sec_changes);
             }
         }

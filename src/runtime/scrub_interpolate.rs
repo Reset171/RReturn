@@ -1094,9 +1094,14 @@ pub fn apply_block_rewind_to_game(game: &mut Game<'_>, from_tick: i64, to_tick: 
     }
 
     let current_dim = game.dim;
-    let mut coalesced_blocks: FxHashMap<(i32, i32, i32), u32> = FxHashMap::default();
+    let min_y = game.world.shape.min_y;
+    let num_sections = game.world.layout().sections();
+    let is_backward = to_tick < from_tick;
+
+    let mut coalesced_blocks: FxHashMap<(i32, i32, i32), (u32, i64)> = FxHashMap::default();
     let mut section_swaps: FxHashMap<(i32, i32, usize), Arc<horizon_client::chunk::Section>> =
         FxHashMap::default();
+    let mut swap_ticks: FxHashMap<(i32, i32, usize), i64> = FxHashMap::default();
     let mut biome_swaps: FxHashMap<(i32, i32, usize), Arc<horizon_client::chunk::Section>> =
         FxHashMap::default();
 
@@ -1104,21 +1109,25 @@ pub fn apply_block_rewind_to_game(game: &mut Game<'_>, from_tick: i64, to_tick: 
         if ring.frames.is_empty() {
             return;
         }
-        if to_tick < from_tick {
+        if is_backward {
             for frame in ring.frames.iter().rev() {
                 if frame.game_time <= to_tick {
                     break;
                 }
                 if frame.game_time <= from_tick && frame.dim == current_dim {
                     for swap in frame.section_swaps.iter().rev() {
-                        section_swaps
-                            .insert((swap.cx, swap.cz, swap.s_idx), Arc::clone(&swap.old_section));
+                        let key = (swap.cx, swap.cz, swap.s_idx);
+                        section_swaps.insert(key, Arc::clone(&swap.old_section));
+                        swap_ticks.insert(key, frame.game_time);
                     }
                     for b in frame.biome_deltas.iter().rev() {
                         biome_swaps.insert((b.cx, b.cz, b.s_idx), Arc::clone(&b.old_section));
                     }
                     for delta in frame.block_deltas.iter().rev() {
-                        coalesced_blocks.insert((delta.x, delta.y, delta.z), delta.old_state);
+                        coalesced_blocks.insert(
+                            (delta.x, delta.y, delta.z),
+                            (delta.old_state, frame.game_time),
+                        );
                     }
                 }
             }
@@ -1129,14 +1138,18 @@ pub fn apply_block_rewind_to_game(game: &mut Game<'_>, from_tick: i64, to_tick: 
                 }
                 if frame.game_time > from_tick && frame.dim == current_dim {
                     for swap in frame.section_swaps.iter() {
-                        section_swaps
-                            .insert((swap.cx, swap.cz, swap.s_idx), Arc::clone(&swap.new_section));
+                        let key = (swap.cx, swap.cz, swap.s_idx);
+                        section_swaps.insert(key, Arc::clone(&swap.new_section));
+                        swap_ticks.insert(key, frame.game_time);
                     }
                     for b in frame.biome_deltas.iter() {
                         biome_swaps.insert((b.cx, b.cz, b.s_idx), Arc::clone(&b.new_section));
                     }
                     for delta in frame.block_deltas.iter() {
-                        coalesced_blocks.insert((delta.x, delta.y, delta.z), delta.new_state);
+                        coalesced_blocks.insert(
+                            (delta.x, delta.y, delta.z),
+                            (delta.new_state, frame.game_time),
+                        );
                     }
                 }
             }
@@ -1144,6 +1157,7 @@ pub fn apply_block_rewind_to_game(game: &mut Game<'_>, from_tick: i64, to_tick: 
     });
 
     if !section_swaps.is_empty() {
+        let mut any_swapped = false;
         for ((cx, cz, s_idx), target_sec) in &section_swaps {
             if let Some(live_chunk) = game.world.chunks.get(&(*cx, *cz)).cloned() {
                 let mut chunk = (*live_chunk).clone();
@@ -1152,20 +1166,30 @@ pub fn apply_block_rewind_to_game(game: &mut Game<'_>, from_tick: i64, to_tick: 
                         *sec_slot = Arc::clone(target_sec);
                         game.world.chunks.insert((*cx, *cz), Arc::new(chunk));
                         mark_section_dirty_3x3(game, *cx, *s_idx, *cz);
+                        any_swapped = true;
                     }
                 }
             }
         }
-        game.world.revision = game.world.revision.wrapping_add(1);
+        if any_swapped {
+            game.world.revision = game.world.revision.wrapping_add(1);
+        }
     }
 
-    for ((x, y, z), state_id) in coalesced_blocks {
-        let cx = x >> 4;
-        let cz = z >> 4;
-        if let Some(live_chunk) = game.world.chunks.get(&(cx, cz)) {
-            if let Some(s_idx) = live_chunk.section_index(y) {
-                if section_swaps.contains_key(&(cx, cz, s_idx)) {
-                    continue;
+    for ((x, y, z), (state_id, delta_tick)) in coalesced_blocks {
+        let rel_y = y - min_y;
+        if rel_y >= 0 {
+            let s_idx = (rel_y >> 4) as usize;
+            if s_idx < num_sections {
+                let cx = x >> 4;
+                let cz = z >> 4;
+                if let Some(&swap_tick) = swap_ticks.get(&(cx, cz, s_idx)) {
+                    if is_backward && delta_tick >= swap_tick {
+                        continue;
+                    }
+                    if !is_backward && delta_tick <= swap_tick {
+                        continue;
+                    }
                 }
             }
         }

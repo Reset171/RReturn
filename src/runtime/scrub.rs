@@ -10,7 +10,7 @@ use super::scrub_interpolate::{
 };
 use super::scrub_perf::*;
 use super::scrub_server::{
-    materialize_server_scrub, pre_materialize_server_scrub, server_scrub_time_range, truncate_server_scrub_after,
+    materialize_server_scrub, server_scrub_time_range, truncate_server_scrub_after,
 };
 use super::scrub_timeline::{with_scrub_ring, with_scrub_ring_mut};
 use super::snapshots::{BreathSnapshot, DragonSnapshot, RocketSnapshot, TridentSnapshot};
@@ -581,11 +581,6 @@ pub fn on_frame_render_pre(game: &mut Game<'_>, _world_partial: f32, _partial: f
         apply_block_rewind_to_game(game, old_applied, new_applied);
         block_rewind_us = t_br_0.elapsed().as_micros() as u64;
         apply_timeline_sounds_to_game(game, old_applied, new_applied, accel);
-        if let Some(server) = &game.integrated {
-            server.call(move |srv| {
-                pre_materialize_server_scrub(srv, new_applied);
-            });
-        }
     }
     let total_render_us = t_frame_start.elapsed().as_micros() as u64;
     record_frame_render_perf(

@@ -326,13 +326,6 @@ pub fn apply_level_snapshot_in_place(
         bench_add_mobs(snap.mobs.len());
         game.mobs.clone_from(&snap.mobs);
         for m in game.mobs.iter_mut() {
-            m.previous = m.position;
-            m.previous_yaw = m.yaw;
-            m.previous_head_pitch = m.head_pitch;
-            m.previous_body_yaw = m.body_yaw;
-            m.previous_head_yaw = m.head_yaw;
-            m.velocity = Default::default();
-            m.extra.previous_velocity = Default::default();
             m.extra.static_env_stamp = None;
             m.needs_sync = true;
             m.sync_position = true;

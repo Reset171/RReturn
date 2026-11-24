@@ -21,6 +21,7 @@ pub fn restore_player_motion(
     gs: &GuestSnapshot,
     policy: &RollbackPolicy,
     snap_game_time: i64,
+    is_scrub: bool,
 ) {
     let keep_pos = (
         m.position,
@@ -92,6 +93,13 @@ pub fn restore_player_motion(
             m.piston = keep_mot.11;
             m.impulse = keep_mot.12;
         }
+        if is_scrub {
+            m.sprint_input = Default::default();
+            let _ = m.set_sprinting(false);
+            if let Ok(spd) = m.attribute("minecraft:movement_speed") {
+                m.speed = spd as f32;
+            }
+        }
         if !policy.player_health {
             let _ = m.set_health(keep_hp.0.max(1.0), false);
             let _ = m.internal_set_absorption(keep_hp.1);
@@ -138,7 +146,14 @@ pub fn restore_player_motion(
         if policy.player_motion {
             m.velocity = gs.velocity;
             m.fall_distance = gs.fall_distance;
-            let _ = m.set_sprinting(gs.sprinting);
+            let want_sprint = if is_scrub { false } else { gs.sprinting };
+            let _ = m.set_sprinting(want_sprint);
+            if is_scrub {
+                m.sprint_input = Default::default();
+            }
+            if let Ok(spd) = m.attribute("minecraft:movement_speed") {
+                m.speed = spd as f32;
+            }
             m.shift_key_down = gs.sneaking;
             m.local_crouching = gs.sneaking;
             m.fall_flying = gs.fall_flying;
@@ -397,8 +412,9 @@ pub fn restore_players_on_rollback(
                         g.abilities.may_fly = gs.allow_flight;
                     }
                     if policy.player_motion {
-                        g.sprinting = gs.sprinting;
-                        g.client_sprinting = gs.sprinting;
+                        let want_sprint = if is_scrub { false } else { gs.sprinting };
+                        g.sprinting = want_sprint;
+                        g.client_sprinting = want_sprint;
                         g.sneaking = gs.sneaking;
                         g.fall_flying = gs.fall_flying;
                         g.client_is_floating = false;
@@ -547,7 +563,7 @@ pub fn restore_players_on_rollback(
                         invulnerable_time: 0,
                     });
                     let synced_attrs = g.motion.as_mut().map(|m| {
-                        restore_player_motion(m, gs, policy, snap.game_time);
+                        restore_player_motion(m, gs, policy, snap.game_time, is_scrub);
                         horizon_client::lan::attributes::syncable(&m.attributes)
                     });
                     if let Some(values) = synced_attrs
@@ -567,7 +583,7 @@ pub fn restore_players_on_rollback(
                     if gs.sneaking {
                         shared_flags |= 0x02;
                     }
-                    if gs.sprinting {
+                    if !is_scrub && gs.sprinting {
                         shared_flags |= 0x08;
                     }
                     if gs.fall_flying {
@@ -929,7 +945,7 @@ pub fn restore_players_on_rollback(
             game.cooldowns = gs.cooldowns.clone();
         }
         if let Some(p) = game.player.as_mut() {
-            restore_player_motion(p, gs, policy, snap.game_time);
+            restore_player_motion(p, gs, policy, snap.game_time, is_scrub);
             p.client_side = true;
         }
         if policy.player_inventory {

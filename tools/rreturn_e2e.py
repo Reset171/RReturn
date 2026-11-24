@@ -144,6 +144,7 @@ from tools.tests.test_scrubbing_advanced import (
     test_104_scrub_villager_ai_schedule_determinism,
     test_107_scrub_seamless_continuity_mobs_particles_and_cracks,
     test_108_scrub_villager_profession_and_mass_tnt_continuity,
+    test_109_scrub_commit_no_sprint_effect,
 )
 
 HEAVY_WORLD_GROUPS = {"chunks", "dimensions", "portals"}
@@ -294,6 +295,7 @@ def build_test_catalog():
         (106, "Test 106: Logs Directory Structure", "world_settings", test_106_logs_directory_structure),
         (107, "Test 107: Scrub Seamless Continuity Mobs Particles Cracks", "scrubbing", test_107_scrub_seamless_continuity_mobs_particles_and_cracks),
         (108, "Test 108: Scrub Villager Profession and Mass TNT Continuity", "scrubbing", test_108_scrub_villager_profession_and_mass_tnt_continuity),
+        (109, "Test 109: Scrub Commit No Sprint Effect", "scrubbing", test_109_scrub_commit_no_sprint_effect),
     ]
 
 

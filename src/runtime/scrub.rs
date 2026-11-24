@@ -594,6 +594,22 @@ pub fn on_frame_render_pre(game: &mut Game<'_>, _world_partial: f32, _partial: f
     );
 }
 
+fn clear_sprint_on_commit(game: &mut Game<'_>) {
+    if let Some(p) = game.player.as_mut() {
+        p.sprint_input = Default::default();
+        let _ = p.set_sprinting(false);
+        if let Ok(spd) = p.attribute("minecraft:movement_speed") {
+            p.speed = spd as f32;
+        }
+    }
+    game.view.fov_modifier = 1.0;
+    game.view.old_fov_modifier = 1.0;
+    game.avatar.walk_dist = 0.0;
+    game.avatar.walk_dist_o = 0.0;
+    game.avatar.bob = 0.0;
+    game.avatar.bob_o = 0.0;
+}
+
 pub fn commit_scrub(game: &mut Game<'_>) {
     let mut s = match session_lock().lock() {
         Ok(guard) => guard,
@@ -756,6 +772,7 @@ pub fn commit_scrub(game: &mut Game<'_>) {
             r.last_world_revision = game.world.revision;
         });
     }
+    clear_sprint_on_commit(game);
 }
 
 pub fn cancel_scrub(game: &mut Game<'_>) {

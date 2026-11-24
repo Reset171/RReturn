@@ -666,3 +666,77 @@ def test_108_scrub_villager_profession_and_mass_tnt_continuity(h):
     h.wait(2)
 
 
+def test_109_scrub_commit_no_sprint_effect(h):
+    _setup_scrub(h)
+    h.command("effect clear @s")
+    h.command("attribute @s minecraft:movement_speed base set 0.1")
+    h.raw_send("options-set fovEffectScale 1.0")
+    h.command("fill -2 64 -2 2 64 25 minecraft:stone")
+    h.command("fill -2 65 -2 2 68 25 minecraft:air")
+    h.command("tp @s 0.5 65.0 0.5 0 0")
+    h.wait(10)
+
+    # 1. Sprint forward to record sprinting state + expanded FOV into scrub timeline
+    try:
+        h.raw_send("key w down")
+        h.raw_send("key ctrl down")
+        h.wait(12)
+        started = h.state().get("player", {})
+        assert started.get("sprinting", False), f"Player did not start sprinting: {started}"
+        assert started.get("fov_modifier", 1.0) > 1.05, f"FOV did not expand while sprinting: {started}"
+    finally:
+        h.raw_send("key ctrl up")
+        h.raw_send("key w up")
+    h.wait(6)
+
+    # 2. Scrub backwards into the active sprinting window
+    res_s = h.rreturn("scrub start")
+    assert "started" in str(res_s).lower(), f"Scrub did not start: {res_s}"
+    h.rreturn("scrub step -10.0")
+
+    # 3. Commit scrub and verify sprint state, sprint speed modifier, and FOV modifier are reset immediately
+    res_c = h.rreturn("scrub commit")
+    assert "committed" in str(res_c).lower(), f"Scrub did not commit: {res_c}"
+
+    p_after = h.state().get("player", {})
+    assert not p_after.get("sprinting", False), f"Player still sprinting right after scrub commit: {p_after}"
+    fov_after = p_after.get("fov_modifier", 1.0)
+    assert fov_after <= 1.02, f"Expected normal FOV (<=1.02) right after scrub commit, got {fov_after}: {p_after}"
+
+    h.wait(2)
+    p_settled = h.state().get("player", {})
+    assert not p_settled.get("sprinting", False), f"Player sprinting remained active after commit: {p_settled}"
+    assert p_settled.get("fov_modifier", 1.0) <= 1.02, (
+        f"Expected normal FOV after settling, got {p_settled.get('fov_modifier')}"
+    )
+
+    attr_res = str(h.command("attribute @s minecraft:movement_speed get"))
+    nums = re.findall(r"[-+]?\d*\.\d+|\d+", attr_res)
+    spd = float(nums[-1]) if nums else 0.0
+    assert spd <= 0.105, f"Server movement_speed still includes sprinting modifier: {attr_res}"
+
+    # 4. Also test committing at anchor after entering scrub while sprinting
+    h.command("tp @s 0.5 65.0 0.5 0 0")
+    h.wait(4)
+    try:
+        h.raw_send("key w down")
+        h.raw_send("key ctrl down")
+        h.wait(10)
+        h.rreturn("scrub start")
+    finally:
+        h.raw_send("key ctrl up")
+        h.raw_send("key w up")
+    h.rreturn("scrub commit")
+    p_anchor = h.state().get("player", {})
+    assert not p_anchor.get("sprinting", False), f"Player sprinting remained active after anchor commit: {p_anchor}"
+    assert p_anchor.get("fov_modifier", 1.0) <= 1.02, (
+        f"Expected normal FOV after anchor commit, got {p_anchor.get('fov_modifier')}"
+    )
+
+    # Cleanup runway
+    h.command("fill -2 64 -2 2 64 25 minecraft:air")
+    h.tp(0.5, 65, 0.5)
+    h.wait(2)
+
+
+

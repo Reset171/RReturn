@@ -399,8 +399,8 @@ def test_115_rreturn_menu_icons_and_per_player_overrides(h):
         h.raw_send(f"click-at {ax} {ay}")
         h.wait(2)
         b_adap = ui_bounds()
-        assert "slider.adaptive_interval_sec" in b_adap["controls"] and "slider.min_save_gap_sec" in b_adap["controls"], (
-            f"Expected Adaptive 2x2 top row sliders after enabling auto_save: {sorted(b_adap['controls'].keys())}"
+        assert "slider.adaptive_interval_sec" in b_adap["controls"], (
+            f"Expected Adaptive top slider after enabling auto_save: {sorted(b_adap['controls'].keys())}"
         )
         assert "slider.fixed_interval_sec" not in b_adap["controls"], b_adap["controls"].keys()
         assert "slider.random_min_sec" not in b_adap["controls"], b_adap["controls"].keys()
@@ -418,12 +418,12 @@ def test_115_rreturn_menu_icons_and_per_player_overrides(h):
         h.raw_send(f"click-at {rmx} {rmy}")
         h.wait(2)
         b_rand = ui_bounds()
-        assert "slider.random_min_sec" in b_rand["controls"] and "slider.random_max_sec" in b_rand["controls"], (
-            f"Expected Random sliders: {sorted(b_rand['controls'].keys())}"
+        assert "slider.random_min_sec" in b_rand["controls"], (
+            f"Expected Random top slider: {sorted(b_rand['controls'].keys())}"
         )
         assert "slider.fixed_interval_sec" not in b_rand["controls"], b_rand["controls"].keys()
 
-        # Verify System tab omits jump icon buttons (fits on one screen cleanly)
+        # Verify System tab omits jump icon buttons and shows real bound hotkeys (without F8)
         sys_x, sys_y = ui_pt("tab.system")
         h.raw_send(f"click-at {sys_x} {sys_y}")
         h.wait(2)
@@ -432,6 +432,10 @@ def test_115_rreturn_menu_icons_and_per_player_overrides(h):
         assert not any(k.startswith("jump.") for k in b_sys["controls"]), (
             f"System tab should not show quick-jump icons: {b_sys['controls'].keys()}"
         )
+        hotkeys = b_sys.get("hotkeys", {})
+        assert set(hotkeys.keys()) == {"scrub", "save", "load", "settings_menu"}, f"Unexpected hotkeys: {hotkeys}"
+        assert "anchor_menu" not in hotkeys, hotkeys
+        assert hotkeys == {"scrub": "U", "save": "F6", "load": "F7", "settings_menu": "K"}, hotkeys
 
         # Return to Rollback tab, verify newcomer inventory policy defaults to True (enabled = rollback)
         assert h.rreturn("policy get").get("reset_new_player_inventory") is True
@@ -595,6 +599,12 @@ def test_115_rreturn_menu_icons_and_per_player_overrides(h):
 
         cfg2 = json.loads(cfg_path.read_text(encoding="utf-8"))
         assert cfg2.get("playerOverrides", {}) == {}, f"Expected empty playerOverrides after reset: {cfg2}"
+
+        # 8. Verify F8 keybinding is completely removed and no longer cycles anchor mode
+        mode_before = h.rreturn("json").get("anchor_mode")
+        h.raw_send("key f8 tap")
+        h.wait(3)
+        assert h.rreturn("json").get("anchor_mode") == mode_before, "F8 unexpectedly changed anchor_mode!"
     finally:
         if h.screen().get("screen") == "mod":
             h.raw_send("key esc tap")

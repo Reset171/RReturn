@@ -2,7 +2,9 @@ use super::super::Game;
 use super::policy::OverrideValue;
 use super::settings_catalog::{UiGroup, UiTab};
 use super::types::AnchorMode;
+use super::types::MOD_ID;
 use horizon_client::hud::HudBatch;
+use horizon_client::keybinds;
 use std::collections::HashMap;
 use std::time::Instant;
 
@@ -93,6 +95,7 @@ pub struct SettingsUiState {
     pub window_bounds: [f32; 4],
     pub selected_player: Option<u128>,
     pub player_scope_scrub: bool,
+    pub bound_hotkeys: HashMap<String, String>,
     pub section_offsets: HashMap<String, f32>,
     pub pending_jump_section: Option<String>,
     pub pending_open: bool,
@@ -118,6 +121,7 @@ impl Default for SettingsUiState {
             window_bounds: [0.0; 4],
             selected_player: None,
             player_scope_scrub: false,
+            bound_hotkeys: HashMap::new(),
             section_offsets: HashMap::new(),
             pending_jump_section: None,
             pending_open: false,
@@ -126,6 +130,59 @@ impl Default for SettingsUiState {
             pending_scrub_sync: None,
         }
     }
+}
+
+fn format_single_key_name(key: &str) -> String {
+    let raw = keybinds::display_name(key).plain();
+    if raw != key {
+        return raw;
+    }
+    if key == "key.keyboard.unknown" {
+        return "None".to_owned();
+    }
+    if let Some(rest) = key.strip_prefix("key.keyboard.") {
+        return rest
+            .split('.')
+            .filter(|s| !s.is_empty())
+            .map(|seg| {
+                let mut ch = seg.chars();
+                match ch.next() {
+                    Some(c) => format!("{}{}", c.to_uppercase(), ch.as_str()),
+                    None => String::new(),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+    }
+    raw
+}
+
+pub fn format_binding_parts(key: &str, mods: u32) -> (String, bool) {
+    if key.is_empty() || key == "key.keyboard.unknown" {
+        return (format_single_key_name("key.keyboard.unknown"), false);
+    }
+    let mut parts: Vec<String> = Vec::with_capacity(4);
+    for (bit, mod_key, fallback) in [
+        (1u32, "key.keyboard.left.shift", "Shift"),
+        (2u32, "key.keyboard.left.control", "Ctrl"),
+        (4u32, "key.keyboard.left.alt", "Alt"),
+        (8u32, "key.keyboard.left.super", "Super"),
+    ] {
+        if (mods & bit) != 0 {
+            let lbl = keybinds::display_name(mod_key).plain();
+            parts.push(if lbl == mod_key { fallback.to_owned() } else { lbl });
+        }
+    }
+    parts.push(format_single_key_name(key));
+    (parts.join(" + "), true)
+}
+
+pub fn format_mod_binding(game: &Game<'_>, id: &str, default_key: &str) -> (String, bool) {
+    let (key, mods) = game
+        .mod_key(MOD_ID, id)
+        .map(|(k, m)| (k, m.bits))
+        .unwrap_or_else(|| (default_key.to_owned(), 0));
+    format_binding_parts(&key, mods)
 }
 
 pub fn hit_in_rect(mx: f32, my: f32, r: [f32; 4]) -> bool {

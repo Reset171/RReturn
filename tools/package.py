@@ -189,12 +189,6 @@ impl mod_api::Hooks for Mod {
                 .context(KeyConflictContext::InGame),
         );
         r.register_key_mapping(
-            KeyRegistration::new("anchor_menu", "key.keyboard.f8")
-                .label("key.rreturn.anchor_menu")
-                .category("key.category.rreturn")
-                .context(KeyConflictContext::InGame),
-        );
-        r.register_key_mapping(
             KeyRegistration::new("settings_menu", "key.keyboard.k")
                 .label("key.rreturn.settings_menu")
                 .category("key.category.rreturn")

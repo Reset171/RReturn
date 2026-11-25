@@ -312,7 +312,13 @@ pub fn draw_scrub_hud(game: &Game<'_>, draw: &mut HudBatch) {
         draw_rounded_border(game, draw, thumb_rect, thumb_r, UI_BLUE);
     }
 
-    let hint = fit_text(game, draw, &tr("rreturn.scrub_hud.hint"), bar_w - 24.0);
+    let (scrub_lbl, scrub_bound) = format_mod_binding(game, "scrub", "key.keyboard.u");
+    let apply_keys = if scrub_bound {
+        format!("Enter / {}", scrub_lbl)
+    } else {
+        "Enter".to_owned()
+    };
+    let hint = fit_text(game, draw, &tr_args("rreturn.scrub_hud.hint", &[&apply_keys]), bar_w - 24.0);
     let hint_w = game.native_text_width(draw, &hint);
     let hint_x = (bar_x + (bar_w - hint_w) * 0.5).floor();
     game.native_text(draw, &hint, [hint_x, bar_y + 41.0], UI_TEXT_MUTED, false);

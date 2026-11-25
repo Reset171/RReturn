@@ -88,6 +88,7 @@ pub fn settings_ui_bounds_json() -> String {
             "max_scroll_y": ui.max_scroll_y,
             "selected_player": ui.selected_player.map(|u| format!("{:032x}", u)),
             "player_scope_scrub": ui.player_scope_scrub,
+            "hotkeys": ui.bound_hotkeys,
             "controls": controls,
         })
         .to_string()
@@ -845,10 +846,10 @@ pub fn handle_screen_key_pressed(
     if !is_settings_ui_open(game) {
         return;
     }
-    let settings_key = game
+    let (settings_key, settings_mods) = game
         .mod_key(MOD_ID, "settings_menu")
-        .map(|(k, _)| k)
-        .unwrap_or_else(|| "key.keyboard.k".to_owned());
+        .map(|(k, m)| (k, m.bits & 7))
+        .unwrap_or_else(|| ("key.keyboard.k".to_owned(), 0));
 
     if key == "key.keyboard.escape" {
         let cleared = UI_STATE.with(|cell| {
@@ -887,7 +888,11 @@ pub fn handle_screen_key_pressed(
         }
         return;
     }
-    if key == settings_key {
+    if !settings_key.is_empty()
+        && settings_key != "key.keyboard.unknown"
+        && key == settings_key
+        && (settings_mods == 0 || ((modifiers & 7) & settings_mods) == settings_mods)
+    {
         UI_STATE.with(|cell| cell.borrow_mut().pending_close = true);
         return;
     }

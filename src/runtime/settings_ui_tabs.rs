@@ -545,7 +545,7 @@ pub fn draw_system_tab(
     y += draw_grouped_card_rows(game, draw, ui, &entries, x, y, w, list_bounds, mouse, regions);
     y += 8.0;
 
-    // Keybindings reference group
+    // Keybindings reference group (resolved from live mod key mappings)
     ui.section_offsets
         .insert("sys_keys".to_owned(), (y - start_y).max(0.0));
     if y + 16.0 >= ly - 2.0 && y <= ly + list_bounds[3] + 2.0 {
@@ -553,25 +553,41 @@ pub fn draw_system_tab(
     }
     y += 16.0;
     let keys_list = [
-        ("key.rreturn.scrub", "U"),
-        ("key.rreturn.save", "F6"),
-        ("key.rreturn.load", "F7"),
-        ("key.rreturn.anchor_menu", "F8"),
-        ("key.rreturn.settings_menu", "K"),
+        ("scrub", "key.rreturn.scrub", "key.keyboard.u"),
+        ("save", "key.rreturn.save", "key.keyboard.f6"),
+        ("load", "key.rreturn.load", "key.keyboard.f7"),
+        ("settings_menu", "key.rreturn.settings_menu", "key.keyboard.k"),
     ];
+    let resolved_keys: Vec<(&'static str, String, bool)> = keys_list
+        .iter()
+        .map(|&(id, label_key, default_key)| {
+            let (bind_str, is_bound) = format_mod_binding(game, id, default_key);
+            ui.bound_hotkeys.insert(id.to_owned(), bind_str.clone());
+            (label_key, bind_str, is_bound)
+        })
+        .collect();
     let kh = 22.0;
-    let kt_h = keys_list.len() as f32 * kh;
+    let kt_h = resolved_keys.len() as f32 * kh;
     if y + kt_h >= ly - 4.0 && y <= ly + list_bounds[3] + 4.0 {
         draw_rounded_rect(game, draw, [x, y, w, kt_h], 8.0, UI_CARD_BG);
-        for (i, &(klabel, kbind)) in keys_list.iter().enumerate() {
+        for (i, (klabel, kbind, is_bound)) in resolved_keys.iter().enumerate() {
             let ky = y + i as f32 * kh;
             if ky + kh >= ly - 2.0 && ky <= ly + list_bounds[3] + 2.0 {
                 if i > 0 {
                     game.native_fill(draw, [x + 12.0, ky, w - 24.0, 1.0], UI_DIVIDER);
                 }
-                let kw = (game.native_text_width(draw, kbind) + 12.0).max(24.0);
+                let max_kw = (w * 0.45).max(48.0);
+                let fit_bind = fit_text(game, draw, kbind, max_kw - 10.0);
+                let kw = (game.native_text_width(draw, &fit_bind) + 12.0).clamp(24.0, max_kw);
                 let kr = [x + w - kw - 12.0, ky + 4.0, kw, 14.0];
-                draw_pill(game, draw, kr, kbind, UI_PILL_BG, UI_TEXT_PRI);
+                draw_pill(
+                    game,
+                    draw,
+                    kr,
+                    &fit_bind,
+                    UI_PILL_BG,
+                    if *is_bound { UI_TEXT_PRI } else { UI_TEXT_MUTED },
+                );
                 game.native_text(draw, &fit_text(game, draw, &tr(klabel), (kr[0] - x - 18.0).max(20.0)), [x + 12.0, ky + 7.0], UI_TEXT_PRI, false);
             }
         }

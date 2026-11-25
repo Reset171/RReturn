@@ -38,10 +38,26 @@ thread_local! {
     static SUPPRESS_SCREEN_CHAR: RefCell<bool> = const { RefCell::new(false) };
 }
 
-fn is_scrub_key_match(key: &str, scrub_key: &str) -> bool {
-    key == scrub_key
-        || key.eq_ignore_ascii_case("key.keyboard.u")
-        || key.eq_ignore_ascii_case("u")
+fn mod_key_binding(game: &Game<'_>, id: &str, default_key: &str) -> (String, u32) {
+    game.mod_key(MOD_ID, id)
+        .map(|(k, m)| (k, m.bits & 7))
+        .unwrap_or_else(|| (default_key.to_owned(), 0))
+}
+
+fn is_bound_key_match(key: &str, cur_mods: u32, bound_key: &str, bound_mods: u32) -> bool {
+    !bound_key.is_empty()
+        && bound_key != "key.keyboard.unknown"
+        && key == bound_key
+        && (bound_mods == 0 || (cur_mods & bound_mods) == bound_mods)
+}
+
+fn is_scrub_key_match(key: &str, cur_mods: u32, scrub_key: &str, scrub_mods: u32) -> bool {
+    if scrub_key.is_empty() || scrub_key == "key.keyboard.unknown" {
+        return false;
+    }
+    let key_ok = key == scrub_key
+        || (scrub_key.eq_ignore_ascii_case("key.keyboard.u") && key.eq_ignore_ascii_case("u"));
+    key_ok && (scrub_mods == 0 || (cur_mods & scrub_mods) == scrub_mods)
 }
 
 fn execute_screen_hotkey_action(game: &mut Game<'_>, act: ScreenHotkeyAction) {
@@ -88,13 +104,11 @@ pub fn handle_screen_key_pressed_any(
     {
         return false;
     }
-    let scrub_key = game
-        .mod_key(MOD_ID, "scrub")
-        .map(|(k, _)| k)
-        .unwrap_or_else(|| "key.keyboard.u".to_owned());
+    let (scrub_key, scrub_mods) = mod_key_binding(game, "scrub", "key.keyboard.u");
+    let cur_mods = modifiers & 7;
 
     if is_scrubbing() {
-        if !repeat && is_scrub_key_match(key, &scrub_key) {
+        if !repeat && is_scrub_key_match(key, cur_mods, &scrub_key, scrub_mods) {
             SUPPRESS_SCREEN_CHAR.with(|c| *c.borrow_mut() = true);
             PENDING_SCREEN_HOTKEY.with(|c| {
                 *c.borrow_mut() = Some((key.to_owned(), ScreenHotkeyAction::CommitScrub))
@@ -139,30 +153,24 @@ pub fn handle_screen_key_pressed_any(
     if repeat {
         return false;
     }
-    let save_key = game
-        .mod_key(MOD_ID, "save")
-        .map(|(k, _)| k)
-        .unwrap_or_else(|| "key.keyboard.f6".to_owned());
-    let load_key = game
-        .mod_key(MOD_ID, "load")
-        .map(|(k, _)| k)
-        .unwrap_or_else(|| "key.keyboard.f7".to_owned());
+    let (save_key, save_mods) = mod_key_binding(game, "save", "key.keyboard.f6");
+    let (load_key, load_mods) = mod_key_binding(game, "load", "key.keyboard.f7");
 
-    if key == save_key {
+    if is_bound_key_match(key, cur_mods, &save_key, save_mods) {
         PENDING_SCREEN_HOTKEY.with(|c| {
             *c.borrow_mut() = Some((key.to_owned(), ScreenHotkeyAction::SaveCheckpoint))
         });
         *canceled = true;
         return true;
     }
-    if key == load_key {
+    if is_bound_key_match(key, cur_mods, &load_key, load_mods) {
         PENDING_SCREEN_HOTKEY.with(|c| {
             *c.borrow_mut() = Some((key.to_owned(), ScreenHotkeyAction::LoadCheckpoint))
         });
         *canceled = true;
         return true;
     }
-    if is_scrub_key_match(key, &scrub_key) {
+    if is_scrub_key_match(key, cur_mods, &scrub_key, scrub_mods) {
         let ctrl = (modifiers & 2) != 0;
         let focused = is_text_input_focused(game);
         if !focused || ctrl {
@@ -312,12 +320,10 @@ pub fn handle_key(game: &mut Game<'_>, key: &str, action: mod_api::KeyAction) {
         return;
     }
 
-    let scrub_key = game
-        .mod_key(MOD_ID, "scrub")
-        .map(|(k, _)| k)
-        .unwrap_or_else(|| "key.keyboard.u".to_owned());
+    let (scrub_key, scrub_mods) = mod_key_binding(game, "scrub", "key.keyboard.u");
+    let cur_mods = game.modifiers().bits & 7;
 
-    if is_scrub_key_match(key, &scrub_key) && matches!(action, mod_api::KeyAction::Release) {
+    if is_scrub_key_match(key, cur_mods, &scrub_key, scrub_mods) && matches!(action, mod_api::KeyAction::Release) {
         if is_scrubbing() && is_held_scrub(300) {
             commit_scrub(game);
         }
@@ -330,7 +336,7 @@ pub fn handle_key(game: &mut Game<'_>, key: &str, action: mod_api::KeyAction) {
         return;
     }
 
-    if is_scrub_key_match(key, &scrub_key) {
+    if is_scrub_key_match(key, cur_mods, &scrub_key, scrub_mods) {
         let ctrl = game.has_control_down_with_quirk();
         if !with_state(|st| st.scrub_enabled) {
             if matches!(action, mod_api::KeyAction::Press)
@@ -381,53 +387,21 @@ pub fn handle_key(game: &mut Game<'_>, key: &str, action: mod_api::KeyAction) {
     if !pressed {
         return;
     }
-    let save_key = game
-        .mod_key(MOD_ID, "save")
-        .map(|(k, _)| k)
-        .unwrap_or_else(|| "key.keyboard.f6".to_owned());
-    let load_key = game
-        .mod_key(MOD_ID, "load")
-        .map(|(k, _)| k)
-        .unwrap_or_else(|| "key.keyboard.f7".to_owned());
-    let mode_key = game
-        .mod_key(MOD_ID, "anchor_menu")
-        .map(|(k, _)| k)
-        .unwrap_or_else(|| "key.keyboard.f8".to_owned());
-    let settings_key = game
-        .mod_key(MOD_ID, "settings_menu")
-        .map(|(k, _)| k)
-        .unwrap_or_else(|| "key.keyboard.k".to_owned());
+    let (save_key, save_mods) = mod_key_binding(game, "save", "key.keyboard.f6");
+    let (load_key, load_mods) = mod_key_binding(game, "load", "key.keyboard.f7");
+    let (settings_key, settings_mods) = mod_key_binding(game, "settings_menu", "key.keyboard.k");
 
-    if key == settings_key {
+    if is_bound_key_match(key, cur_mods, &settings_key, settings_mods) {
         if in_playing && !is_settings_ui_open(game) {
             request_open_settings_ui(game);
         }
         return;
     }
 
-    if key == save_key {
+    if is_bound_key_match(key, cur_mods, &save_key, save_mods) {
         execute_checkpoint_save_hotkey(game);
-    } else if key == load_key {
+    } else if is_bound_key_match(key, cur_mods, &load_key, load_mods) {
         execute_checkpoint_rollback_hotkey(game);
-    } else if key == mode_key && in_playing {
-        let allowed = if let Some(server) = &game.integrated {
-            server
-                .call(|srv| has_cheat_permission(srv, None))
-                .unwrap_or(false)
-        } else {
-            has_cheat_permission(game, None)
-        };
-        if !allowed {
-            mod_chat(game, &tr("gui.rreturn.anchor.no_permission"));
-            return;
-        }
-        let next_mode = with_state_mut(|st| {
-            st.anchor.mode = st.anchor.mode.next();
-            st.anchor.mode
-        });
-        save_current_settings(game);
-        let mode_label = tr(next_mode.lang_key());
-        mod_chat(game, &tr_args("command.rreturn.anchor.mode", &[&mode_label]));
     }
 }
 

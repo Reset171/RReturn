@@ -131,6 +131,7 @@ use horizon_client::{
     gamerules::GameRules,
     hud::HudBatch,
     items::ItemStack,
+    keybinds,
     lan::guest::SavedBody,
     lang,
     mobs::Species,

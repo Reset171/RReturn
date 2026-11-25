@@ -913,7 +913,7 @@ pub fn restore_players_on_rollback(
                 }
 
                 host.hub.flush_progress(conn);
-            } else if !policy.preserve_new_player_inventory {
+            } else if policy.reset_new_player_inventory {
                 if let Some(play_state) = host.play.get_mut(&conn) {
                     *play_state = Default::default();
                 }

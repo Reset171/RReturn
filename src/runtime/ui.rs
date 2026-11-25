@@ -64,7 +64,14 @@ fn apply_nested_policy_json(rb: &serde_json::Value, p: &mut RollbackPolicy) {
         p.player_recipe_book = b(&pl["recipe_book"], p.player_recipe_book);
         p.player_spawn_point = b(&pl["spawn_point"], p.player_spawn_point);
         p.player_stats = b(&pl["stats"], p.player_stats);
-        p.preserve_new_player_inventory = b(&pl["preserve_new_player_inventory"], p.preserve_new_player_inventory);
+        if let Some(v) = pl.get("reset_new_player_inventory").and_then(|v| v.as_bool()) {
+            p.reset_new_player_inventory = v;
+        } else if let Some(v) = pl
+            .get("preserve_new_player_inventory")
+            .and_then(|v| v.as_bool())
+        {
+            p.reset_new_player_inventory = !v;
+        }
     }
     let w = &rb["world"];
     if w.is_object() {
@@ -288,7 +295,7 @@ fn policy_to_nested_json(p: &RollbackPolicy) -> serde_json::Value {
             "recipe_book": p.player_recipe_book,
             "spawn_point": p.player_spawn_point,
             "stats": p.player_stats,
-            "preserve_new_player_inventory": p.preserve_new_player_inventory,
+            "reset_new_player_inventory": p.reset_new_player_inventory,
         },
         "world": {
             "time": p.world_time,

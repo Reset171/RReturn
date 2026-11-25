@@ -22,7 +22,7 @@ pub struct RollbackPolicy {
     pub player_recipe_book: bool,
     pub player_spawn_point: bool,
     pub player_stats: bool,
-    pub preserve_new_player_inventory: bool,
+    pub reset_new_player_inventory: bool,
     pub world_time: bool,
     pub world_weather: bool,
     pub world_raids: bool,
@@ -62,7 +62,7 @@ impl Default for RollbackPolicy {
             player_recipe_book: true,
             player_spawn_point: true,
             player_stats: true,
-            preserve_new_player_inventory: false,
+            reset_new_player_inventory: true,
             world_time: true,
             world_weather: true,
             world_raids: true,
@@ -106,8 +106,8 @@ impl RollbackPolicy {
             ("player_spawn_point", self.player_spawn_point),
             ("player_stats", self.player_stats),
             (
-                "preserve_new_player_inventory",
-                self.preserve_new_player_inventory,
+                "reset_new_player_inventory",
+                self.reset_new_player_inventory,
             ),
             ("world_time", self.world_time),
             ("world_weather", self.world_weather),
@@ -152,7 +152,10 @@ impl RollbackPolicy {
             "player_recipe_book" | "recipe_book" => self.player_recipe_book = val,
             "player_spawn_point" | "spawn_point" => self.player_spawn_point = val,
             "player_stats" | "stats" => self.player_stats = val,
-            "preserve_new_player_inventory" => self.preserve_new_player_inventory = val,
+            "reset_new_player_inventory" | "newcomer_inventory" => {
+                self.reset_new_player_inventory = val;
+            }
+            "preserve_new_player_inventory" => self.reset_new_player_inventory = !val,
             "world_time" | "time" => self.world_time = val,
             "world_weather" | "weather" => self.world_weather = val,
             "world_raids" | "raids" => self.world_raids = val,

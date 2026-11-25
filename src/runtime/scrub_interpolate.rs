@@ -2,6 +2,8 @@ use super::super::Game;
 use super::rrtl::{MobPoseRecord, ParticleTickState};
 use super::scrub_audio::play_scrub_sounds;
 use super::scrub_timeline::{with_scrub_ring, EntityPoseRecord};
+use super::types::*;
+use super::ui_snapshot::*;
 use horizon_client::{
     block_entity_anim::ChestLid,
     containers::BlockEntity,
@@ -10,8 +12,19 @@ use horizon_client::{
 };
 use horizon_core::geometry::Vec3;
 use horizon_world::registry::BlockStateId;
+use std::cell::RefCell;
 use std::collections::HashSet;
 use std::sync::Arc;
+
+thread_local! {
+    static LAST_PREVIEW_UI: RefCell<Option<Arc<ClientUiSnapshot>>> = const { RefCell::new(None) };
+    static LAST_PREVIEW_BES: RefCell<Option<Arc<Vec<((i32, i32, i32), BlockEntity)>>>> = const { RefCell::new(None) };
+}
+
+pub fn reset_scrub_ui_preview_cache() {
+    LAST_PREVIEW_UI.with(|c| *c.borrow_mut() = None);
+    LAST_PREVIEW_BES.with(|c| *c.borrow_mut() = None);
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct InterpolatedMobPose {
@@ -314,6 +327,8 @@ pub fn apply_interpolated_poses_to_game(game: &mut Game<'_>, target_time: f64) {
 
     game.world.moving_pistons = left_frame.moving_pistons.clone();
 
+    let scrub_policy = resolve_local_client_policy(game, true);
+
     let interp_p_pos = [
         lerp_f64(left_frame.player_pos[0], right_frame.player_pos[0], a64),
         lerp_f64(left_frame.player_pos[1], right_frame.player_pos[1], a64),
@@ -323,7 +338,7 @@ pub fn apply_interpolated_poses_to_game(game: &mut Game<'_>, target_time: f64) {
     let interp_p_pitch = lerp_f32(left_frame.player_pitch, right_frame.player_pitch, alpha);
 
     let interp_fov = lerp_f32(left_frame.fov_modifier, right_frame.fov_modifier, alpha);
-    if interp_fov > 0.05 {
+    if scrub_policy.player_motion && interp_fov > 0.05 {
         game.view.fov_modifier = interp_fov;
         game.view.old_fov_modifier = interp_fov;
     }
@@ -334,45 +349,123 @@ pub fn apply_interpolated_poses_to_game(game: &mut Game<'_>, target_time: f64) {
         alpha,
     );
     let interp_bob = lerp_f32(left_frame.avatar_bob, right_frame.avatar_bob, alpha);
-    game.avatar.walk_dist = interp_walk;
-    game.avatar.walk_dist_o = interp_walk;
-    game.avatar.bob = interp_bob;
-    game.avatar.bob_o = interp_bob;
-
-    game.selected = chosen_frame.player_selected;
-    game.inventory = (*chosen_frame.player_inventory).clone();
-    game.armor = (*chosen_frame.player_armor).clone();
-    game.offhand = (*chosen_frame.player_offhand).clone();
-    game.using = chosen_frame.player_using;
-    game.use_duration = chosen_frame.player_use_duration;
+    if scrub_policy.player_motion {
+        game.avatar.walk_dist = interp_walk;
+        game.avatar.walk_dist_o = interp_walk;
+        game.avatar.bob = interp_bob;
+        game.avatar.bob_o = interp_bob;
+    }
+    if scrub_policy.player_inventory {
+        game.selected = chosen_frame.player_selected;
+        game.inventory = (*chosen_frame.player_inventory).clone();
+        game.armor = (*chosen_frame.player_armor).clone();
+        game.offhand = (*chosen_frame.player_offhand).clone();
+    }
+    if scrub_policy.player_ender_chest {
+        game.ender_items = (*chosen_frame.ender_items).clone();
+    }
+    if scrub_policy.block_entities {
+        if let Some(bes) = &chosen_frame.open_container_bes {
+            let changed = LAST_PREVIEW_BES.with(|c| {
+                let mut cur = c.borrow_mut();
+                if cur.as_ref().is_some_and(|p| Arc::ptr_eq(p, bes)) {
+                    false
+                } else {
+                    *cur = Some(Arc::clone(bes));
+                    true
+                }
+            });
+            if changed {
+                for (pos, be) in bes.iter() {
+                    game.world.block_entities.insert(*pos, be.clone());
+                }
+            }
+        } else {
+            LAST_PREVIEW_BES.with(|c| *c.borrow_mut() = None);
+        }
+    }
+    let ui_changed = LAST_PREVIEW_UI.with(|c| {
+        let mut cur = c.borrow_mut();
+        if let Some(prev) = cur.as_ref()
+            && (Arc::ptr_eq(prev, &chosen_frame.ui) || **prev == *chosen_frame.ui)
+        {
+            false
+        } else {
+            *cur = Some(Arc::clone(&chosen_frame.ui));
+            true
+        }
+    });
+    if ui_changed && (scrub_policy.player_inventory || scrub_policy.player_recipe_book || scrub_policy.player_abilities) {
+        let prev_uncaptured = game.screen != super::super::Screen::Playing
+            || game.sign_edit.is_some()
+            || game.rreturn_is_book_editing();
+        apply_client_ui_exact(
+            game,
+            &chosen_frame.ui,
+            scrub_policy.player_inventory,
+            scrub_policy.player_recipe_book,
+            true,
+        );
+        let now_uncaptured = game.screen != super::super::Screen::Playing
+            || chosen_frame.ui.sign_edit.is_some()
+            || chosen_frame.ui.book.is_some();
+        if prev_uncaptured != now_uncaptured {
+            game.capture(!now_uncaptured);
+        }
+    } else if scrub_policy.player_inventory {
+        game.carried = (*chosen_frame.carried).clone();
+        if chosen_frame.ui.craft_table.is_none() && chosen_frame.ui.station.is_none() {
+            let need = chosen_frame.craft_grid.len();
+            if game.craft_grid.len() < need {
+                game.craft_grid.resize(need, None);
+            }
+            for (dst, src) in game.craft_grid.iter_mut().zip(chosen_frame.craft_grid.iter()) {
+                *dst = src.clone();
+            }
+        }
+    }
+    if scrub_policy.player_motion {
+        game.using = chosen_frame.player_using;
+        game.use_duration = chosen_frame.player_use_duration;
+    }
 
     if let Some(p) = game.player.as_mut() {
-        p.position.x = interp_p_pos[0];
-        p.position.y = interp_p_pos[1];
-        p.position.z = interp_p_pos[2];
-        p.old_position = p.position;
-        p.velocity = Default::default();
-        p.yaw = interp_p_yaw;
-        p.head_yaw = interp_p_yaw;
-        p.pitch = interp_p_pitch;
-        p.teleported = true;
-        p.teleported_delta = [false; 3];
-        p.sprinting = chosen_frame.player_sprinting;
-        p.local_crouching = chosen_frame.player_sneaking;
-        p.fall_flying = chosen_frame.player_fall_flying;
-        p.fire_ticks = chosen_frame.player_fire_ticks;
-        p.air = chosen_frame.player_air;
-        p.ticks_frozen = chosen_frame.player_ticks_frozen;
-        let _ = p.set_health(chosen_frame.player_health.max(1.0), false);
-        let _ = p.internal_set_absorption(chosen_frame.player_absorption);
-        p.health.food.food = chosen_frame.player_food;
-        p.health.hurt_animation_time = chosen_frame.player_hurt_time;
-        p.health.hurt_dir = chosen_frame.player_hurt_dir;
-        game.previous_position = p.position;
+        if scrub_policy.player_position {
+            p.position.x = interp_p_pos[0];
+            p.position.y = interp_p_pos[1];
+            p.position.z = interp_p_pos[2];
+            p.old_position = p.position;
+            p.yaw = interp_p_yaw;
+            p.head_yaw = interp_p_yaw;
+            p.pitch = interp_p_pitch;
+            p.teleported = true;
+            p.teleported_delta = [false; 3];
+            game.previous_position = p.position;
+        }
+        if scrub_policy.player_motion {
+            p.velocity = Default::default();
+            p.sprinting = chosen_frame.player_sprinting;
+            p.local_crouching = chosen_frame.player_sneaking;
+            p.fall_flying = chosen_frame.player_fall_flying;
+            p.fire_ticks = chosen_frame.player_fire_ticks;
+        }
+        if scrub_policy.player_health {
+            p.air = chosen_frame.player_air;
+            p.ticks_frozen = chosen_frame.player_ticks_frozen;
+            let _ = p.set_health(chosen_frame.player_health.max(1.0), false);
+            let _ = p.internal_set_absorption(chosen_frame.player_absorption);
+            p.health.hurt_animation_time = chosen_frame.player_hurt_time;
+            p.health.hurt_dir = chosen_frame.player_hurt_dir;
+        }
+        if scrub_policy.player_hunger {
+            p.health.food.food = chosen_frame.player_food;
+        }
     }
-    game.yaw = interp_p_yaw;
-    game.pitch = interp_p_pitch;
-    game.snap_player_model_pitch();
+    if scrub_policy.player_position {
+        game.yaw = interp_p_yaw;
+        game.pitch = interp_p_pitch;
+        game.snap_player_model_pitch();
+    }
 
     let mut right_mobs_by_id: FxHashMap<u32, &MobPoseRecord> = FxHashMap::default();
     for m in &right_mobs {
@@ -859,44 +952,46 @@ pub fn apply_interpolated_poses_to_game(game: &mut Game<'_>, target_time: f64) {
             .insert(bp.breaker, (bp.pos, bp.stage, chosen_frame.game_time));
     }
 
-    let chosen_swing = &chosen_frame.arm_swing;
-    if chosen_swing.swinging {
-        let anim = lerp_f32(
-            left_frame.arm_swing.animation,
-            right_frame.arm_swing.animation,
+    if scrub_policy.player_motion {
+        let chosen_swing = &chosen_frame.arm_swing;
+        if chosen_swing.swinging {
+            let anim = lerp_f32(
+                left_frame.arm_swing.animation,
+                right_frame.arm_swing.animation,
+                alpha,
+            );
+            let duration = chosen_swing.duration.max(1);
+            game.swing.current = Some(horizon_client::first_person::SwingDescription {
+                hand: if chosen_swing.hand == 1 {
+                    horizon_client::first_person::Hand::Off
+                } else {
+                    horizon_client::first_person::Hand::Main
+                },
+                animation: horizon_client::first_person::SwingAnimation::DEFAULT,
+                duration_ticks: duration,
+            });
+            game.swing.animation = anim;
+            game.swing.old_animation = anim;
+            game.swing.ticks = (anim * duration as f32).round().clamp(0.0, duration as f32) as i32;
+        } else {
+            game.swing.current = None;
+            game.swing.animation = 0.0;
+            game.swing.old_animation = 0.0;
+            game.swing.ticks = 0;
+        }
+        game.heights.main = lerp_f32(
+            left_frame.arm_swing.height_main,
+            right_frame.arm_swing.height_main,
             alpha,
         );
-        let duration = chosen_swing.duration.max(1);
-        game.swing.current = Some(horizon_client::first_person::SwingDescription {
-            hand: if chosen_swing.hand == 1 {
-                horizon_client::first_person::Hand::Off
-            } else {
-                horizon_client::first_person::Hand::Main
-            },
-            animation: horizon_client::first_person::SwingAnimation::DEFAULT,
-            duration_ticks: duration,
-        });
-        game.swing.animation = anim;
-        game.swing.old_animation = anim;
-        game.swing.ticks = (anim * duration as f32).round().clamp(0.0, duration as f32) as i32;
-    } else {
-        game.swing.current = None;
-        game.swing.animation = 0.0;
-        game.swing.old_animation = 0.0;
-        game.swing.ticks = 0;
+        game.heights.old_main = game.heights.main;
+        game.heights.off = lerp_f32(
+            left_frame.arm_swing.height_off,
+            right_frame.arm_swing.height_off,
+            alpha,
+        );
+        game.heights.old_off = game.heights.off;
     }
-    game.heights.main = lerp_f32(
-        left_frame.arm_swing.height_main,
-        right_frame.arm_swing.height_main,
-        alpha,
-    );
-    game.heights.old_main = game.heights.main;
-    game.heights.off = lerp_f32(
-        left_frame.arm_swing.height_off,
-        right_frame.arm_swing.height_off,
-        alpha,
-    );
-    game.heights.old_off = game.heights.off;
 
     let interpolated_particles =
         interpolate_lossless_particles(&left_particles, &right_particles, alpha);

@@ -234,68 +234,26 @@ bindings = [
 ]
 
 [[native.mixin]]
-id = "render-frame-pre"
-target = "horizon_client::game::native_hooks::render_frame_pre::Game<'_>::native_render_frame_pre"
-kind = "HEAD"
-helper = "src/hooks/hook_render_frame_pre.rs"
-bindings = [
-  { name = "game", ty = "&mut Game<'_>", value = "&mut *self" },
-  { name = "world_partial", ty = "f32", value = "world_partial_tick" },
-  { name = "partial", ty = "f32", value = "partial_tick" },
-]
-
-[[native.mixin]]
-id = "render-gui-post"
-target = "horizon_client::game::native_hooks::render_gui_post::Game<'_>::native_render_gui_post"
-kind = "HEAD"
-helper = "src/hooks/hook_render_gui_post.rs"
-bindings = [
-  { name = "game", ty = "&Game<'_>", value = "&*self" },
-  { name = "draw", ty = "&mut horizon_client::hud::HudBatch", value = "&mut *draw" },
-]
-
-[[native.mixin]]
-id = "movement-input"
-target = "horizon_client::game::native_hooks::movement_input::Game<'_>::mod_movement_keys"
+id = "open-chat-pre"
+target = "horizon_client::game::chat::Game<'_>::open_chat_method"
 kind = "HEAD"
 cancellable = true
-helper = "src/hooks/hook_movement_input.rs"
+helper = "src/hooks/hook_open_chat.rs"
 bindings = [
-  { name = "game", ty = "&Game<'_>", value = "&*self" },
+  { name = "game", ty = "&mut Game<'_>", value = "&mut *self" },
+  { name = "prefix", ty = "&str", value = "prefix" },
 ]
 
 [[native.mixin]]
-id = "key-mapping-pre"
-target = "horizon_client::game::native_hooks::key_mapping_pre::Game<'_>::native_key_mapping_pre"
+id = "play-key-pressed-pre"
+target = "horizon_client::game::play_keys::Game<'_>::key_pressed"
 kind = "HEAD"
-helper = "src/hooks/hook_key_mapping_pre.rs"
+cancellable = true
+helper = "src/hooks/hook_play_key_pressed.rs"
 bindings = [
   { name = "game", ty = "&mut Game<'_>", value = "&mut *self" },
-  { name = "mapping", ty = "&str", value = "mapping" },
-  { name = "pressed", ty = "bool", value = "pressed" },
-  { name = "canceled", ty = "&mut bool", value = "&mut *canceled" },
-]
-
-[[native.mixin]]
-id = "server-chunk-unload"
-target = "horizon_client::game::native_hooks::on_chunk_unloaded::Game<'_>::native_chunk_unload"
-kind = "HEAD"
-helper = "src/hooks/hook_chunk_unloaded.rs"
-bindings = [
-  { name = "game", ty = "&mut Game<'_>", value = "&mut *self" },
-  { name = "dimension", ty = "&str", value = "dimension" },
-  { name = "chunk", ty = "[i32; 2]", value = "chunk" },
-]
-
-[[native.mixin]]
-id = "client-chunk-unload"
-target = "horizon_client::game::native_hooks::client_chunk_unload::Game<'_>::native_client_chunk_unload"
-kind = "HEAD"
-helper = "src/hooks/hook_client_chunk_unload.rs"
-bindings = [
-  { name = "game", ty = "&mut Game<'_>", value = "&mut *self" },
-  { name = "dimension", ty = "&str", value = "dimension" },
-  { name = "chunk", ty = "[i32; 2]", value = "chunk" },
+  { name = "key", ty = "winit::keyboard::KeyCode", value = "key" },
+  { name = "raw", ty = "winit::keyboard::KeyCode", value = "raw" },
 ]
 
 [[native.mixin]]
@@ -371,5 +329,82 @@ bindings = [
   { name = "game", ty = "&mut Game<'_>", value = "&mut *self" },
   { name = "dimension", ty = "&str", value = "dimension" },
   { name = "chunk", ty = "[i32; 2]", value = "chunk" },
+]
+
+[[native.mixin]]
+id = "screen-render-post"
+target = "horizon_client::game::native_hooks::base::Game<'_>::native_screen_render_post"
+kind = "HEAD"
+helper = "src/hooks/hook_screen_render_post.rs"
+bindings = [
+  { name = "game", ty = "&Game<'_>", value = "&*self" },
+  { name = "draw", ty = "&mut horizon_client::hud::HudBatch", value = "&mut *draw" },
+  { name = "screen", ty = "&mod_api::ScreenView<'_>", value = "screen" },
+]
+
+[[native.mixin]]
+id = "screen-mouse-button-pressed"
+target = "horizon_client::game::native_hooks::base::Game<'_>::native_screen_mouse_button_pressed_pre"
+kind = "HEAD"
+helper = "src/hooks/hook_screen_mouse_button_pressed.rs"
+bindings = [
+  { name = "game", ty = "&Game<'_>", value = "&*self" },
+  { name = "screen", ty = "&mod_api::ScreenView<'_>", value = "screen" },
+  { name = "button", ty = "i32", value = "button" },
+  { name = "modifiers", ty = "u32", value = "modifiers" },
+  { name = "canceled", ty = "&mut bool", value = "&mut *canceled" },
+]
+
+[[native.mixin]]
+id = "screen-mouse-button-released"
+target = "horizon_client::game::native_hooks::base::Game<'_>::native_screen_mouse_button_released_pre"
+kind = "HEAD"
+helper = "src/hooks/hook_screen_mouse_button_released.rs"
+bindings = [
+  { name = "game", ty = "&Game<'_>", value = "&*self" },
+  { name = "screen", ty = "&mod_api::ScreenView<'_>", value = "screen" },
+  { name = "button", ty = "i32", value = "button" },
+  { name = "modifiers", ty = "u32", value = "modifiers" },
+  { name = "canceled", ty = "&mut bool", value = "&mut *canceled" },
+]
+
+[[native.mixin]]
+id = "screen-mouse-scrolled"
+target = "horizon_client::game::native_hooks::base::Game<'_>::native_screen_mouse_scrolled_pre"
+kind = "HEAD"
+helper = "src/hooks/hook_screen_mouse_scrolled.rs"
+bindings = [
+  { name = "game", ty = "&Game<'_>", value = "&*self" },
+  { name = "screen", ty = "&mod_api::ScreenView<'_>", value = "screen" },
+  { name = "scroll", ty = "[f64; 2]", value = "scroll" },
+  { name = "modifiers", ty = "u32", value = "modifiers" },
+  { name = "canceled", ty = "&mut bool", value = "&mut *canceled" },
+]
+
+[[native.mixin]]
+id = "screen-key-pressed"
+target = "horizon_client::game::native_hooks::base::Game<'_>::native_screen_key_pressed_pre"
+kind = "HEAD"
+helper = "src/hooks/hook_screen_key_pressed.rs"
+bindings = [
+  { name = "game", ty = "&Game<'_>", value = "&*self" },
+  { name = "screen", ty = "&mod_api::ScreenView<'_>", value = "screen" },
+  { name = "key", ty = "&str", value = "key" },
+  { name = "repeat", ty = "bool", value = "repeat" },
+  { name = "modifiers", ty = "u32", value = "modifiers" },
+  { name = "canceled", ty = "&mut bool", value = "&mut *canceled" },
+]
+
+[[native.mixin]]
+id = "screen-char-typed-pre"
+target = "horizon_client::game::native_hooks::base::Game<'_>::native_screen_char_typed_pre"
+kind = "HEAD"
+helper = "src/hooks/hook_screen_char_typed.rs"
+bindings = [
+  { name = "game", ty = "&Game<'_>", value = "&*self" },
+  { name = "screen", ty = "&mod_api::ScreenView<'_>", value = "screen" },
+  { name = "c", ty = "char", value = "c" },
+  { name = "modifiers", ty = "u32", value = "modifiers" },
+  { name = "canceled", ty = "&mut bool", value = "&mut *canceled" },
 ]
 

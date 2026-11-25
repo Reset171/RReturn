@@ -7,7 +7,7 @@ fn hook_key_mapping_pre(
     let _ = game;
     if pressed && crate::game::autosave::rreturn::is_scrubbing() {
         // Block gameplay actions that mutate inventory, combat, or containers,
-        // but never block navigation, escape, enter, scrub key, or functional keys.
+        // plus chat/command keys, without blocking navigation, Esc, Enter, or scrub keys.
         let block = mapping.starts_with("key.hotbar.")
             || matches!(
                 mapping,
@@ -17,6 +17,11 @@ fn hook_key_mapping_pre(
                     | "key.attack"
                     | "key.use"
                     | "key.pickItem"
+                    | "key.chat"
+                    | "key.command"
+                    | "key.advancements"
+                    | "key.socialInteractions"
+                    | "key.quickActions"
             );
         if block {
             *canceled = true;

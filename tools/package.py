@@ -268,6 +268,20 @@ impl mod_api::Hooks for Mod {
                 .tooltip("rreturn.setting.scrub_enabled.tooltip"),
         );
     }
+
+    fn screen_render_post(
+        &self,
+        _: &dyn mod_api::ClientHost,
+        _: &mut mod_api::ScreenRenderPostEvent<'_>,
+    ) {}
+
+    fn screen_char_typed_pre(
+        &self,
+        _: &dyn mod_api::ClientHost,
+        _: &mut mod_api::ScreenCharTypedPreEvent<'_>,
+    ) -> mod_api::Flow {
+        mod_api::Flow::Continue
+    }
 }
 """
             files["src/lib.rs"] = lib_text.encode("utf-8")

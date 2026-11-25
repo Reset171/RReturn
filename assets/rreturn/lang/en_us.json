@@ -62,5 +62,16 @@
   "command.rreturn.scrub.disabled": "[RReturn] Time Scrub is disabled in settings.",
   "command.rreturn.scrub.status": "[RReturn] Time Scrub: %s",
   "message.rreturn.scrub.commit": "[RReturn] Timeline successfully rewound by %s s.",
-  "message.rreturn.scrub.cancel": "[RReturn] Timeline rewind cancelled."
+  "message.rreturn.scrub.cancel": "[RReturn] Timeline rewind cancelled.",
+  "rreturn.ui.sec_unit": "s",
+  "rreturn.scrub_hud.badge_rewind": "REWIND",
+  "rreturn.scrub_hud.badge_live": "LIVE",
+  "rreturn.scrub_hud.apply": "Apply",
+  "rreturn.scrub_hud.cancel": "Cancel",
+  "rreturn.scrub_hud.hint": "Wheel / A D  Scrub   |   Enter / U  Apply   |   Esc  Cancel",
+  "rreturn.scrub_hud.ctx_creative": "Creative",
+  "rreturn.scrub_hud.ctx_inventory": "Inventory",
+  "rreturn.scrub_hud.ctx_container": "Container",
+  "rreturn.scrub_hud.ctx_chat": "Chat",
+  "rreturn.scrub_hud.ctx_editor": "Editor"
 }

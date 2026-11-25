@@ -5,6 +5,7 @@ use super::restore::*;
 use super::restore_client::*;
 use super::scrub::*;
 use super::scrub_audio::*;
+use super::scrub_hud::scrub_hud_bounds_json;
 use super::scrub_perf::*;
 use super::scrub_server::*;
 use super::scrub_timeline::*;
@@ -708,10 +709,22 @@ pub fn handle_client_command(game: &mut Game<'_>, command: &str, ran: &mut bool)
 
     let is_dev_cmd = trimmed.starts_with("rreturn dev");
 
-    if trimmed == "rreturn ui state" || trimmed == "rreturn settings state" {
-        let json = serde_json::to_string(&ui_state_json(game))
-            .unwrap_or_else(|_| "{}".to_owned());
-        game.native_chat(&json);
+    if matches!(
+        trimmed.split_whitespace().nth(1),
+        Some("ui" | "settings" | "config" | "menu")
+    ) {
+        match trimmed.split_whitespace().nth(2) {
+            Some("state") => {
+                let json = serde_json::to_string(&ui_state_json(game))
+                    .unwrap_or_else(|_| "{}".to_owned());
+                game.native_chat(&json);
+            }
+            Some("scrub_hud") | Some("hud") => {
+                let json = scrub_hud_bounds_json();
+                game.native_chat(&json);
+            }
+            _ => {}
+        }
         return;
     }
 
@@ -992,6 +1005,46 @@ fn handle_scrub_subcommand(game: &mut Game<'_>, args: &[&str], requester: Option
                     r#"{{"enabled":{},"active":false,"min_tick":{},"max_tick":{},"server_min_tick":{},"server_max_tick":{},"day_time":{},"rain_level":{:.3},"swinging":{},"swing_anim":{:.2},"particles":{},"sounds":{},"fov_modifier":{:.3},"walk_dist":{:.3}}}"#,
                     enabled, range.0, range.1, srv_range.0, srv_range.1, day_time, rain_level, swinging, swing_anim, p_count, s_count, fov, walk_dist
                 )
+            }
+        }
+        "seek" => {
+            if !with_state(|st| st.scrub_enabled) {
+                return tr("command.rreturn.scrub.disabled");
+            }
+            let secs: f64 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(-1.0);
+            if !is_scrubbing() {
+                start_scrub(game);
+            }
+            step_scrub_ticks(secs * 20.0);
+            snap_scrub_time_to_target();
+            on_frame_render_pre(game, 0.0, 0.0);
+            if let Some((curr, min_t, max_t)) = get_scrub_info() {
+                format!(
+                    "[RReturn] Scrubbed preview by {:.1}s to tick {:.2} ({}..{}).",
+                    secs, curr, min_t, max_t
+                )
+            } else {
+                "[RReturn] Scrub mode not active.".to_owned()
+            }
+        }
+        "seek_ticks" => {
+            if !with_state(|st| st.scrub_enabled) {
+                return tr("command.rreturn.scrub.disabled");
+            }
+            let ticks: f64 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(-20.0);
+            if !is_scrubbing() {
+                start_scrub(game);
+            }
+            step_scrub_ticks(ticks);
+            snap_scrub_time_to_target();
+            on_frame_render_pre(game, 0.0, 0.0);
+            if let Some((curr, min_t, max_t)) = get_scrub_info() {
+                format!(
+                    "[RReturn] Scrubbed preview by {:.0} ticks to tick {:.2} ({}..{}).",
+                    ticks, curr, min_t, max_t
+                )
+            } else {
+                "[RReturn] Scrub mode not active.".to_owned()
             }
         }
         "rewind" => {

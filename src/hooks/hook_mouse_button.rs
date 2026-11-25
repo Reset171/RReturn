@@ -5,8 +5,8 @@ fn hook_mouse_button(
     modifiers: u32,
     canceled: &mut bool,
 ) {
-    let _ = (game, button, pressed, modifiers);
-    if crate::game::autosave::rreturn::is_scrubbing() {
+    let _ = modifiers;
+    if crate::game::autosave::rreturn::handle_play_mouse_button(game, button, pressed) {
         *canceled = true;
     }
 }

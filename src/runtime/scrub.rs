@@ -3,10 +3,13 @@ use super::super::{
     commands::OtherEntity,
     dragon::Crystal,
 };
+use super::policy::RollbackPolicy;
 use super::restore::apply_timeline_snapshot_on_server;
 use super::restore_client::apply_client_level_rollback;
+use super::scrub_hud::*;
 use super::scrub_interpolate::{
     apply_block_rewind_to_game, apply_interpolated_poses_to_game, apply_timeline_sounds_to_game,
+    reset_scrub_ui_preview_cache,
 };
 use super::scrub_perf::*;
 use super::scrub_server::{
@@ -15,10 +18,12 @@ use super::scrub_server::{
 use super::scrub_timeline::{with_scrub_ring, with_scrub_ring_mut};
 use super::snapshots::{BreathSnapshot, DragonSnapshot, RocketSnapshot, TridentSnapshot};
 use super::types::*;
+use super::ui_snapshot::*;
 use horizon_client::{
     block_entity_anim::BlockEntityAnims,
     boss_overlay::BossOverlay,
     chunk::Chunk,
+    containers::BlockEntity,
     entities::{ArmorStand, Cushion, ItemFrame, Painting},
     fast_hash::FxHashMap,
     items::ItemStack,
@@ -81,6 +86,11 @@ pub struct AnchorClientState {
     pub fov_modifier: f32,
     pub walk_dist: f32,
     pub bob: f32,
+    pub carried: Option<ItemStack>,
+    pub craft_grid: Vec<Option<ItemStack>>,
+    pub ender_items: Vec<Option<ItemStack>>,
+    pub ui: ClientUiSnapshot,
+    pub open_container_bes: Vec<((i32, i32, i32), BlockEntity)>,
 }
 
 thread_local! {
@@ -188,6 +198,18 @@ fn capture_anchor_client_state(game: &mut Game<'_>) -> AnchorClientState {
         fov_modifier: game.view.fov_modifier,
         walk_dist: game.avatar.walk_dist,
         bob: game.avatar.bob,
+        carried: game.carried.clone(),
+        craft_grid: game.craft_grid.clone(),
+        ender_items: game.ender_items.clone(),
+        ui: capture_client_ui_snapshot(game),
+        open_container_bes: if game.container.is_some() {
+            game.container_parts()
+                .into_iter()
+                .filter_map(|(pos, _)| game.world.block_entities.get(&pos).map(|be| (pos, be.clone())))
+                .collect()
+        } else {
+            Vec::new()
+        },
     }
 }
 
@@ -313,6 +335,10 @@ fn restore_anchor_client_state(game: &mut Game<'_>, anchor: AnchorClientState) {
     game.inventory = anchor.inventory;
     game.armor = anchor.armor;
     game.offhand = anchor.offhand;
+    game.ender_items = anchor.ender_items;
+    for (pos, be) in anchor.open_container_bes {
+        game.world.block_entities.insert(pos, be);
+    }
     game.using = anchor.using;
     game.use_duration = anchor.use_duration;
     game.view.fov_modifier = anchor.fov_modifier;
@@ -322,6 +348,7 @@ fn restore_anchor_client_state(game: &mut Game<'_>, anchor: AnchorClientState) {
     game.avatar.bob = anchor.bob;
     game.avatar.bob_o = anchor.bob;
     game.snap_player_model_pitch();
+    restore_client_ui_on_rollback(game, &anchor.ui, &RollbackPolicy::default());
 }
 
 pub struct ScrubSession {
@@ -405,6 +432,23 @@ pub fn step_scrub_ticks(ticks: f64) {
     s.target_time = (s.target_time + ticks).clamp(s.min_tick as f64, s.anchor_tick as f64);
 }
 
+pub fn set_scrub_target_fraction(frac: f64, snap_now: bool) {
+    let mut s = match session_lock().lock() {
+        Ok(guard) => guard,
+        Err(_) => return,
+    };
+    if !s.active {
+        return;
+    }
+    let span = (s.anchor_tick - s.min_tick).max(1) as f64;
+    let target = (s.min_tick as f64 + span * frac.clamp(0.0, 1.0))
+        .clamp(s.min_tick as f64, s.anchor_tick as f64);
+    s.target_time = target;
+    if snap_now {
+        s.current_time = target;
+    }
+}
+
 pub fn start_scrub(game: &mut Game<'_>) {
     if !with_state(|st| st.scrub_enabled) {
         mod_chat(game, &tr("command.rreturn.scrub.disabled"));
@@ -419,7 +463,13 @@ pub fn start_scrub(game: &mut Game<'_>) {
         return;
     }
     let server_range = if let Some(server) = &game.integrated {
-        server.call(|_| server_scrub_time_range()).flatten()
+        let (rng, players) = server
+            .call(|srv| (server_scrub_time_range(), collect_online_players(srv)))
+            .unwrap_or((None, Vec::new()));
+        if !players.is_empty() {
+            with_state_mut(|st| st.online_players = players);
+        }
+        rng
     } else {
         server_scrub_time_range()
     };
@@ -461,6 +511,8 @@ pub fn start_scrub(game: &mut Game<'_>) {
     ANCHOR_STATE.with(|cell| {
         *cell.borrow_mut() = Some(anchor_snapshot);
     });
+    reset_scrub_ui_preview_cache();
+    reset_scrub_hud_state();
 
     with_scrub_ring_mut(|r| {
         if r.reference_chunks.is_empty() {
@@ -507,7 +559,7 @@ pub fn start_scrub(game: &mut Game<'_>) {
     apply_interpolated_poses_to_game(game, start_t);
 }
 
-pub fn on_mouse_scroll(_game: &mut Game<'_>, scroll: [f64; 2], accumulated: [i32; 2]) -> bool {
+pub fn apply_scrub_wheel_delta(wheel_y: f64) -> bool {
     if !with_state(|st| st.scrub_enabled) {
         return false;
     }
@@ -518,14 +570,9 @@ pub fn on_mouse_scroll(_game: &mut Game<'_>, scroll: [f64; 2], accumulated: [i32
     if !s.active {
         return false;
     }
-
-    let wheel_y = if scroll[1].abs() > 1e-4 {
-        scroll[1]
-    } else if accumulated[1] != 0 {
-        f64::from(accumulated[1])
-    } else {
+    if wheel_y.abs() <= 1e-6 {
         return true;
-    };
+    }
 
     let now = Instant::now();
     if let Some(prev) = s.last_scroll_time {
@@ -540,16 +587,41 @@ pub fn on_mouse_scroll(_game: &mut Game<'_>, scroll: [f64; 2], accumulated: [i32
     }
     s.last_scroll_time = Some(now);
 
-    let step = wheel_y * s.jog_accel * 1.5;
+    let step = wheel_y * s.jog_accel * scrub_wheel_sens_factor();
     s.target_time = (s.target_time + step).clamp(s.min_tick as f64, s.anchor_tick as f64);
-    drop(s);
-
     true
+}
+
+pub fn on_mouse_scroll(_game: &mut Game<'_>, scroll: [f64; 2], accumulated: [i32; 2]) -> bool {
+    if !with_state(|st| st.scrub_enabled) || !is_scrubbing() {
+        return false;
+    }
+    let wheel_y = if scroll[1].abs() > 1e-4 {
+        scroll[1]
+    } else if accumulated[1] != 0 {
+        f64::from(accumulated[1])
+    } else {
+        return true;
+    };
+    apply_scrub_wheel_delta(wheel_y)
 }
 
 pub fn on_frame_render_pre(game: &mut Game<'_>, _world_partial: f32, _partial: f32) {
     if !with_state(|st| st.scrub_enabled) {
         return;
+    }
+    sync_scrub_hud_drag(game);
+    if let Some(action) = take_pending_scrub_hud_action() {
+        match action {
+            ScrubHudAction::Apply => {
+                commit_scrub(game);
+                return;
+            }
+            ScrubHudAction::Cancel => {
+                cancel_scrub(game);
+                return;
+            }
+        }
     }
     let mut s = match session_lock().lock() {
         Ok(guard) => guard,
@@ -580,7 +652,9 @@ pub fn on_frame_render_pre(game: &mut Game<'_>, _world_partial: f32, _partial: f
         let t_br_0 = std::time::Instant::now();
         apply_block_rewind_to_game(game, old_applied, new_applied);
         block_rewind_us = t_br_0.elapsed().as_micros() as u64;
-        apply_timeline_sounds_to_game(game, old_applied, new_applied, accel);
+        if scrub_reverse_audio_enabled() {
+            apply_timeline_sounds_to_game(game, old_applied, new_applied, accel);
+        }
     }
     let total_render_us = t_frame_start.elapsed().as_micros() as u64;
     record_frame_render_perf(
@@ -633,8 +707,16 @@ pub fn commit_scrub(game: &mut Game<'_>) {
 
     game.extras.frame_partial_ticks = None;
     let saved_anchor = ANCHOR_STATE.with(|cell| cell.borrow_mut().take());
+    reset_scrub_ui_preview_cache();
+    reset_scrub_hud_state();
 
     if final_tick < anchor {
+        let target_ui: Option<ClientUiSnapshot> = with_scrub_ring(|r| {
+            r.frames
+                .iter()
+                .min_by_key(|f| (f.game_time - final_tick).abs())
+                .map(|f| (*f.ui).clone())
+        });
         let t_commit_start = std::time::Instant::now();
         apply_interpolated_poses_to_game(game, final_time);
         game.extras.frame_partial_ticks = None;
@@ -704,10 +786,14 @@ pub fn commit_scrub(game: &mut Game<'_>) {
 
         let mut crb_us = 0;
         if did_rollback {
-            game.close_container();
+            close_client_container_local(game);
             game.screen = super::super::Screen::Playing;
             let t_crb_0 = std::time::Instant::now();
             apply_client_level_rollback(game, "scrub");
+            if let Some(ui) = target_ui {
+                let pol = resolve_local_client_policy(game, true);
+                restore_client_ui_on_rollback(game, &ui, &pol);
+            }
             crb_us = t_crb_0.elapsed().as_micros() as u64;
 
             let player_breaker = game.remote.as_ref().map(|r| r.entity_id);
@@ -803,6 +889,8 @@ pub fn cancel_scrub(game: &mut Game<'_>) {
     }
 
     let saved_anchor = ANCHOR_STATE.with(|cell| cell.borrow_mut().take());
+    reset_scrub_ui_preview_cache();
+    reset_scrub_hud_state();
     if let Some(anchor_state) = saved_anchor {
         restore_anchor_client_state(game, anchor_state);
     } else {
@@ -832,93 +920,7 @@ pub fn cancel_scrub(game: &mut Game<'_>) {
 }
 
 pub fn render_hud(game: &Game<'_>, draw: &mut horizon_client::hud::HudBatch) {
-    if !with_state(|st| st.scrub_enabled) {
-        return;
+    if game.screen == super::super::Screen::Playing {
+        draw_scrub_hud(game, draw);
     }
-    let Some((curr, min_t, max_t)) = get_scrub_info() else {
-        return;
-    };
-
-    let w = draw.width;
-    let h = draw.height;
-    if w < 100.0 || h < 100.0 {
-        return;
-    }
-
-    let box_w = 380.0f32;
-    let box_h = 46.0f32;
-    let x = (w - box_w) * 0.5;
-    let y = h - box_h - 40.0;
-
-    game.native_fill(draw, [x, y, box_w, box_h], 0xCC101018);
-    game.native_fill(draw, [x, y, box_w, 2.0], 0xFF00D2FF);
-
-    let bar_x = x + 12.0;
-    let bar_y = y + 26.0;
-    let bar_w = box_w - 24.0;
-    let bar_h = 5.0;
-    game.native_fill(draw, [bar_x, bar_y, bar_w, bar_h], 0x80303038);
-
-    let total_range = (max_t - min_t).max(1) as f64;
-
-    with_scrub_ring(|ring| {
-        for &cp_t in &ring.checkpoint_markers {
-            if cp_t >= min_t && cp_t <= max_t {
-                let frac = ((cp_t - min_t) as f64 / total_range).clamp(0.0, 1.0) as f32;
-                let mx = bar_x + bar_w * frac;
-                game.native_fill(draw, [mx - 1.0, bar_y - 3.0, 2.0, bar_h + 6.0], 0xFFFFD700);
-            }
-        }
-        for &(dim_t, dim) in &ring.dim_markers {
-            if dim_t >= min_t && dim_t <= max_t {
-                let frac = ((dim_t - min_t) as f64 / total_range).clamp(0.0, 1.0) as f32;
-                let mx = bar_x + bar_w * frac;
-                let color = match dim {
-                    Dim::Overworld => 0xFF44DD55,
-                    Dim::Nether => 0xFFCC44FF,
-                    Dim::End => 0xFFFFFF55,
-                    Dim::Extra(_) => 0xFF55AAFF,
-                };
-                game.native_fill(draw, [mx - 1.0, bar_y - 2.0, 2.0, bar_h + 4.0], color);
-            }
-        }
-        for &dmg_t in &ring.damage_markers {
-            if dmg_t >= min_t && dmg_t <= max_t {
-                let frac = ((dmg_t - min_t) as f64 / total_range).clamp(0.0, 1.0) as f32;
-                let mx = bar_x + bar_w * frac;
-                game.native_fill(draw, [mx, bar_y - 1.0, 2.0, bar_h + 2.0], 0xFFFF3333);
-            }
-        }
-    });
-
-    let progress = ((curr - min_t as f64) / total_range).clamp(0.0, 1.0) as f32;
-    let fill_w = bar_w * progress;
-    game.native_fill(draw, [bar_x, bar_y, fill_w, bar_h], 0xFF00E5FF);
-    let pip_x = (bar_x + fill_w - 2.0).clamp(bar_x, bar_x + bar_w - 4.0);
-    game.native_fill(draw, [pip_x, bar_y - 2.0, 4.0, bar_h + 4.0], 0xFFFFFFFF);
-
-    let delta_ticks = (curr - max_t as f64).round() as i64;
-    let delta_sec = (delta_ticks as f64) / 20.0;
-    let abs_sec = delta_sec.abs();
-    let mins = (abs_sec / 60.0).floor() as i64;
-    let secs = abs_sec % 60.0;
-
-    let dim_tag = match game.dim {
-        Dim::Overworld => "OW",
-        Dim::Nether => "NETHER",
-        Dim::End => "END",
-        Dim::Extra(_) => "DIM",
-    };
-
-    let time_str = format!(
-        "{} {:02}:{:04.1}s [{}]",
-        if delta_ticks < 0 { "REWIND" } else { "LIVE" },
-        mins,
-        secs,
-        dim_tag
-    );
-    let hint_str = "[Wheel/A/D] Scrub  [U/Enter] Apply  [Esc] Cancel";
-
-    game.native_text(draw, &time_str, [x + 12.0, y + 8.0], 0xFFFFFFFF, true);
-    game.native_text(draw, hint_str, [x + 168.0, y + 8.0], 0xFFAAAAAA, false);
 }

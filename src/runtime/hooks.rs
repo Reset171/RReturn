@@ -8,12 +8,247 @@ use super::hydration::hydrate_slot_from_disk_on_server;
 use super::load_disk::load_checkpoint_from_disk;
 use super::restore::rollback_checkpoint_on_server;
 use super::restore_client::{apply_client_level_rollback, apply_client_rollback_with_ui};
+use super::scrub_hud::{
+    consume_scrub_hud_release, draw_scrub_hud, handle_scrub_hud_mouse_pressed,
+    handle_scrub_hud_mouse_released,
+};
 use super::snapshots::*;
 use super::storage::has_disk_checkpoint;
 use super::types::*;
 use super::ui::{load_saved_settings, save_current_settings};
 use super::ui_snapshot::*;
+use std::cell::RefCell;
 use std::ops::ControlFlow;
+
+#[derive(Clone, Copy)]
+pub enum ScreenHotkeyAction {
+    SaveCheckpoint,
+    LoadCheckpoint,
+    ToggleScrub,
+    CommitScrub,
+    CancelScrub,
+    StepScrub(f64),
+}
+
+thread_local! {
+    static PENDING_SCREEN_HOTKEY: RefCell<Option<(String, ScreenHotkeyAction)>> = const { RefCell::new(None) };
+    static SUPPRESS_SCREEN_CHAR: RefCell<bool> = const { RefCell::new(false) };
+}
+
+fn is_scrub_key_match(key: &str, scrub_key: &str) -> bool {
+    key == scrub_key
+        || key.eq_ignore_ascii_case("key.keyboard.u")
+        || key.eq_ignore_ascii_case("u")
+}
+
+fn execute_screen_hotkey_action(game: &mut Game<'_>, act: ScreenHotkeyAction) {
+    match act {
+        ScreenHotkeyAction::SaveCheckpoint => execute_checkpoint_save_hotkey(game),
+        ScreenHotkeyAction::LoadCheckpoint => execute_checkpoint_rollback_hotkey(game),
+        ScreenHotkeyAction::ToggleScrub => {
+            if !with_state(|st| st.scrub_enabled) {
+                mod_chat(game, &tr("command.rreturn.scrub.disabled"));
+                return;
+            }
+            if is_scrubbing() {
+                commit_scrub(game);
+            } else {
+                start_scrub(game);
+            }
+        }
+        ScreenHotkeyAction::CommitScrub => commit_scrub(game),
+        ScreenHotkeyAction::CancelScrub => cancel_scrub(game),
+        ScreenHotkeyAction::StepScrub(delta) => step_scrub_ticks(delta),
+    }
+}
+
+fn flush_pending_screen_hotkey(game: &mut Game<'_>) {
+    let pending = PENDING_SCREEN_HOTKEY.with(|c| c.borrow_mut().take().map(|(_, a)| a));
+    if let Some(act) = pending {
+        execute_screen_hotkey_action(game, act);
+    }
+}
+
+pub fn handle_screen_key_pressed_any(
+    game: &Game<'_>,
+    key: &str,
+    repeat: bool,
+    modifiers: u32,
+    canceled: &mut bool,
+) -> bool {
+    if game.title.is_some()
+        || game.player.is_none()
+        || game.screen == super::super::Screen::Dead
+    {
+        return false;
+    }
+    let scrub_key = game
+        .mod_key(MOD_ID, "scrub")
+        .map(|(k, _)| k)
+        .unwrap_or_else(|| "key.keyboard.u".to_owned());
+
+    if is_scrubbing() {
+        if !repeat && is_scrub_key_match(key, &scrub_key) {
+            SUPPRESS_SCREEN_CHAR.with(|c| *c.borrow_mut() = true);
+            PENDING_SCREEN_HOTKEY.with(|c| {
+                *c.borrow_mut() = Some((key.to_owned(), ScreenHotkeyAction::CommitScrub))
+            });
+            *canceled = true;
+            return true;
+        }
+        if !repeat && (key == "key.keyboard.enter" || key == "key.keyboard.keypad_enter") {
+            PENDING_SCREEN_HOTKEY.with(|c| {
+                *c.borrow_mut() = Some((key.to_owned(), ScreenHotkeyAction::CommitScrub))
+            });
+            *canceled = true;
+            return true;
+        }
+        if !repeat && key == "key.keyboard.escape" {
+            PENDING_SCREEN_HOTKEY.with(|c| {
+                *c.borrow_mut() = Some((key.to_owned(), ScreenHotkeyAction::CancelScrub))
+            });
+            *canceled = true;
+            return true;
+        }
+        if key == "key.keyboard.left" || key == "key.keyboard.a" {
+            SUPPRESS_SCREEN_CHAR.with(|c| *c.borrow_mut() = true);
+            PENDING_SCREEN_HOTKEY.with(|c| {
+                *c.borrow_mut() = Some((key.to_owned(), ScreenHotkeyAction::StepScrub(-1.0)))
+            });
+            *canceled = true;
+            return true;
+        }
+        if key == "key.keyboard.right" || key == "key.keyboard.d" {
+            SUPPRESS_SCREEN_CHAR.with(|c| *c.borrow_mut() = true);
+            PENDING_SCREEN_HOTKEY.with(|c| {
+                *c.borrow_mut() = Some((key.to_owned(), ScreenHotkeyAction::StepScrub(1.0)))
+            });
+            *canceled = true;
+            return true;
+        }
+        *canceled = true;
+        return true;
+    }
+
+    if repeat {
+        return false;
+    }
+    let save_key = game
+        .mod_key(MOD_ID, "save")
+        .map(|(k, _)| k)
+        .unwrap_or_else(|| "key.keyboard.f6".to_owned());
+    let load_key = game
+        .mod_key(MOD_ID, "load")
+        .map(|(k, _)| k)
+        .unwrap_or_else(|| "key.keyboard.f7".to_owned());
+
+    if key == save_key {
+        PENDING_SCREEN_HOTKEY.with(|c| {
+            *c.borrow_mut() = Some((key.to_owned(), ScreenHotkeyAction::SaveCheckpoint))
+        });
+        *canceled = true;
+        return true;
+    }
+    if key == load_key {
+        PENDING_SCREEN_HOTKEY.with(|c| {
+            *c.borrow_mut() = Some((key.to_owned(), ScreenHotkeyAction::LoadCheckpoint))
+        });
+        *canceled = true;
+        return true;
+    }
+    if is_scrub_key_match(key, &scrub_key) {
+        let ctrl = (modifiers & 2) != 0;
+        let focused = is_text_input_focused(game);
+        if !focused || ctrl {
+            if !ctrl {
+                SUPPRESS_SCREEN_CHAR.with(|c| *c.borrow_mut() = true);
+            }
+            PENDING_SCREEN_HOTKEY.with(|c| {
+                *c.borrow_mut() = Some((key.to_owned(), ScreenHotkeyAction::ToggleScrub))
+            });
+            *canceled = true;
+            return true;
+        }
+    }
+    false
+}
+
+
+pub fn handle_screen_key_pressed(
+    game: &Game<'_>,
+    key: &str,
+    repeat: bool,
+    modifiers: u32,
+    canceled: &mut bool,
+) {
+    let _ = handle_screen_key_pressed_any(game, key, repeat, modifiers, canceled);
+}
+
+pub fn handle_screen_mouse_pressed(
+    _game: &Game<'_>,
+    button: i32,
+    mx: f32,
+    my: f32,
+    canceled: &mut bool,
+) {
+    if is_scrubbing() && handle_scrub_hud_mouse_pressed(button, mx, my) {
+        *canceled = true;
+    }
+}
+
+pub fn handle_screen_mouse_released(_game: &Game<'_>, button: i32, canceled: &mut bool) {
+    if is_scrubbing() {
+        let was_drag = consume_scrub_hud_release();
+        handle_scrub_hud_mouse_released(button);
+        if was_drag {
+            *canceled = true;
+        }
+    }
+}
+
+pub fn handle_screen_mouse_scrolled(_game: &Game<'_>, scroll_y: f64, canceled: &mut bool) {
+    if is_scrubbing() && apply_scrub_wheel_delta(scroll_y) {
+        *canceled = true;
+    }
+}
+
+pub fn handle_screen_char_typed_dispatch(
+    game: &Game<'_>,
+    screen_id: &str,
+    ch: char,
+    modifiers: u32,
+    canceled: &mut bool,
+) {
+    let suppressed = SUPPRESS_SCREEN_CHAR.with(|c| std::mem::replace(&mut *c.borrow_mut(), false));
+    if suppressed || is_scrubbing() {
+        *canceled = true;
+        return;
+    }
+    let _ = (game, ch, modifiers);
+}
+
+pub fn handle_play_mouse_button(game: &Game<'_>, button: i32, pressed: bool) -> bool {
+    if !is_scrubbing() {
+        return false;
+    }
+    if pressed {
+        let [mx, my] = game.cursor();
+        let _ = handle_scrub_hud_mouse_pressed(button, mx, my);
+    } else {
+        handle_scrub_hud_mouse_released(button);
+    }
+    true
+}
+
+pub fn handle_screen_render_post(
+    game: &Game<'_>,
+    draw: &mut horizon_client::hud::HudBatch,
+    screen_id: &str,
+) {
+    if with_state(|st| st.scrub_enabled) && is_scrubbing() && screen_id != "dead" {
+        draw_scrub_hud(game, draw);
+    }
+}
 
 pub fn execute_checkpoint_save_hotkey(game: &mut Game<'_>) {
     let ui_snap = capture_client_ui_snapshot(game);
@@ -86,7 +321,25 @@ pub fn execute_checkpoint_rollback_hotkey(game: &mut Game<'_>) {
 }
 
 pub fn handle_key(game: &mut Game<'_>, key: &str, action: mod_api::KeyAction) {
-    if !game.playing() {
+    let queued = PENDING_SCREEN_HOTKEY.with(|c| {
+        let mut cur = c.borrow_mut();
+        if matches!(action, mod_api::KeyAction::Press | mod_api::KeyAction::Repeat)
+            && cur.as_ref().is_some_and(|(k, _)| k == key)
+        {
+            cur.take().map(|(_, a)| a)
+        } else {
+            None
+        }
+    });
+    if let Some(act) = queued {
+        execute_screen_hotkey_action(game, act);
+        return;
+    }
+
+    if game.title.is_some()
+        || game.player.is_none()
+        || game.screen == super::super::Screen::Dead
+    {
         return;
     }
 
@@ -95,34 +348,37 @@ pub fn handle_key(game: &mut Game<'_>, key: &str, action: mod_api::KeyAction) {
         .map(|(k, _)| k)
         .unwrap_or_else(|| "key.keyboard.u".to_owned());
 
-    let is_scrub_key = key == scrub_key
-        || key.eq_ignore_ascii_case("key.keyboard.u")
-        || key.eq_ignore_ascii_case("u");
+    if is_scrub_key_match(key, &scrub_key) && matches!(action, mod_api::KeyAction::Release) {
+        if is_scrubbing() && is_held_scrub(300) {
+            commit_scrub(game);
+        }
+        return;
+    }
 
-    if is_scrub_key {
+    let in_playing = game.playing();
+    let overlay_over_play = game.screen == super::super::Screen::Playing && !in_playing;
+    if !in_playing && !overlay_over_play {
+        return;
+    }
+
+    if is_scrub_key_match(key, &scrub_key) {
+        let ctrl = game.has_control_down_with_quirk();
         if !with_state(|st| st.scrub_enabled) {
-            if matches!(action, mod_api::KeyAction::Press) {
+            if matches!(action, mod_api::KeyAction::Press)
+                && (in_playing || !is_text_input_focused(game) || ctrl)
+            {
                 mod_chat(game, &tr("command.rreturn.scrub.disabled"));
             }
             return;
         }
-        match action {
-            mod_api::KeyAction::Press => {
-                if is_scrubbing() {
-                    commit_scrub(game);
-                } else {
-                    start_scrub(game);
-                }
-                return;
+        if matches!(action, mod_api::KeyAction::Press) {
+            if is_scrubbing() {
+                commit_scrub(game);
+            } else if in_playing || !is_text_input_focused(game) || ctrl {
+                start_scrub(game);
             }
-            mod_api::KeyAction::Release => {
-                if is_held_scrub(300) {
-                    commit_scrub(game);
-                }
-                return;
-            }
-            _ => return,
         }
+        return;
     }
 
     if is_scrubbing() {
@@ -168,12 +424,11 @@ pub fn handle_key(game: &mut Game<'_>, key: &str, action: mod_api::KeyAction) {
         .mod_key(MOD_ID, "anchor_menu")
         .map(|(k, _)| k)
         .unwrap_or_else(|| "key.keyboard.f8".to_owned());
-
     if key == save_key {
         execute_checkpoint_save_hotkey(game);
     } else if key == load_key {
         execute_checkpoint_rollback_hotkey(game);
-    } else if key == mode_key {
+    } else if key == mode_key && in_playing {
         let allowed = if let Some(server) = &game.integrated {
             server
                 .call(|srv| has_cheat_permission(srv, None))
@@ -268,6 +523,7 @@ pub fn handle_lifecycle(game: &mut Game<'_>, phase: WorldPhase) {
 
 pub fn handle_tick(game: &mut Game<'_>) {
     tick_ui_mode_guard();
+    flush_pending_screen_hotkey(game);
     let scrub_en = with_state(|st| st.scrub_enabled);
     if scrub_en {
         if game.audio.capture.is_none() {
@@ -497,6 +753,7 @@ pub fn handle_frame_render_pre(
     world_partial: f32,
     partial: f32,
 ) {
+    flush_pending_screen_hotkey(game);
     if !with_state(|st| st.scrub_enabled) {
         return;
     }

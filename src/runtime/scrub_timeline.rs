@@ -6,6 +6,8 @@ use super::super::{
 use super::scrub_audio::prewarm_reverse_sound;
 use super::scrub_perf::*;
 use super::snapshots::{BreathSnapshot, DragonSnapshot, RocketSnapshot, TridentSnapshot};
+use super::types::scrub_max_history_ticks;
+use super::ui_snapshot::*;
 use horizon_client::{
     block_entity_anim::BlockEntityAnims,
     boss_overlay::BossOverlay,
@@ -191,6 +193,11 @@ pub struct TickHistoryFrame {
     pub player_sprinting: bool,
     pub player_hurt_time: i32,
     pub player_hurt_dir: f32,
+    pub carried: Arc<Option<ItemStack>>,
+    pub craft_grid: Arc<Vec<Option<ItemStack>>>,
+    pub ender_items: Arc<Vec<Option<ItemStack>>>,
+    pub ui: Arc<ClientUiSnapshot>,
+    pub open_container_bes: Option<Arc<Vec<((i32, i32, i32), BlockEntity)>>>,
 }
 
 #[derive(Default)]
@@ -325,6 +332,12 @@ pub struct ScrubHistoryRing {
     last_others: Arc<Vec<OtherEntity>>,
     last_breath: Arc<Vec<BreathSnapshot>>,
     last_fangs: Arc<Vec<super::super::fangs::Fangs>>,
+    last_carried: Option<Arc<Option<ItemStack>>>,
+    last_craft_grid: Option<Arc<Vec<Option<ItemStack>>>>,
+    last_ender_items: Option<Arc<Vec<Option<ItemStack>>>>,
+    last_ui: Option<Arc<ClientUiSnapshot>>,
+    last_open_be_gens: Vec<((i32, i32, i32), u64)>,
+    last_open_bes: Option<Arc<Vec<((i32, i32, i32), BlockEntity)>>>,
 }
 
 pub fn extract_chunk_deltas(
@@ -446,6 +459,12 @@ impl ScrubHistoryRing {
             last_others: Arc::new(Vec::new()),
             last_breath: Arc::new(Vec::new()),
             last_fangs: Arc::new(Vec::new()),
+            last_carried: None,
+            last_craft_grid: None,
+            last_ender_items: None,
+            last_ui: None,
+            last_open_be_gens: Vec::new(),
+            last_open_bes: None,
         }
     }
 
@@ -481,6 +500,12 @@ impl ScrubHistoryRing {
         self.last_others = Arc::new(Vec::new());
         self.last_breath = Arc::new(Vec::new());
         self.last_fangs = Arc::new(Vec::new());
+        self.last_carried = None;
+        self.last_craft_grid = None;
+        self.last_ender_items = None;
+        self.last_ui = None;
+        self.last_open_be_gens.clear();
+        self.last_open_bes = None;
     }
 
     pub fn time_range(&self) -> Option<(i64, i64)> {
@@ -766,6 +791,68 @@ impl ScrubHistoryRing {
             let arc = Arc::new(game.offhand.clone());
             self.last_offhand = Some(Arc::clone(&arc));
             arc
+        };
+        let carried = if let Some(prev) = &self.last_carried
+            && **prev == game.carried
+        {
+            Arc::clone(prev)
+        } else {
+            let arc = Arc::new(game.carried.clone());
+            self.last_carried = Some(Arc::clone(&arc));
+            arc
+        };
+        let craft_grid = if let Some(prev) = &self.last_craft_grid
+            && **prev == game.craft_grid
+        {
+            Arc::clone(prev)
+        } else {
+            let arc = Arc::new(game.craft_grid.clone());
+            self.last_craft_grid = Some(Arc::clone(&arc));
+            arc
+        };
+        let ender_items = if let Some(prev) = &self.last_ender_items
+            && **prev == game.ender_items
+        {
+            Arc::clone(prev)
+        } else {
+            let arc = Arc::new(game.ender_items.clone());
+            self.last_ender_items = Some(Arc::clone(&arc));
+            arc
+        };
+        let live_ui = capture_client_ui_snapshot(game);
+        let ui = if let Some(prev) = &self.last_ui
+            && **prev == live_ui
+        {
+            Arc::clone(prev)
+        } else {
+            let arc = Arc::new(live_ui);
+            self.last_ui = Some(Arc::clone(&arc));
+            arc
+        };
+        let open_container_bes = if game.container.is_some() {
+            let parts = game.container_parts();
+            let gens: Vec<((i32, i32, i32), u64)> = parts
+                .iter()
+                .map(|&(pos, _)| (pos, game.world.block_entities.generation(&pos).unwrap_or(0)))
+                .collect();
+            if gens == self.last_open_be_gens && self.last_open_bes.is_some() {
+                self.last_open_bes.clone()
+            } else {
+                let mut vec = Vec::with_capacity(parts.len());
+                for (pos, _) in parts {
+                    if let Some(be) = game.world.block_entities.get(&pos) {
+                        vec.push((pos, be.clone()));
+                    }
+                }
+                let arc = (!vec.is_empty()).then(|| Arc::new(vec));
+                self.last_open_be_gens = gens;
+                self.last_open_bes = arc.clone();
+                arc
+            }
+        } else {
+            self.last_open_be_gens.clear();
+            self.last_open_bes = None;
+            None
         };
 
         let fov_modifier = if game.view.fov_modifier > 0.05 {
@@ -1139,7 +1226,8 @@ impl ScrubHistoryRing {
             }
         }
 
-        if self.frames.len() >= MAX_SCRUB_TICKS {
+        let max_ticks = scrub_max_history_ticks();
+        while self.frames.len() >= max_ticks {
             if let Some(evicted) = self.frames.pop_front()
                 && matches!(evicted.particles, ParticleFrameRef::Inline(_))
             {
@@ -1240,6 +1328,11 @@ impl ScrubHistoryRing {
             player_sprinting,
             player_hurt_time,
             player_hurt_dir,
+            carried,
+            craft_grid,
+            ender_items,
+            ui,
+            open_container_bes,
         });
         self.unsealed_inline_frames += 1;
         self.maybe_seal_client_segment();

@@ -62,5 +62,16 @@
   "command.rreturn.scrub.disabled": "[RReturn] Перемотка времени отключена в настройках.",
   "command.rreturn.scrub.status": "[RReturn] Управление временем: %s",
   "message.rreturn.scrub.commit": "[RReturn] Время успешно перемотано на %sс назад.",
-  "message.rreturn.scrub.cancel": "[RReturn] Перемотка времени отменена."
+  "message.rreturn.scrub.cancel": "[RReturn] Перемотка времени отменена.",
+  "rreturn.ui.sec_unit": "с",
+  "rreturn.scrub_hud.badge_rewind": "ПЕРЕМОТКА",
+  "rreturn.scrub_hud.badge_live": "СЕЙЧАС",
+  "rreturn.scrub_hud.apply": "Применить",
+  "rreturn.scrub_hud.cancel": "Отмена",
+  "rreturn.scrub_hud.hint": "Колесо / A D  Перемотка   |   Enter / U  Применить   |   Esc  Отмена",
+  "rreturn.scrub_hud.ctx_creative": "Творчество",
+  "rreturn.scrub_hud.ctx_inventory": "Инвентарь",
+  "rreturn.scrub_hud.ctx_container": "Контейнер",
+  "rreturn.scrub_hud.ctx_chat": "Чат",
+  "rreturn.scrub_hud.ctx_editor": "Редактор"
 }

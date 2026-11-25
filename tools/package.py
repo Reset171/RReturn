@@ -194,6 +194,12 @@ impl mod_api::Hooks for Mod {
                 .category("key.category.rreturn")
                 .context(KeyConflictContext::InGame),
         );
+        r.register_key_mapping(
+            KeyRegistration::new("settings_menu", "key.keyboard.k")
+                .label("key.rreturn.settings_menu")
+                .category("key.category.rreturn")
+                .context(KeyConflictContext::InGame),
+        );
 
         let _ = r.register_setting(
             SettingSpec::toggle("auto_save", "rreturn.setting.auto_save", true)

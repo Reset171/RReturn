@@ -52,6 +52,8 @@ from tools.tests.test_world_settings import (
     test_23_weather_and_thunder_rollback,
     test_105_dev_mode_chat_filtering,
     test_106_logs_directory_structure,
+    test_111_settings_ui_toggles_search_and_persistence,
+    test_115_rreturn_menu_icons_and_per_player_overrides,
 )
 from tools.tests.test_ui_rollback_scrub import (
     test_112_scrub_blocks_chat_and_hud_controls,
@@ -303,9 +305,11 @@ def build_test_catalog():
         (108, "Test 108: Scrub Villager Profession and Mass TNT Continuity", "scrubbing", test_108_scrub_villager_profession_and_mass_tnt_continuity),
         (109, "Test 109: Scrub Commit No Sprint Effect", "scrubbing", test_109_scrub_commit_no_sprint_effect),
         (110, "Test 110: Scrub Commit No Sound Channel Leak", "scrubbing", test_110_scrub_commit_no_sound_channel_leak),
+        (111, "Test 111: Settings UI Toggles, Search and Persistence", "world_settings", test_111_settings_ui_toggles_search_and_persistence),
         (112, "Test 112: Scrub Blocks Chat Keys and Dark HUD Controls", "scrubbing", test_112_scrub_blocks_chat_and_hud_controls),
         (113, "Test 113: Checkpoint Inside Creative, Chat and Containers", "ui_state", test_113_checkpoint_inside_creative_chat_and_containers),
         (114, "Test 114: Text Focus Ctrl+U and Reversible UI Scrub", "scrubbing", test_114_text_focus_ctrl_u_and_reversible_ui_scrub),
+        (115, "Test 115: RReturn Menu Icons and Per-Player Overrides", "world_settings", test_115_rreturn_menu_icons_and_per_player_overrides),
     ]
 
 

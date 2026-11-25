@@ -9,6 +9,10 @@ use super::scrub_hud::scrub_hud_bounds_json;
 use super::scrub_perf::*;
 use super::scrub_server::*;
 use super::scrub_timeline::*;
+use super::settings_catalog::UiTab;
+use super::settings_ui::{
+    request_open_settings_tab, request_open_settings_ui, settings_ui_bounds_json,
+};
 use super::snapshots::*;
 use super::storage::*;
 use super::telemetry::*;
@@ -136,7 +140,32 @@ pub fn execute_rreturn_command(
             };
             tr_args("command.rreturn.dev.status", &[&state_str])
         }
-        _ => "[RReturn] Usage: /rreturn <set|load|json|status|slot|policy|metrics|anchor|autosave|scrub|bench|f3|dev>".to_owned(),
+        "ui" | "settings" | "config" | "menu" => {
+            match words.get(2).copied() {
+                Some("bounds") => settings_ui_bounds_json(),
+                Some("rollback") => {
+                    request_open_settings_tab(game, Some(UiTab::Rollback));
+                    tr("command.rreturn.ui.opened")
+                }
+                Some("scrub") => {
+                    request_open_settings_tab(game, Some(UiTab::Scrub));
+                    tr("command.rreturn.ui.opened")
+                }
+                Some("players" | "anchors") => {
+                    request_open_settings_tab(game, Some(UiTab::Players));
+                    tr("command.rreturn.ui.opened")
+                }
+                Some("system") => {
+                    request_open_settings_tab(game, Some(UiTab::System));
+                    tr("command.rreturn.ui.opened")
+                }
+                _ => {
+                    request_open_settings_ui(game);
+                    tr("command.rreturn.ui.opened")
+                }
+            }
+        }
+        _ => "[RReturn] Usage: /rreturn <set|load|json|status|slot|policy|metrics|anchor|autosave|scrub|settings|bench|f3|dev>".to_owned(),
     };
     vec![reply]
 }
@@ -714,6 +743,10 @@ pub fn handle_client_command(game: &mut Game<'_>, command: &str, ran: &mut bool)
         Some("ui" | "settings" | "config" | "menu")
     ) {
         match trimmed.split_whitespace().nth(2) {
+            Some("bounds") => {
+                let bounds = settings_ui_bounds_json();
+                game.native_chat(&bounds);
+            }
             Some("state") => {
                 let json = serde_json::to_string(&ui_state_json(game))
                     .unwrap_or_else(|_| "{}".to_owned());
@@ -723,7 +756,26 @@ pub fn handle_client_command(game: &mut Game<'_>, command: &str, ran: &mut bool)
                 let json = scrub_hud_bounds_json();
                 game.native_chat(&json);
             }
-            _ => {}
+            Some("rollback") => {
+                request_open_settings_tab(game, Some(UiTab::Rollback));
+                mod_chat(game, &tr("command.rreturn.ui.opened"));
+            }
+            Some("scrub") => {
+                request_open_settings_tab(game, Some(UiTab::Scrub));
+                mod_chat(game, &tr("command.rreturn.ui.opened"));
+            }
+            Some("players" | "anchors") => {
+                request_open_settings_tab(game, Some(UiTab::Players));
+                mod_chat(game, &tr("command.rreturn.ui.opened"));
+            }
+            Some("system") => {
+                request_open_settings_tab(game, Some(UiTab::System));
+                mod_chat(game, &tr("command.rreturn.ui.opened"));
+            }
+            _ => {
+                request_open_settings_ui(game);
+                mod_chat(game, &tr("command.rreturn.ui.opened"));
+            }
         }
         return;
     }

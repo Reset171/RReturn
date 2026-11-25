@@ -9,8 +9,11 @@ use super::load_disk::load_checkpoint_from_disk;
 use super::restore::rollback_checkpoint_on_server;
 use super::restore_client::{apply_client_level_rollback, apply_client_rollback_with_ui};
 use super::scrub_hud::{
-    consume_scrub_hud_release, draw_scrub_hud, handle_scrub_hud_mouse_pressed,
-    handle_scrub_hud_mouse_released,
+    draw_scrub_hud, handle_scrub_hud_mouse_pressed, handle_scrub_hud_mouse_released,
+};
+use super::settings_ui::{
+    flush_settings_ui_actions, handle_screen_char_typed, is_settings_ui_open,
+    request_open_settings_ui, reset_settings_ui_state,
 };
 use super::snapshots::*;
 use super::storage::has_disk_checkpoint;
@@ -76,6 +79,9 @@ pub fn handle_screen_key_pressed_any(
     modifiers: u32,
     canceled: &mut bool,
 ) -> bool {
+    if is_settings_ui_open(game) && !is_scrubbing() {
+        return false;
+    }
     if game.title.is_some()
         || game.player.is_none()
         || game.screen == super::super::Screen::Dead
@@ -173,45 +179,6 @@ pub fn handle_screen_key_pressed_any(
     false
 }
 
-
-pub fn handle_screen_key_pressed(
-    game: &Game<'_>,
-    key: &str,
-    repeat: bool,
-    modifiers: u32,
-    canceled: &mut bool,
-) {
-    let _ = handle_screen_key_pressed_any(game, key, repeat, modifiers, canceled);
-}
-
-pub fn handle_screen_mouse_pressed(
-    _game: &Game<'_>,
-    button: i32,
-    mx: f32,
-    my: f32,
-    canceled: &mut bool,
-) {
-    if is_scrubbing() && handle_scrub_hud_mouse_pressed(button, mx, my) {
-        *canceled = true;
-    }
-}
-
-pub fn handle_screen_mouse_released(_game: &Game<'_>, button: i32, canceled: &mut bool) {
-    if is_scrubbing() {
-        let was_drag = consume_scrub_hud_release();
-        handle_scrub_hud_mouse_released(button);
-        if was_drag {
-            *canceled = true;
-        }
-    }
-}
-
-pub fn handle_screen_mouse_scrolled(_game: &Game<'_>, scroll_y: f64, canceled: &mut bool) {
-    if is_scrubbing() && apply_scrub_wheel_delta(scroll_y) {
-        *canceled = true;
-    }
-}
-
 pub fn handle_screen_char_typed_dispatch(
     game: &Game<'_>,
     screen_id: &str,
@@ -224,7 +191,9 @@ pub fn handle_screen_char_typed_dispatch(
         *canceled = true;
         return;
     }
-    let _ = (game, ch, modifiers);
+    if screen_id == "mod" {
+        handle_screen_char_typed(game, ch, modifiers, canceled);
+    }
 }
 
 pub fn handle_play_mouse_button(game: &Game<'_>, button: i32, pressed: bool) -> bool {
@@ -424,6 +393,18 @@ pub fn handle_key(game: &mut Game<'_>, key: &str, action: mod_api::KeyAction) {
         .mod_key(MOD_ID, "anchor_menu")
         .map(|(k, _)| k)
         .unwrap_or_else(|| "key.keyboard.f8".to_owned());
+    let settings_key = game
+        .mod_key(MOD_ID, "settings_menu")
+        .map(|(k, _)| k)
+        .unwrap_or_else(|| "key.keyboard.k".to_owned());
+
+    if key == settings_key {
+        if in_playing && !is_settings_ui_open(game) {
+            request_open_settings_ui(game);
+        }
+        return;
+    }
+
     if key == save_key {
         execute_checkpoint_save_hotkey(game);
     } else if key == load_key {
@@ -506,6 +487,7 @@ pub fn handle_lifecycle(game: &mut Game<'_>, phase: WorldPhase) {
         | WorldPhase::WorldCloseFailed
         | WorldPhase::WorldOpenFailed => {
             clear_active_ui_world_root();
+            reset_settings_ui_state();
             clear_all_slots();
             clear_client_snapshots();
             with_scrub_ring_mut(|r| r.clear());
@@ -524,6 +506,7 @@ pub fn handle_lifecycle(game: &mut Game<'_>, phase: WorldPhase) {
 pub fn handle_tick(game: &mut Game<'_>) {
     tick_ui_mode_guard();
     flush_pending_screen_hotkey(game);
+    flush_settings_ui_actions(game);
     let scrub_en = with_state(|st| st.scrub_enabled);
     if scrub_en {
         if game.audio.capture.is_none() {
@@ -754,6 +737,10 @@ pub fn handle_frame_render_pre(
     partial: f32,
 ) {
     flush_pending_screen_hotkey(game);
+    flush_settings_ui_actions(game);
+    if is_settings_ui_open(game) {
+        let _ = game.apply_screen_blur();
+    }
     if !with_state(|st| st.scrub_enabled) {
         return;
     }

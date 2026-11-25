@@ -1,6 +1,7 @@
 pub mod types;
 pub mod policy;
 pub mod snapshots;
+pub mod ui_snapshot;
 pub mod benchmark;
 pub mod adaptive;
 pub mod capture;
@@ -33,6 +34,7 @@ pub mod hooks;
 pub use types::*;
 pub use policy::*;
 pub use snapshots::*;
+pub use ui_snapshot::*;
 pub use benchmark::*;
 pub use adaptive::*;
 pub use capture::*;

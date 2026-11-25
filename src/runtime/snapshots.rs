@@ -10,6 +10,7 @@ use horizon_gameplay::{
     tnt::PrimedTnt,
 };
 use super::types::*;
+use super::ui_snapshot::clear_client_ui_slots;
 use horizon_client::{
     advancements::Progress,
     chunk::Chunk,
@@ -432,6 +433,7 @@ pub fn clear_client_snapshots() {
     if let Ok(mut lock) = client_slots_lock().write() {
         lock.clear();
     }
+    clear_client_ui_slots();
 }
 
 std::thread_local! {

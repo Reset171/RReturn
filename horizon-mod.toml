@@ -55,6 +55,42 @@ file = "crates/horizon-client/src/game/items/potions.rs"
 name = "rreturn_potions"
 source = "src/ext/potions_ext.rs"
 
+[[native.module]]
+id = "sign_edit_ext"
+file = "crates/horizon-client/src/game/interface/sign_edit.rs"
+name = "rreturn_sign_edit"
+source = "src/ext/sign_edit_ext.rs"
+
+[[native.module]]
+id = "books_ext"
+file = "crates/horizon-client/src/game/interface/books.rs"
+name = "rreturn_books"
+source = "src/ext/books_ext.rs"
+
+[[native.module]]
+id = "command_blocks_ext"
+file = "crates/horizon-client/src/game/administration/command_blocks.rs"
+name = "rreturn_command_blocks"
+source = "src/ext/command_blocks_ext.rs"
+
+[[native.module]]
+id = "stations_ext"
+file = "crates/horizon-client/src/game/blocks/stations.rs"
+name = "rreturn_stations"
+source = "src/ext/stations_ext.rs"
+
+[[native.module]]
+id = "recipe_book_ext"
+file = "crates/horizon-client/src/game/items/recipe_book.rs"
+name = "rreturn_recipe_book"
+source = "src/ext/recipe_book_ext.rs"
+
+[[native.module]]
+id = "mount_menu_ext"
+file = "crates/horizon-client/src/game/interface/mount_menu.rs"
+name = "rreturn_mount_menu"
+source = "src/ext/mount_menu_ext.rs"
+
 [[native.mixin]]
 id = "native-key"
 target = "horizon_client::game::native_hooks::input_key::Game<'_>::native_input_key"
@@ -195,6 +231,81 @@ bindings = [
   { name = "game", ty = "&mut Game<'_>", value = "&mut *self" },
   { name = "xo", ty = "f64", value = "xo" },
   { name = "yo", ty = "f64", value = "yo" },
+]
+
+[[native.mixin]]
+id = "render-frame-pre"
+target = "horizon_client::game::native_hooks::render_frame_pre::Game<'_>::native_render_frame_pre"
+kind = "HEAD"
+helper = "src/hooks/hook_render_frame_pre.rs"
+bindings = [
+  { name = "game", ty = "&mut Game<'_>", value = "&mut *self" },
+  { name = "world_partial", ty = "f32", value = "world_partial_tick" },
+  { name = "partial", ty = "f32", value = "partial_tick" },
+]
+
+[[native.mixin]]
+id = "render-gui-post"
+target = "horizon_client::game::native_hooks::render_gui_post::Game<'_>::native_render_gui_post"
+kind = "HEAD"
+helper = "src/hooks/hook_render_gui_post.rs"
+bindings = [
+  { name = "game", ty = "&Game<'_>", value = "&*self" },
+  { name = "draw", ty = "&mut horizon_client::hud::HudBatch", value = "&mut *draw" },
+]
+
+[[native.mixin]]
+id = "movement-input"
+target = "horizon_client::game::native_hooks::movement_input::Game<'_>::mod_movement_keys"
+kind = "HEAD"
+cancellable = true
+helper = "src/hooks/hook_movement_input.rs"
+bindings = [
+  { name = "game", ty = "&Game<'_>", value = "&*self" },
+]
+
+[[native.mixin]]
+id = "key-mapping-pre"
+target = "horizon_client::game::native_hooks::key_mapping_pre::Game<'_>::native_key_mapping_pre"
+kind = "HEAD"
+helper = "src/hooks/hook_key_mapping_pre.rs"
+bindings = [
+  { name = "game", ty = "&mut Game<'_>", value = "&mut *self" },
+  { name = "mapping", ty = "&str", value = "mapping" },
+  { name = "pressed", ty = "bool", value = "pressed" },
+  { name = "canceled", ty = "&mut bool", value = "&mut *canceled" },
+]
+
+[[native.mixin]]
+id = "server-chunk-unload"
+target = "horizon_client::game::native_hooks::on_chunk_unloaded::Game<'_>::native_chunk_unload"
+kind = "HEAD"
+helper = "src/hooks/hook_chunk_unloaded.rs"
+bindings = [
+  { name = "game", ty = "&mut Game<'_>", value = "&mut *self" },
+  { name = "dimension", ty = "&str", value = "dimension" },
+  { name = "chunk", ty = "[i32; 2]", value = "chunk" },
+]
+
+[[native.mixin]]
+id = "client-chunk-unload"
+target = "horizon_client::game::native_hooks::client_chunk_unload::Game<'_>::native_client_chunk_unload"
+kind = "HEAD"
+helper = "src/hooks/hook_client_chunk_unload.rs"
+bindings = [
+  { name = "game", ty = "&mut Game<'_>", value = "&mut *self" },
+  { name = "dimension", ty = "&str", value = "dimension" },
+  { name = "chunk", ty = "[i32; 2]", value = "chunk" },
+]
+
+[[native.mixin]]
+id = "mode-changed-under-inventory-pre"
+target = "horizon_client::game::game_mode::Game<'_>::mode_changed_under_inventory"
+kind = "HEAD"
+cancellable = true
+helper = "src/hooks/hook_mode_changed_pre.rs"
+bindings = [
+  { name = "_game", ty = "&mut Game<'_>", value = "&mut *self" },
 ]
 
 [[native.mixin]]

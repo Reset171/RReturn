@@ -7,12 +7,83 @@ use super::capture::create_checkpoint_on_server;
 use super::hydration::hydrate_slot_from_disk_on_server;
 use super::load_disk::load_checkpoint_from_disk;
 use super::restore::rollback_checkpoint_on_server;
-use super::restore_client::apply_client_level_rollback;
+use super::restore_client::{apply_client_level_rollback, apply_client_rollback_with_ui};
 use super::snapshots::*;
 use super::storage::has_disk_checkpoint;
 use super::types::*;
 use super::ui::{load_saved_settings, save_current_settings};
+use super::ui_snapshot::*;
 use std::ops::ControlFlow;
+
+pub fn execute_checkpoint_save_hotkey(game: &mut Game<'_>) {
+    let ui_snap = capture_client_ui_snapshot(game);
+    if let Some(server) = &game.integrated {
+        let res = server.call(|srv| {
+            let root = srv.world_root.clone();
+            if !has_cheat_permission(srv, None) {
+                return (false, root, tr("command.rreturn.no_permission"));
+            }
+            if create_checkpoint_on_server(srv, None) {
+                with_state_mut(|st| st.current_slot = "default".to_owned());
+                (true, root, tr("command.rreturn.set.success"))
+            } else {
+                (false, root, tr("command.rreturn.set.failed"))
+            }
+        });
+        if let Some((ok, root, text)) = res {
+            set_active_ui_world_root(&root);
+            if ok {
+                save_client_ui_slot(&root, "default", ui_snap);
+            }
+            mod_chat(game, &text);
+        }
+    } else if !has_cheat_permission(game, None) {
+        mod_chat(game, &tr("command.rreturn.no_permission"));
+    } else {
+        let root = resolve_ui_world_root(&game.world_root);
+        save_client_ui_slot(&root, "default", ui_snap);
+        with_state_mut(|st| st.pending_save_request = true);
+    }
+}
+
+pub fn execute_checkpoint_rollback_hotkey(game: &mut Game<'_>) {
+    if let Some(server) = &game.integrated {
+        let res = server.call(|srv| {
+            let root = srv.world_root.clone();
+            if !has_level_4_permission(srv, None) {
+                return (false, root, tr("command.rreturn.no_permission"));
+            }
+            if rollback_checkpoint_on_server(srv) {
+                (
+                    true,
+                    root,
+                    tr_args(
+                        "command.rreturn.load.success",
+                        &[&srv.world.game_time.to_string()],
+                    ),
+                )
+            } else {
+                (false, root, tr("command.rreturn.load.failed"))
+            }
+        });
+        if let Some((did_rollback, root, text)) = res {
+            set_active_ui_world_root(&root);
+            if did_rollback {
+                close_client_container_local(game);
+                game.screen = super::super::Screen::Playing;
+                let slot = with_state(|st| st.current_slot.clone());
+                apply_client_rollback_with_ui(game, &slot, true);
+            }
+            mod_chat(game, &text);
+        }
+    } else if !has_level_4_permission(game, None) {
+        mod_chat(game, &tr("command.rreturn.no_permission"));
+    } else {
+        close_client_container_local(game);
+        game.screen = super::super::Screen::Playing;
+        with_state_mut(|st| st.pending_load_request = true);
+    }
+}
 
 pub fn handle_key(game: &mut Game<'_>, key: &str, action: mod_api::KeyAction) {
     if !game.playing() {
@@ -99,59 +170,9 @@ pub fn handle_key(game: &mut Game<'_>, key: &str, action: mod_api::KeyAction) {
         .unwrap_or_else(|| "key.keyboard.f8".to_owned());
 
     if key == save_key {
-        if let Some(server) = &game.integrated {
-            let msg = server.call(|srv| {
-                if !has_cheat_permission(srv, None) {
-                    return tr("command.rreturn.no_permission");
-                }
-                if create_checkpoint_on_server(srv, None) {
-                    tr("command.rreturn.set.success")
-                } else {
-                    tr("command.rreturn.set.failed")
-                }
-            });
-            if let Some(text) = msg {
-                mod_chat(game, &text);
-            }
-        } else if !has_cheat_permission(game, None) {
-            mod_chat(game, &tr("command.rreturn.no_permission"));
-        } else {
-            with_state_mut(|st| st.pending_save_request = true);
-        }
+        execute_checkpoint_save_hotkey(game);
     } else if key == load_key {
-        if let Some(server) = &game.integrated {
-            let res = server.call(|srv| {
-                if !has_level_4_permission(srv, None) {
-                    return (false, tr("command.rreturn.no_permission"));
-                }
-                if rollback_checkpoint_on_server(srv) {
-                    (
-                        true,
-                        tr_args(
-                            "command.rreturn.load.success",
-                            &[&srv.world.game_time.to_string()],
-                        ),
-                    )
-                } else {
-                    (false, tr("command.rreturn.load.failed"))
-                }
-            });
-            if let Some((did_rollback, text)) = res {
-                if did_rollback {
-                    game.close_container();
-                    game.screen = super::super::Screen::Playing;
-                    let slot = with_state(|st| st.current_slot.clone());
-                    apply_client_level_rollback(game, &slot);
-                }
-                mod_chat(game, &text);
-            }
-        } else if !has_level_4_permission(game, None) {
-            mod_chat(game, &tr("command.rreturn.no_permission"));
-        } else {
-            game.close_container();
-            game.screen = super::super::Screen::Playing;
-            with_state_mut(|st| st.pending_load_request = true);
-        }
+        execute_checkpoint_rollback_hotkey(game);
     } else if key == mode_key {
         let allowed = if let Some(server) = &game.integrated {
             server
@@ -175,6 +196,7 @@ pub fn handle_key(game: &mut Game<'_>, key: &str, action: mod_api::KeyAction) {
 }
 
 pub fn handle_server_started(game: &mut Game<'_>) {
+    set_active_ui_world_root(&game.world_root);
     load_saved_settings(game);
     clear_all_slots();
     clear_client_snapshots();
@@ -228,6 +250,7 @@ pub fn handle_lifecycle(game: &mut Game<'_>, phase: WorldPhase) {
         WorldPhase::WorldCloseFinal
         | WorldPhase::WorldCloseFailed
         | WorldPhase::WorldOpenFailed => {
+            clear_active_ui_world_root();
             clear_all_slots();
             clear_client_snapshots();
             with_scrub_ring_mut(|r| r.clear());
@@ -244,6 +267,7 @@ pub fn handle_lifecycle(game: &mut Game<'_>, phase: WorldPhase) {
 }
 
 pub fn handle_tick(game: &mut Game<'_>) {
+    tick_ui_mode_guard();
     let scrub_en = with_state(|st| st.scrub_enabled);
     if scrub_en {
         if game.audio.capture.is_none() {
@@ -264,7 +288,7 @@ pub fn handle_tick(game: &mut Game<'_>) {
     if scrub_en
         && !is_scrubbing()
         && game.native_window()
-        && game.screen == super::super::Screen::Playing
+        && is_scrub_recordable_client(game)
     {
         with_scrub_ring_mut(|r| {
             r.record_tick(game);
@@ -306,7 +330,7 @@ pub fn handle_tick(game: &mut Game<'_>) {
                 rollback_checkpoint_on_server(game);
             }
             let slot = with_state(|st| st.current_slot.clone());
-            apply_client_level_rollback(game, &slot);
+            apply_client_rollback_with_ui(game, &slot, true);
             return;
         }
     }
@@ -314,7 +338,7 @@ pub fn handle_tick(game: &mut Game<'_>) {
     if game.remote.is_some() {
         if client_epoch_needs_sync() && get_rollback_epoch() > 0 {
             let slot = with_state(|st| st.current_slot.clone());
-            apply_client_level_rollback(game, &slot);
+            apply_client_rollback_with_ui(game, &slot, true);
         }
     }
 }
@@ -349,7 +373,7 @@ pub fn handle_server_tick(game: &mut Game<'_>, world_running: bool) {
         rollback_checkpoint_on_server(game);
         if !game.serving() {
             let slot = with_state(|st| st.current_slot.clone());
-            apply_client_level_rollback(game, &slot);
+            apply_client_rollback_with_ui(game, &slot, true);
         }
         return;
     }

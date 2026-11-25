@@ -3,6 +3,7 @@ use super::policy::*;
 use super::snapshots::*;
 use super::storage::*;
 use super::types::*;
+use super::ui_snapshot::*;
 use horizon_client::{
     advancements::Progress,
     cooldowns::Cooldowns,
@@ -294,6 +295,35 @@ pub fn load_slot_from_disk(world_root: &Path, slot: &str) -> Option<TimelineSnap
                 _ => horizon_mod_runtime::attachments::ResidentAttachments::default(),
             };
 
+            let mut craft_grid = [None, None, None, None];
+            let cg_decoded = ui_decode_items(&g_val["craft_grid"]);
+            for (dst, src) in craft_grid.iter_mut().zip(cg_decoded.into_iter()) {
+                *dst = src;
+            }
+            let mut armor = [None, None, None, None];
+            let armor_decoded = ui_decode_items(&g_val["armor"]);
+            let has_meta_armor = g_val.get("armor").is_some_and(|v| v.is_array());
+            if has_meta_armor {
+                for (dst, src) in armor.iter_mut().zip(armor_decoded.into_iter()) {
+                    *dst = src;
+                }
+            }
+            let mut inventory = vec![None; 36];
+            let has_meta_inv = g_val.get("inventory").is_some_and(|v| v.is_array());
+            if has_meta_inv {
+                let inv_decoded = ui_decode_items(&g_val["inventory"]);
+                for (dst, src) in inventory.iter_mut().zip(inv_decoded.into_iter()) {
+                    *dst = src;
+                }
+            }
+            let mut ender_items = vec![None; 27];
+            let has_meta_ender = g_val.get("ender_items").is_some_and(|v| v.is_array());
+            if has_meta_ender {
+                let ender_decoded = ui_decode_items(&g_val["ender_items"]);
+                for (dst, src) in ender_items.iter_mut().zip(ender_decoded.into_iter()) {
+                    *dst = src;
+                }
+            }
             let mut guest_snap = GuestSnapshot {
                 uuid,
                 dimension: g_val["dimension"]
@@ -345,14 +375,14 @@ pub fn load_slot_from_disk(world_root: &Path, slot: &str) -> Option<TimelineSnap
                 xp_progress: g_val["xp_progress"].as_f64().unwrap_or(0.0) as f32,
                 xp_total: g_val["xp_total"].as_i64().unwrap_or(0) as i32,
                 xp_seed: g_val["xp_seed"].as_i64().unwrap_or(0) as i32,
-                inventory: vec![None; 36],
-                armor: [None, None, None, None],
-                offhand: None,
-                carried: None,
-                ender_items: vec![None; 27],
+                inventory,
+                armor,
+                offhand: ui_decode_item(&g_val["offhand"]),
+                carried: ui_decode_item(&g_val["carried"]),
+                ender_items,
                 selected: g_val["selected"].as_u64().unwrap_or(0) as usize,
-                craft_grid: [None, None, None, None],
-                craft_result: None,
+                craft_grid,
+                craft_result: ui_decode_item(&g_val["craft_result"]),
                 effects: decoded_effects,
                 effects_tick_count: g_val["effects_tick_count"].as_i64().unwrap_or(0) as i32,
                 effects_changes: g_val["effects_changes"].as_u64().unwrap_or(0) as u32,
@@ -441,7 +471,9 @@ pub fn load_slot_from_disk(world_root: &Path, slot: &str) -> Option<TimelineSnap
                 guest_snap.last_death = p_level.last_death;
                 guest_snap.recipe_book = p_level.recipe_book;
 
-                if let Some(Tag::List(items)) = tag.get("Inventory") {
+                if !has_meta_inv
+                    && let Some(Tag::List(items)) = tag.get("Inventory")
+                {
                     for it in items {
                         let slot = it
                             .get("Slot")
@@ -465,7 +497,9 @@ pub fn load_slot_from_disk(world_root: &Path, slot: &str) -> Option<TimelineSnap
                         }
                     }
                 }
-                if let Some(eq) = tag.get("equipment") {
+                if !has_meta_armor
+                    && let Some(eq) = tag.get("equipment")
+                {
                     if let Some(s) = eq.get("head").and_then(item_from_nbt) {
                         guest_snap.armor[0] = Some(s);
                     }
@@ -482,7 +516,9 @@ pub fn load_slot_from_disk(world_root: &Path, slot: &str) -> Option<TimelineSnap
                         guest_snap.offhand = Some(s);
                     }
                 }
-                if let Some(Tag::List(ender)) = tag.get("EnderItems") {
+                if !has_meta_ender
+                    && let Some(Tag::List(ender)) = tag.get("EnderItems")
+                {
                     for it in ender {
                         let slot = it
                             .get("Slot")

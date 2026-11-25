@@ -13,6 +13,7 @@ use super::storage::*;
 use super::telemetry::*;
 use super::types::*;
 use super::ui::save_current_settings;
+use super::ui_snapshot::*;
 use horizon_protocol::{
     packets::play::{self, Clientbound as C},
     text::literal,
@@ -259,6 +260,7 @@ pub fn handle_trigger_subcommand(
             if !is_valid_slot_name(slot) {
                 "[RReturn] Invalid slot name: use 1-32 characters of [A-Za-z0-9_-].".to_owned()
             } else if rollback_slot_checkpoint_on_server(game, slot) {
+                with_state_mut(|st| st.current_slot = slot.to_owned());
                 format!("[RReturn] Triggered rewind to slot '{}'.", slot)
             } else {
                 format!("[RReturn] Trigger failed: Slot '{}' not found.", slot)
@@ -269,6 +271,7 @@ pub fn handle_trigger_subcommand(
             if !is_valid_slot_name(slot) {
                 "[RReturn] Invalid slot name: use 1-32 characters of [A-Za-z0-9_-].".to_owned()
             } else if create_slot_checkpoint_on_server(game, requester, slot) {
+                with_state_mut(|st| st.current_slot = slot.to_owned());
                 format!("[RReturn] Triggered checkpoint creation for slot '{}'.", slot)
             } else {
                 tr_args("command.rreturn.set.slot_failed", &[slot])
@@ -671,6 +674,28 @@ pub fn handle_autosave_subcommand(game: &mut Game<'_>, args: &[&str]) -> String 
     }
 }
 
+fn command_save_slot(trimmed: &str) -> Option<&str> {
+    let mut it = trimmed.split_whitespace();
+    if it.next()? != "rreturn" {
+        return None;
+    }
+    match it.next()? {
+        "set" | "save" => {
+            let slot = it.next().unwrap_or("default");
+            is_valid_slot_name(slot).then_some(slot)
+        }
+        "slot" | "slots" if it.next() == Some("save") => {
+            let slot = it.next().unwrap_or("default");
+            is_valid_slot_name(slot).then_some(slot)
+        }
+        "trigger" if matches!(it.next(), Some("checkpoint" | "save")) => {
+            let slot = it.next().unwrap_or("default");
+            is_valid_slot_name(slot).then_some(slot)
+        }
+        _ => None,
+    }
+}
+
 pub fn handle_client_command(game: &mut Game<'_>, command: &str, ran: &mut bool) {
     let trimmed = command.trim().trim_start_matches('/');
     let Some(first) = trimmed.split_whitespace().next() else {
@@ -682,6 +707,13 @@ pub fn handle_client_command(game: &mut Game<'_>, command: &str, ran: &mut bool)
     *ran = true;
 
     let is_dev_cmd = trimmed.starts_with("rreturn dev");
+
+    if trimmed == "rreturn ui state" || trimmed == "rreturn settings state" {
+        let json = serde_json::to_string(&ui_state_json(game))
+            .unwrap_or_else(|_| "{}".to_owned());
+        game.native_chat(&json);
+        return;
+    }
 
     if trimmed.starts_with("rreturn scrub") {
         let permitted = has_level_4_permission(game, None);
@@ -704,6 +736,7 @@ pub fn handle_client_command(game: &mut Game<'_>, command: &str, ran: &mut bool)
         || trimmed.starts_with("rreturn rewind ")
         || trimmed.starts_with("rreturn slot load ")
         || trimmed.starts_with("rreturn trigger rewind");
+    let ui_save = command_save_slot(trimmed).map(|s| (s.to_owned(), capture_client_ui_snapshot(game)));
     let needs_level_4 = is_rollback
         || trimmed == "rreturn slot delete"
         || trimmed.starts_with("rreturn slot delete ")
@@ -713,22 +746,37 @@ pub fn handle_client_command(game: &mut Game<'_>, command: &str, ran: &mut bool)
         || trimmed.starts_with("rreturn dev ");
     let cmd_owned = trimmed.to_owned();
     if let Some(server) = &game.integrated {
-        if let Some((allowed, lines)) = server.call(move |srv| {
+        if let Some((allowed, srv_root, lines)) = server.call(move |srv| {
+            let root = srv.world_root.clone();
             let permitted = if needs_level_4 {
                 has_level_4_permission(srv, None)
             } else {
                 has_cheat_permission(srv, None)
             };
             if !permitted {
-                return (false, vec![tr("command.rreturn.no_permission")]);
+                return (false, root, vec![tr("command.rreturn.no_permission")]);
             }
-            (true, execute_rreturn_command(srv, None, &cmd_owned))
+            (true, root, execute_rreturn_command(srv, None, &cmd_owned))
         }) {
-            if allowed && is_rollback {
-                game.close_container();
-                game.screen = super::super::Screen::Playing;
-                let slot = with_state(|st| st.current_slot.clone());
-                apply_client_level_rollback(game, &slot);
+            set_active_ui_world_root(&srv_root);
+            if allowed {
+                if let Some((slot_name, ui_snap)) = ui_save
+                    && !lines.iter().any(|l| {
+                        l.contains("Failed")
+                            || l.contains("Не удалось")
+                            || l.contains("Invalid")
+                            || l.contains("permission")
+                            || l.contains("прав")
+                    })
+                {
+                    save_client_ui_slot(&srv_root, &slot_name, ui_snap);
+                }
+                if is_rollback {
+                    close_client_container_local(game);
+                    game.screen = super::super::Screen::Playing;
+                    let slot = with_state(|st| st.current_slot.clone());
+                    apply_client_rollback_with_ui(game, &slot, true);
+                }
             }
             for line in lines {
                 if is_dev_cmd {
@@ -753,13 +801,25 @@ pub fn handle_client_command(game: &mut Game<'_>, command: &str, ran: &mut bool)
             return;
         }
         if is_rollback {
-            game.close_container();
+            close_client_container_local(game);
             game.screen = super::super::Screen::Playing;
         }
         let lines = execute_rreturn_command(game, None, &cmd_owned);
+        if let Some((slot_name, ui_snap)) = ui_save
+            && !lines.iter().any(|l| {
+                l.contains("Failed")
+                    || l.contains("Не удалось")
+                    || l.contains("Invalid")
+                    || l.contains("permission")
+                    || l.contains("прав")
+            })
+        {
+            let root = resolve_ui_world_root(&game.world_root);
+            save_client_ui_slot(&root, &slot_name, ui_snap);
+        }
         if is_rollback {
             let slot = with_state(|st| st.current_slot.clone());
-            apply_client_level_rollback(game, &slot);
+            apply_client_rollback_with_ui(game, &slot, true);
         }
         for line in lines {
             if is_dev_cmd {

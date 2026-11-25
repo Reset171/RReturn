@@ -79,25 +79,41 @@ def test_51_powder_snow_ticks_frozen_preservation(h):
 
 
 def test_52_gui_closure_verification(h):
-    """Bug #24 investigation: Check whether open containers/screens are forcefully closed on rollback."""
+    """Verify exact screen state restoration on rollback (restoring open GUI if saved open, closing if saved while playing)."""
     setup_clean_env(h)
     h.tp(0.5, 65.0, 0.5)
 
+    # 1. Checkpoint saved with inventory open must return player back into inventory on rollback
     h.open_inventory()
     h.wait(3)
     scr_before = h.screen().get("screen")
+    assert scr_before in ("inventory", "container", "crafting"), f"Screen not opened before: {scr_before}"
 
     h.rreturn("set")
     h.wait(2)
+    h.close_screen()
+    h.wait(2)
+    assert h.screen().get("screen") == "playing"
 
-    # Rollback while menu was open at checkpoint
     h.rreturn("load")
     h.wait(4)
-
     scr_after = h.screen().get("screen")
+    assert scr_after in ("inventory", "container", "crafting"), (
+        f"Expected open inventory UI to be restored on rollback, got screen={scr_after}"
+    )
+    h.close_screen()
+    h.wait(2)
 
-    assert scr_before in ("inventory", "container", "crafting"), f"Screen not opened before: {scr_before}"
-    assert scr_after == "playing", f"Expected GUI to be closed by ContainerClose, but screen={scr_after}"
+    # 2. Checkpoint saved while playing must still close any GUI opened after the checkpoint
+    h.rreturn("set")
+    h.wait(2)
+    h.open_inventory()
+    h.wait(2)
+    assert h.screen().get("screen") in ("inventory", "container", "crafting")
+    h.rreturn("load")
+    h.wait(4)
+    scr_playing = h.screen().get("screen")
+    assert scr_playing == "playing", f"Expected GUI opened after checkpoint to close on rollback, got screen={scr_playing}"
 
 
 

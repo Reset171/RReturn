@@ -7,6 +7,7 @@ const RUNTIME_FILES: &[&str] = &[
     "types.rs",
     "policy.rs",
     "snapshots.rs",
+    "ui_snapshot.rs",
     "benchmark.rs",
     "adaptive.rs",
     "capture.rs",
@@ -80,7 +81,8 @@ fn assemble_runtime(src_dir: &Path) {
     }
 
     let header = r#"use super::super::{
-    Dim, ExperienceOrb, FallingBlock, Game, ItemEntity, Mob,
+    Dim, ExperienceOrb, FallingBlock, Game, ItemEntity, Mob, Screen,
+    chat::ChatDraft,
     commands::OtherEntity,
     dragon::{Crystal, Dragon},
     fishing,
@@ -93,11 +95,17 @@ use horizon_gameplay::{
     tnt::PrimedTnt,
 };
 use mod_api::{KeyAction, WorldPhase};
+use crate::game::books::rreturn_books::{BookScreenSnapshot, BooksExt};
+use crate::game::command_blocks::rreturn_command_blocks::{CommandBlockUiSnapshot, CommandBlocksExt};
 use crate::game::dragon::rreturn_dragon::{DragonExt, FightExt};
 use crate::game::end::rreturn_end::EndExt;
 use crate::game::fishing::rreturn_fishing::{GameFishingExt, HookExt};
+use crate::game::mount_menu::rreturn_mount_menu::{MountMenuExt, MountMenuSnapshot};
 use crate::game::potions::rreturn_potions::{PotionStateExt, ThrownPotionsSnapshot};
-use crate::game::remote::rreturn_remote::RemoteExt;
+use crate::game::recipe_book::rreturn_recipe_book::{RecipeBookExt, RecipeUiSnapshot};
+use crate::game::remote::rreturn_remote::{GameRemoteContainerExt, RemoteExt};
+use crate::game::sign_edit::rreturn_sign_edit::{SignEditExt, SignEditorSnapshot};
+use crate::game::stations::rreturn_stations::{StationUiSnapshot, StationsExt};
 use crate::game::stats::rreturn_stats::StatsExt;
 use horizon_mod_runtime::attachments::Attachments;
 use horizon_client::{
@@ -121,7 +129,7 @@ use horizon_client::{
     particles::Particle,
     raid::Raids,
     recipe_book::Settings as RecipeBookSettings,
-    save::{block_entity_encode, item_from_nbt, read_dat, write_dat, Level},
+    save::{block_entity_encode, item_from_nbt, item_to_nbt, read_dat, write_dat, Level},
     scoreboard::Scoreboard,
     sculk::WardenSpawnTracker,
     stopwatches::Stopwatches,
@@ -158,7 +166,7 @@ use std::{
     ops::ControlFlow,
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicUsize, Ordering},
         mpsc, Arc, Mutex, OnceLock, RwLock,
     },
     time::Instant,

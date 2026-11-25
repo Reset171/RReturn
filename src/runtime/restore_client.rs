@@ -2,6 +2,8 @@ use super::scrub_timeline::with_scrub_ring;
 use super::super::Game;
 use super::benchmark::*;
 use super::snapshots::*;
+use super::types::*;
+use super::ui_snapshot::*;
 use horizon_client::{
     chunk::Chunk,
     fast_hash::FxHashMap,
@@ -11,6 +13,17 @@ use std::{
     collections::HashSet,
     sync::Arc,
 };
+
+pub fn apply_client_rollback_with_ui(game: &mut Game<'_>, slot: &str, restore_ui: bool) {
+    apply_client_level_rollback(game, slot);
+    if restore_ui && slot != "scrub" {
+        let ui_root = resolve_ui_world_root(&game.world_root);
+        if let Some(ui_snap) = load_client_ui_slot(&ui_root, slot) {
+            let policy = resolve_local_client_policy(game, false);
+            restore_client_ui_on_rollback(game, &ui_snap, &policy);
+        }
+    }
+}
 
 pub fn apply_client_level_rollback(game: &mut Game<'_>, slot: &str) {
     let is_scrub = slot == "scrub";
@@ -32,7 +45,7 @@ pub fn apply_client_level_rollback(game: &mut Game<'_>, slot: &str) {
     game.close_book();
     game.close_mod_screen();
     game.kept_block_entities.get_mut().clear();
-    game.close_container();
+    close_client_container_local(game);
     game.carried = None;
     game.craft_grid.fill(None);
     game.craft_size = 2;

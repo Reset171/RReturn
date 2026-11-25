@@ -2,6 +2,7 @@ use super::super::Dim;
 use super::snapshots::*;
 use super::storage::*;
 use super::types::*;
+use super::ui_snapshot::*;
 use horizon_client::{
     cooldowns::Cooldowns,
     effects::{PlayerEffects, SavedEffect},
@@ -212,6 +213,13 @@ pub fn save_slot_to_disk(world_root: &Path, slot: &str, snap: &TimelineSnapshot)
             g_obj.insert("xp_total".to_owned(), serde_json::json!(g.xp_total));
             g_obj.insert("xp_seed".to_owned(), serde_json::json!(g.xp_seed));
             g_obj.insert("selected".to_owned(), serde_json::json!(g.selected));
+            g_obj.insert("inventory".to_owned(), serde_json::Value::Array(ui_encode_items(&g.inventory)));
+            g_obj.insert("armor".to_owned(), serde_json::Value::Array(ui_encode_items(&g.armor)));
+            g_obj.insert("offhand".to_owned(), ui_encode_item(&g.offhand));
+            g_obj.insert("carried".to_owned(), ui_encode_item(&g.carried));
+            g_obj.insert("craft_grid".to_owned(), serde_json::Value::Array(ui_encode_items(&g.craft_grid)));
+            g_obj.insert("craft_result".to_owned(), ui_encode_item(&g.craft_result));
+            g_obj.insert("ender_items".to_owned(), serde_json::Value::Array(ui_encode_items(&g.ender_items)));
             g_obj.insert(
                 "shield_cooldown".to_owned(),
                 serde_json::json!(g.shield_cooldown),

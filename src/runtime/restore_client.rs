@@ -64,8 +64,12 @@ pub fn apply_client_level_rollback(game: &mut Game<'_>, slot: &str) {
     game.water_plane_scan.set(None);
     game.water_plane_memo.set(None);
     game.adv.toasts.clear();
-    game.cart_sounds.clear();
-    game.riding_cart_sounds = None;
+    if !is_scrub {
+        // Keep cart sound handles when scrubbing because surviving carts remain in `game.carts`
+        // and clearing them makes `start_cart_sounds()` allocate duplicate permanent channels.
+        game.cart_sounds.clear();
+        game.riding_cart_sounds = None;
+    }
     game.pad.menu.stop_craft();
     game.pad_clear_focus();
     game.pad_player_replaced();

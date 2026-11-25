@@ -1,7 +1,14 @@
 """Advanced scrubbing E2E tests covering mob motion, inventory, containers, weather, and CLI."""
 
 import json
+import os
 import re
+import shutil
+import subprocess
+import tempfile
+import time
+from pathlib import Path
+from tools.rreturn_harness import LAUNCHER_BIN, RReturnHarness, default_saves_dir
 from . import setup_clean_env as _base_clean_env
 
 
@@ -737,6 +744,140 @@ def test_109_scrub_commit_no_sprint_effect(h):
     h.command("fill -2 64 -2 2 64 25 minecraft:air")
     h.tp(0.5, 65, 0.5)
     h.wait(2)
+
+
+def test_110_scrub_commit_no_sound_channel_leak(h):
+    """Verify repeated scrub commits do not duplicate ticking minecart channels and exhaust SoundEngine."""
+    sock = Path(tempfile.gettempdir()) / f"rreturn_e2e_audio_110_{os.getpid()}.sock"
+    if sock.exists():
+        sock.unlink()
+    player_dir = Path(tempfile.mkdtemp(prefix="rreturn_player_audio_"))
+    world = f"rreturn_e2e_audio_110_{int(time.time())}"
+    cmd = [LAUNCHER_BIN, "play"]
+    if h.instance:
+        cmd += ["--instance", h.instance]
+    cmd += [
+        "--world",
+        world,
+        "--arg",
+        "--offscreen",
+        "--arg",
+        "--control-socket",
+        "--arg",
+        str(sock),
+        "--arg",
+        "--player-dir",
+        "--arg",
+        str(player_dir),
+    ]
+    env = dict(os.environ)
+    env.pop("HORIZON_NO_AUDIO", None)
+    env["HORIZON_AUDIO"] = "1"
+    env["HORIZON_TELEMETRY_URL"] = "off"
+    env["WGPU_BACKEND"] = "vulkan"
+    env["RRETURN_DEV"] = "1"
+    env["HORIZON_CONTROL"] = str(sock)
+
+    proc = subprocess.Popen(cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    ah = RReturnHarness(socket_path=sock, instance=h.instance, world=world)
+    ah.proc = proc
+    ah.player_dir = player_dir
+    ah.launched_new_process = True
+    ah.created_worlds.add(world)
+
+    try:
+        ah.connect(timeout=60, auto_launch=False)
+        ah.wait_ready(timeout=60)
+        ah.command("gamerule send_command_feedback true")
+        ah.rreturn("dev on")
+        ah.rreturn("scrub on")
+        ah.command("fill -5 99 -5 5 99 5 minecraft:stone")
+        ah.command("fill -5 100 -5 5 103 5 minecraft:air")
+        ah.tp(0.5, 100.0, 0.5)
+        ah.wait(6)
+
+        ah.command("kill @e[tag=test110_cart]")
+        for i in range(62):
+            off_z = 3.5 + (i % 2)
+            ah.command(f"summon minecraft:chest_minecart 0.5 100.0 {off_z} {{Tags:['test110_cart']}}")
+        ah.wait(8)
+
+        sounds_before = ah.status().get("sounds", {})
+        events_before = dict(sounds_before.get("events", []))
+        minecart_before = events_before.get("minecraft:entity.minecart.riding", 0)
+        assert minecart_before >= 55, (
+            f"Expected >=55 active minecart SoundEngine channels (audio enabled), got {sounds_before}"
+        )
+
+        # Verify normal game sound starts cleanly before scrubbing
+        ah.command("execute at @s run playsound minecraft:block.anvil.land master @s ~ ~ ~ 1.0 1.0")
+        ah.wait(1)
+        events_base = dict(ah.status().get("sounds", {}).get("events", []))
+        assert events_base.get("minecraft:block.anvil.land", 0) >= 1, (
+            f"Baseline anvil sound failed to start before scrub: {events_base}"
+        )
+        ah.wait(12)
+
+        # Perform 5 scrub rewind + commit cycles (at 62 minecarts, any duplication exhausts 247 static channels)
+        for cycle in range(5):
+            ah.wait(10)
+            res_s = ah.rreturn("scrub start")
+            assert "started" in str(res_s).lower(), f"Cycle {cycle}: failed to start scrub: {res_s}"
+            ah.rreturn("scrub step -3.0")
+            res_c = ah.rreturn("scrub commit")
+            assert "committed" in str(res_c).lower(), f"Cycle {cycle}: failed to commit scrub: {res_c}"
+            ah.wait(4)
+
+        st_after = ah.status()
+        sounds_after = st_after.get("sounds", {})
+        events_after = dict(sounds_after.get("events", []))
+        minecart_after = events_after.get("minecraft:entity.minecart.riding", 0)
+        cli_carts_after = len(st_after.get("carts", []))
+        used_after = sounds_after.get("used", [0, 0])
+
+        assert minecart_after <= cli_carts_after, (
+            f"Minecart sound channels leaked across scrub commits: channels={minecart_after}, client_carts={cli_carts_after}, sounds={sounds_after}"
+        )
+        assert used_after[0] < 150, (
+            f"Static SoundEngine channels grew abnormally (pool exhaustion risk): used={used_after}, sounds={sounds_after}"
+        )
+
+        # Verify normal game sound STILL plays after 5 scrub commits
+        ah.command("execute at @s run playsound minecraft:block.anvil.land master @s ~ ~ ~ 1.0 1.0")
+        ah.wait(1)
+        st_post = ah.status()
+        events_post = dict(st_post.get("sounds", {}).get("events", []))
+        assert events_post.get("minecraft:block.anvil.land", 0) >= 1, (
+            f"Game sound stopped working after scrub commits! sounds={st_post.get('sounds')}"
+        )
+    finally:
+        try:
+            ah.exit_to_title(timeout=30)
+            ah.raw_send(f"world-delete {world} --confirm")
+        except Exception:
+            pass
+        try:
+            ah.quit()
+        except Exception:
+            pass
+        ah.close()
+        if ah.proc is not None:
+            try:
+                ah.proc.wait(timeout=15)
+            except Exception:
+                try:
+                    ah.proc.kill()
+                except Exception:
+                    pass
+            ah.proc = None
+        if sock.exists():
+            sock.unlink(missing_ok=True)
+        world_dir = default_saves_dir(h.instance) / world
+        if world_dir.is_dir():
+            shutil.rmtree(world_dir, ignore_errors=True)
+        if player_dir.is_dir():
+            shutil.rmtree(player_dir, ignore_errors=True)
+
 
 
 

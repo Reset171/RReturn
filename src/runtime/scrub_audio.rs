@@ -192,6 +192,9 @@ pub fn play_scrub_sounds(
         } else {
             format!("minecraft:{}", s.identifier)
         };
+        if norm.starts_with("minecraft:music.") || norm.starts_with("minecraft:music_disc.") {
+            continue;
+        }
         if backwards {
             let mut played = false;
             if let Some(sound_def) = game.audio.engine.registry.sound(&norm, &mut rng) {

@@ -145,6 +145,7 @@ from tools.tests.test_scrubbing_advanced import (
     test_107_scrub_seamless_continuity_mobs_particles_and_cracks,
     test_108_scrub_villager_profession_and_mass_tnt_continuity,
     test_109_scrub_commit_no_sprint_effect,
+    test_110_scrub_commit_no_sound_channel_leak,
 )
 
 HEAVY_WORLD_GROUPS = {"chunks", "dimensions", "portals"}
@@ -296,6 +297,7 @@ def build_test_catalog():
         (107, "Test 107: Scrub Seamless Continuity Mobs Particles Cracks", "scrubbing", test_107_scrub_seamless_continuity_mobs_particles_and_cracks),
         (108, "Test 108: Scrub Villager Profession and Mass TNT Continuity", "scrubbing", test_108_scrub_villager_profession_and_mass_tnt_continuity),
         (109, "Test 109: Scrub Commit No Sprint Effect", "scrubbing", test_109_scrub_commit_no_sprint_effect),
+        (110, "Test 110: Scrub Commit No Sound Channel Leak", "scrubbing", test_110_scrub_commit_no_sound_channel_leak),
     ]
 
 

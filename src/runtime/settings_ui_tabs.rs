@@ -225,7 +225,7 @@ fn draw_autosave_card(
         };
         sched_h + sliders_h
     };
-    let total_h = 62.0 + mode_rows_h;
+    let total_h = 93.0 + mode_rows_h;
     let visible = y + total_h >= list_bounds[1] - 4.0 && y <= list_bounds[1] + list_bounds[3] + 4.0;
     if !visible {
         return total_h;
@@ -235,6 +235,14 @@ fn draw_autosave_card(
     let [mx, my] = mouse;
     let in_list = hit_in_rect(mx, my, list_bounds);
 
+    draw_bool_row(
+        game, draw, ui,
+        "death_rollback", "rreturn.ui.opt.death_rollback", "rreturn.ui.opt.death_rollback.desc",
+        [x, y, w, 31.0], list_bounds, mouse, regions,
+    );
+    y += 31.0;
+
+    game.native_fill(draw, [x + 12.0, y, w - 24.0, 1.0], UI_DIVIDER);
     draw_bool_row(
         game, draw, ui,
         "auto_save", "rreturn.ui.opt.auto_save", "rreturn.ui.opt.auto_save.desc",

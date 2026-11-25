@@ -33,7 +33,7 @@ pub fn execute_rreturn_command(
     let words: Vec<&str> = command.split_whitespace().collect();
     let sub = words.get(1).copied().unwrap_or("status");
     let reply = match sub {
-        "json" => report_status_json(game),
+                "json" => report_status_json(game),
         "status" => {
             if words.get(2).copied() == Some("--json") {
                 report_status_json(game)
@@ -106,6 +106,37 @@ pub fn execute_rreturn_command(
         }
         "anchor" => handle_anchor_subcommand(game, &words[2..], requester),
         "player" | "players" => handle_player_subcommand(game, &words[2..], requester),
+        "death" | "death_rollback" | "return_on_death" => {
+            let mode = words.get(2).copied().unwrap_or("status");
+            match mode {
+                "on" | "enable" | "true" | "1" => {
+                    with_state_mut(|st| st.death_rollback = true);
+                    save_current_settings(game);
+                    let state_str = tr("ui.rreturn.on");
+                    tr_args("command.rreturn.death.status", &[&state_str])
+                }
+                "off" | "disable" | "false" | "0" => {
+                    with_state_mut(|st| st.death_rollback = false);
+                    save_current_settings(game);
+                    let state_str = tr("ui.rreturn.off");
+                    tr_args("command.rreturn.death.status", &[&state_str])
+                }
+                "toggle" => {
+                    let val = with_state_mut(|st| {
+                        st.death_rollback = !st.death_rollback;
+                        st.death_rollback
+                    });
+                    save_current_settings(game);
+                    let state_str = if val { tr("ui.rreturn.on") } else { tr("ui.rreturn.off") };
+                    tr_args("command.rreturn.death.status", &[&state_str])
+                }
+                _ => {
+                    let val = with_state(|st| st.death_rollback);
+                    let state_str = if val { tr("ui.rreturn.on") } else { tr("ui.rreturn.off") };
+                    tr_args("command.rreturn.death.status", &[&state_str])
+                }
+            }
+        }
         "autosave" => handle_autosave_subcommand(game, &words[2..]),
         "bench" | "benchmark" => handle_bench_subcommand(),
         "hitboxes" | "f3" => {
@@ -165,7 +196,7 @@ pub fn execute_rreturn_command(
                 }
             }
         }
-        _ => "[RReturn] Usage: /rreturn <set|load|json|status|slot|policy|metrics|anchor|autosave|scrub|settings|bench|f3|dev>".to_owned(),
+        _ => "[RReturn] Usage: /rreturn <set|load|json|status|slot|policy|metrics|anchor|death|autosave|scrub|settings|bench|f3|dev>".to_owned(),
     };
     vec![reply]
 }

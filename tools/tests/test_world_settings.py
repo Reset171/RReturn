@@ -389,7 +389,16 @@ def test_115_rreturn_menu_icons_and_per_player_overrides(h):
         assert b0["active_tab"] == "rollback", b0
         for gone in ("menu.save_now", "menu.load_now", "menu.toggle_scrub", "save_now", "load_now"):
             assert gone not in b0["controls"], f"Removed control '{gone}' still present: {b0['controls'].keys()}"
+        assert "opt.death_rollback" in b0["controls"]
         assert "opt.auto_save" in b0["controls"]
+        assert h.rreturn("json").get("death_rollback") is True
+        dx0, dy0 = ui_pt("opt.death_rollback")
+        h.raw_send(f"click-at {dx0} {dy0}")
+        h.wait(2)
+        assert h.rreturn("json").get("death_rollback") is False
+        h.raw_send(f"click-at {dx0} {dy0}")
+        h.wait(2)
+        assert h.rreturn("json").get("death_rollback") is True
         assert "slider.fixed_interval_sec" not in b0["controls"], (
             f"Autosave sliders should stay hidden while auto_save is OFF: {b0['controls'].keys()}"
         )
@@ -599,6 +608,7 @@ def test_115_rreturn_menu_icons_and_per_player_overrides(h):
 
         cfg2 = json.loads(cfg_path.read_text(encoding="utf-8"))
         assert cfg2.get("playerOverrides", {}) == {}, f"Expected empty playerOverrides after reset: {cfg2}"
+        assert cfg2.get("death_rollback") is True, cfg2
 
         # 8. Verify F8 keybinding is completely removed and no longer cycles anchor mode
         mode_before = h.rreturn("json").get("anchor_mode")
@@ -609,6 +619,7 @@ def test_115_rreturn_menu_icons_and_per_player_overrides(h):
         if h.screen().get("screen") == "mod":
             h.raw_send("key esc tap")
             h.wait(2)
+        h.rreturn("death on")
         h.rreturn("scrub off")
         h.rreturn("autosave adaptive")
         h.rreturn("autosave off")

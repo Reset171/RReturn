@@ -196,6 +196,10 @@ impl mod_api::Hooks for Mod {
         );
 
         let _ = r.register_setting(
+            SettingSpec::toggle("death_rollback", "rreturn.setting.death_rollback", true)
+                .tooltip("rreturn.setting.death_rollback.tooltip"),
+        );
+        let _ = r.register_setting(
             SettingSpec::toggle("auto_save", "rreturn.setting.auto_save", true)
                 .tooltip("rreturn.setting.auto_save.tooltip"),
         );

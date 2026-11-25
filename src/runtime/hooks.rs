@@ -509,8 +509,8 @@ pub fn handle_tick(game: &mut Game<'_>) {
     }
 
     if game.screen == super::super::Screen::Dead {
-        let has_cp = with_state(|st| st.has_checkpoint);
-        if has_cp {
+        let should_rollback = with_state(|st| st.death_rollback && st.has_checkpoint);
+        if should_rollback {
             game.screen = super::super::Screen::Playing;
             game.ui.death_time = 0;
             game.ui.died_at = None;
@@ -634,7 +634,7 @@ pub fn intercept_guest_die(
         .collect();
 
     let should_intercept = with_state_mut(|st| {
-        if !st.has_checkpoint {
+        if !st.death_rollback || !st.has_checkpoint {
             return false;
         }
         let active_anchors = resolve_anchors(&st.anchor, &online, now, None);

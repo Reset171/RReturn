@@ -206,7 +206,8 @@ pub const PLAYER_OVERRIDE_SPECS: &[(&str, &str, &str)] = &[
 ];
 
 pub const SETTINGS_CATALOG: &[SettingEntry] = &[
-    // Rollback Autosave & Timing (12)
+    // Rollback Autosave & Timing (13)
+    opt_b("death_rollback", UiTab::Rollback, UiGroup::RbAuto, "rreturn.ui.opt.death_rollback", "rreturn.ui.opt.death_rollback.desc"),
     opt_b("auto_save", UiTab::Rollback, UiGroup::RbAuto, "rreturn.ui.opt.auto_save", "rreturn.ui.opt.auto_save.desc"),
     opt_b("adaptive_mode", UiTab::Rollback, UiGroup::RbAuto, "rreturn.ui.opt.adaptive_mode", "rreturn.ui.opt.adaptive_mode.desc"),
     opt_b("use_random_interval", UiTab::Rollback, UiGroup::RbAuto, "rreturn.ui.opt.use_random_interval", "rreturn.ui.opt.use_random_interval.desc"),
@@ -358,6 +359,7 @@ pub fn read_bool_setting(st: &RReturnState, id: &str) -> bool {
         return policy_field(&st.scrub_policy, sub);
     }
     match id {
+        "death_rollback" => st.death_rollback,
         "auto_save" => st.auto_save,
         "adaptive_mode" => st.adaptive_mode,
         "use_random_interval" => st.use_random_interval,
@@ -381,6 +383,7 @@ pub fn write_bool_setting(st: &mut RReturnState, id: &str, val: bool) {
         return;
     }
     match id {
+        "death_rollback" => st.death_rollback = val,
         "auto_save" => st.auto_save = val,
         "adaptive_mode" => st.adaptive_mode = val,
         "use_random_interval" => st.use_random_interval = val,

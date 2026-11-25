@@ -103,3 +103,61 @@ def test_43_potion_effects_cleared_on_rollback(h):
     assert not any("poison" in str(i) for i in active_after), (
         f"Poison effect still active on client after rollback: {active_after}"
     )
+
+
+def test_116_death_rollback_toggle(h):
+    """When death_rollback is disabled, dying shows Death screen normally without rewinding; re-enabling restores Return by Death."""
+    setup_clean_env(h)
+    base_pos = h.state()["player"]["position"]
+
+    try:
+        h.rreturn("set")
+        h.wait(2)
+
+        h.rreturn("death off")
+        h.wait(2)
+        assert h.rreturn("json").get("death_rollback") is False
+
+        h.command(f"tp @s {base_pos[0]} 125.0 {base_pos[2]}")
+        saw_dead = False
+        for _ in range(35):
+            h.wait(3)
+            st = h.state()
+            scr = st.get("screen") or h.screen().get("screen")
+            if scr == "dead":
+                saw_dead = True
+                break
+        assert saw_dead, (
+            f"Expected normal death screen when death_rollback is OFF, "
+            f"got screen={h.screen()} player={h.state().get('player')}"
+        )
+
+        h.raw_send("respawn")
+        h.wait(6)
+        assert h.screen().get("screen") == "playing", f"Expected respawn into playing screen: {h.screen()}"
+
+        h.rreturn("death on")
+        h.wait(2)
+        assert h.rreturn("json").get("death_rollback") is True
+        h.tp(base_pos[0], base_pos[1], base_pos[2])
+        h.rreturn("set")
+        h.wait(2)
+
+        h.command(f"tp @s {base_pos[0]} 125.0 {base_pos[2]}")
+        rewound = False
+        for _ in range(35):
+            h.wait(3)
+            p = h.state().get("player", {})
+            if p.get("on_ground") and abs(p.get("position", [0, 0, 0])[1] - base_pos[1]) < 2.0:
+                rewound = True
+                break
+        h.wait(4)
+        assert rewound, "Re-enabling death_rollback did not trigger Return by Death"
+        assert h.state()["player"]["health"] >= 19.0
+        assert h.screen().get("screen") == "playing"
+    finally:
+        if h.screen().get("screen") == "dead":
+            h.raw_send("respawn")
+            h.wait(4)
+        h.rreturn("death on")
+        h.wait(2)

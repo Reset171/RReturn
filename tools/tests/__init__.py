@@ -9,11 +9,19 @@ def setup_clean_env(h):
     h.command("forceload remove all")
     h.rreturn("policy reset")
     h.rreturn("slot select default")
+    h.rreturn("death on")
     h.rreturn("autosave off")
     h.rreturn("scrub off")
 
     st = h.state()
-    if st.get("screen") not in ("playing", None):
+    scr = st.get("screen")
+    if scr == "dead":
+        try:
+            h.raw_send("respawn")
+            h.wait(4)
+        except Exception:
+            pass
+    elif scr not in ("playing", None):
         try:
             h.close_screen()
         except Exception:

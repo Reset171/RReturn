@@ -31,6 +31,7 @@ from tools.tests.test_death_rewind import (
     test_10_multiple_fall_cycles,
     test_18_drowning_and_damage_after_rewind,
     test_43_potion_effects_cleared_on_rollback,
+    test_116_death_rollback_toggle,
 )
 from tools.tests.test_slots import (
     test_11_slots_branching,
@@ -311,6 +312,7 @@ def build_test_catalog():
         (113, "Test 113: Checkpoint Inside Creative, Chat and Containers", "ui_state", test_113_checkpoint_inside_creative_chat_and_containers),
         (114, "Test 114: Text Focus Ctrl+U and Reversible UI Scrub", "scrubbing", test_114_text_focus_ctrl_u_and_reversible_ui_scrub),
         (115, "Test 115: RReturn Menu Icons and Per-Player Overrides", "world_settings", test_115_rreturn_menu_icons_and_per_player_overrides),
+        (116, "Test 116: Death Rollback Toggle On Off", "death", test_116_death_rollback_toggle),
         (117, "Test 117: Post-Rollback Teleport Movement Sync", "investigation", test_117_post_rollback_teleport_movement_sync),
     ]
 

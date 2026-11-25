@@ -97,6 +97,9 @@ pub fn load_saved_settings(game: &Game<'_>) {
     let parse_num = |s: &str| -> Option<i32> {
         s.parse::<f64>().ok().map(|v| v as i32).or_else(|| s.parse::<i32>().ok())
     };
+    let death_rollback = game
+        .setting(MOD_ID, "death_rollback")
+        .map(|v| v != "false");
     let auto_save = game
         .setting(MOD_ID, "auto_save")
         .map(|v| v != "false");
@@ -133,6 +136,7 @@ pub fn load_saved_settings(game: &Game<'_>) {
     with_state_mut(|st| {
         if let Some(v) = &json_cfg {
             let b = |val: &serde_json::Value, d: bool| val.as_bool().unwrap_or(d);
+            st.death_rollback = b(&v["death_rollback"], st.death_rollback);
             apply_nested_policy_json(&v["checkpointPolicy"]["rollback"], &mut st.policy);
             let av = &v["autosave"];
             if av.is_object() {
@@ -224,6 +228,9 @@ pub fn load_saved_settings(game: &Game<'_>) {
                     }
                 }
             }
+        }
+        if let Some(v) = death_rollback {
+            st.death_rollback = v;
         }
         if let Some(v) = auto_save {
             st.auto_save = v;
@@ -335,6 +342,7 @@ pub fn save_current_settings(game: &Game<'_>) {
             );
         }
         let json = serde_json::json!({
+            "death_rollback": st.death_rollback,
             "checkpointPolicy": {
                 "rollback": policy_to_nested_json(&st.policy),
             },
@@ -375,6 +383,7 @@ pub fn save_current_settings(game: &Game<'_>) {
             "playerOverrides": serde_json::Value::Object(overrides_map),
         });
         (
+            st.death_rollback,
             st.auto_save,
             st.adaptive_mode,
             st.fixed_interval_sec,
@@ -390,6 +399,7 @@ pub fn save_current_settings(game: &Game<'_>) {
     });
 
     let (
+        death_rollback,
         auto_save,
         adaptive_mode,
         fixed_interval_sec,
@@ -412,6 +422,11 @@ pub fn save_current_settings(game: &Game<'_>) {
         }
     }
 
+    game.set_setting(
+        MOD_ID,
+        "death_rollback",
+        if death_rollback { "true" } else { "false" },
+    );
     game.set_setting(MOD_ID, "auto_save", if auto_save { "true" } else { "false" });
     game.set_setting(
         MOD_ID,

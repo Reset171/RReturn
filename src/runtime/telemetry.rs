@@ -83,6 +83,7 @@ pub fn report_status_json(game: &Game<'_>) -> String {
 
     let (
         has_cp,
+        death_rollback,
         last_save,
         anchor_mode,
         cooldown_sec,
@@ -96,6 +97,7 @@ pub fn report_status_json(game: &Game<'_>) -> String {
     ) = with_state(|st| {
         (
             st.has_checkpoint,
+            st.death_rollback,
             st.last_save_tick,
             st.anchor.mode.id(),
             st.anchor.rollback_cooldown_seconds,
@@ -142,6 +144,7 @@ pub fn report_status_json(game: &Game<'_>) -> String {
     serde_json::to_string_pretty(&serde_json::json!({
         "rreturn_version": MOD_VERSION,
         "has_checkpoint": has_cp,
+        "death_rollback": death_rollback,
         "current_slot": current_slot,
         "game_time": now,
         "day_time": game.world.day_time,

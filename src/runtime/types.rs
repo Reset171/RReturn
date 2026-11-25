@@ -281,6 +281,7 @@ pub struct OnlinePlayerInfo {
 
 pub struct RReturnState {
     pub current_slot: String,
+    pub death_rollback: bool,
     pub auto_save: bool,
     pub adaptive_mode: bool,
     pub use_random_interval: bool,
@@ -324,6 +325,7 @@ impl Default for RReturnState {
     fn default() -> Self {
         Self {
             current_slot: "default".to_owned(),
+            death_rollback: true,
             auto_save: true,
             adaptive_mode: true,
             use_random_interval: false,

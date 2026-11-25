@@ -1,4 +1,6 @@
-"""Player state, combat, effects, and inventory bug regression tests (Tests 49, 51, 52, 56, 57, 58, 61, 62, 71, 73, 78)."""
+"""Player state, combat, effects, and inventory bug regression tests (Tests 49, 51, 52, 56, 57, 58, 61, 62, 71, 73, 78, 117)."""
+
+import re
 
 from . import setup_clean_env
 
@@ -300,5 +302,61 @@ def test_78_archaeology_brush_reset(h):
     blk = h.block(0, 65, 2).get("block", "")
     h.command("setblock 0 65 2 minecraft:air")
     assert "suspicious_sand" in blk, f"Suspicious sand not restored: {blk}"
+
+
+def _parse_nbt_vec3(raw):
+    nums = re.findall(r"[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?", raw or "")
+    if len(nums) < 3:
+        return None
+    try:
+        return [float(nums[0]), float(nums[1]), float(nums[2])]
+    except ValueError:
+        return None
+
+
+def test_117_post_rollback_teleport_movement_sync(h):
+    """After a rollback that rebuilds Streaming, /tp on already-loaded chunks must not leave the server stuck in tp_held/landing."""
+    setup_clean_env(h)
+    slot = "post_tp_sync"
+    try:
+        h.rreturn(f"slot save {slot}")
+        h.wait(2)
+        h.command("setblock 1 65 1 minecraft:stone")
+        h.wait(2)
+        h.rreturn(f"slot load {slot}")
+        h.wait(2)
+        assert "air" in h.block(1, 65, 1).get("block", ""), (
+            f"Slot load did not restore block: {h.block(1, 65, 1)}"
+        )
+
+        # Teleport inside the already-loaded spawn column; server and client must both simulate the fall.
+        h.command("tp @s 0.5 80.0 0.5")
+        landed = False
+        for _ in range(30):
+            h.wait(2)
+            p = h.state().get("player", {})
+            if p.get("on_ground") and p.get("position", [0, 999, 0])[1] <= 66.0:
+                landed = True
+                break
+        assert landed, f"Client did not land after post-rollback /tp: {h.state().get('player')}"
+        # Server fall-damage SetHealth arrives on the tick after client touches ground.
+        h.wait(3)
+
+        srv_pos = _parse_nbt_vec3(h.data_get_entity("@s", "Pos"))
+        assert srv_pos is not None, f"Failed to parse server player Pos: {h.data_get_entity('@s', 'Pos')}"
+        assert srv_pos[1] <= 66.0, (
+            f"Server player stayed frozen above ground (tp_held/landing desync): server={srv_pos}, "
+            f"client={h.state().get('player', {}).get('position')}"
+        )
+        hp = h.state().get("player", {}).get("health")
+        assert hp is not None and hp <= 14.0, f"Expected server fall damage after landing, got health={hp}"
+    finally:
+        h.rreturn("slot select default")
+        h.rreturn(f"slot delete {slot}")
+        h.command("setblock 1 65 1 minecraft:air")
+        h.command("effect give @s minecraft:instant_health 1 5 true")
+        h.wait(2)
+        h.command("effect clear @s")
+
 
 

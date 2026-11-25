@@ -119,6 +119,7 @@ from tools.tests.test_bugs_investigation import (
     test_76_lightning_flash_cleanup,
     test_77_creaking_heart_connection,
     test_78_archaeology_brush_reset,
+    test_117_post_rollback_teleport_movement_sync,
     test_79_trial_spawner_tick_cleared,
     test_80_boat_cart_velocity_disk_loss,
     test_81_wither_client_bossbar_sync,
@@ -310,6 +311,7 @@ def build_test_catalog():
         (113, "Test 113: Checkpoint Inside Creative, Chat and Containers", "ui_state", test_113_checkpoint_inside_creative_chat_and_containers),
         (114, "Test 114: Text Focus Ctrl+U and Reversible UI Scrub", "scrubbing", test_114_text_focus_ctrl_u_and_reversible_ui_scrub),
         (115, "Test 115: RReturn Menu Icons and Per-Player Overrides", "world_settings", test_115_rreturn_menu_icons_and_per_player_overrides),
+        (117, "Test 117: Post-Rollback Teleport Movement Sync", "investigation", test_117_post_rollback_teleport_movement_sync),
     ]
 
 
@@ -394,6 +396,11 @@ def main():
         action="store_true",
         help="Keep temporary rreturn_e2e_* worlds in saves/ after the run",
     )
+    parser.add_argument(
+        "--isolated",
+        action="store_true",
+        help="Force a dedicated temporary control socket instead of reusing /run/user/1000/horizon-control.sock",
+    )
     args = parser.parse_args()
 
     catalog = build_test_catalog()
@@ -423,7 +430,7 @@ def main():
             run_worker_batch(
                 1,
                 selected,
-                use_default_socket=True,
+                use_default_socket=not args.isolated,
                 fresh_worlds=fresh_worlds,
                 keep_worlds=args.keep_worlds,
             )

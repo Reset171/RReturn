@@ -378,7 +378,10 @@ pub fn restore_players_on_rollback(
                     sound: None,
                 }));
             }
-            host.hub.guests.update(gi, |g| g.landing = false);
+            host.hub.guests.update(gi, |g| {
+                g.landing = false;
+                g.tp_held = false;
+            });
 
             let is_singleplayer = host.hub.guests.len() == 1
                 || host.owner.as_ref().is_some_and(|o| o.uuid == uuid);
@@ -937,6 +940,7 @@ pub fn restore_players_on_rollback(
             let conn = host.hub.guests[gi].conn;
             host.hub.guests.update(gi, |g| {
                 g.landing = false;
+                g.tp_held = false;
                 g.loading = false;
                 g.load_timeout = 0;
             });

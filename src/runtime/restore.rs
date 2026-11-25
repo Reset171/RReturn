@@ -69,6 +69,34 @@ pub fn rollback_slot_checkpoint_on_server(game: &mut Game<'_>, slot: &str) -> bo
     apply_timeline_snapshot_on_server(game, &snap, RollbackOrigin::DiskSlot(slot))
 }
 
+/// Re-register already-lit chunks in `Streaming` after replacing it or inserting snapshot chunks,
+/// so `Streaming::is_lit` matches `World::chunks` and `/tp` does not stall in `hold_for_chunks`.
+fn sync_streaming_lit_from_world(game: &mut Game<'_>) {
+    let missing_lit: Vec<(i32, i32)> = game
+        .world
+        .chunks
+        .iter()
+        .filter(|(pos, chunk)| {
+            !game.streaming.is_lit(pos.0, pos.1) && (chunk.lit || chunk.light_loaded)
+        })
+        .map(|(pos, _)| *pos)
+        .collect();
+    if missing_lit.is_empty() {
+        return;
+    }
+    let prev_generated = game.streaming.generated_total;
+    for pos in missing_lit {
+        if let Some(chunk) = game.world.chunks.get(&pos) {
+            let chunk_clone = (**chunk).clone();
+            game.streaming.insert_remote(&mut game.world, chunk_clone);
+        }
+    }
+    game.streaming.generated_total = prev_generated;
+    if !game.streaming.mesh {
+        game.world.dirty_sections.clear();
+    }
+}
+
 pub fn apply_timeline_snapshot_on_server(
     game: &mut Game<'_>,
     snap: &TimelineSnapshot,
@@ -594,7 +622,10 @@ pub fn apply_timeline_snapshot_on_server(
             restore_offline_files(&snap.offline_player_data, policy, is_scrub);
         }
         game.streaming.wait(std::time::Duration::from_millis(2));
-        if let Ok((fresh_streaming, fresh_save, _)) = super::super::world_loading::make_streaming(
+        if game.dim != target_dim {
+            let _ = game.enter_level(target_dim);
+        }
+        if let Ok((mut fresh_streaming, fresh_save, _)) = super::super::world_loading::make_streaming(
             &game.res,
             &game.pack,
             &game.options,
@@ -607,6 +638,10 @@ pub fn apply_timeline_snapshot_on_server(
             game.res.biomes().clone(),
             None,
         ) {
+            fresh_streaming.center = game.streaming.center;
+            fresh_streaming.extra = game.streaming.extra.clone();
+            fresh_streaming.mesh = game.streaming.mesh;
+            fresh_streaming.paused = game.streaming.paused;
             if let Some(tables) = game.save.tables.get() {
                 let _ = fresh_save.tables.set(Arc::clone(tables));
             } else {
@@ -662,6 +697,7 @@ pub fn apply_timeline_snapshot_on_server(
                 }
                 let (b, c, e) =
                     apply_level_snapshot_in_place(game, dim, level_snap, policy, snap.game_time, is_scrub);
+                sync_streaming_lit_from_world(game);
                 acc_blocks_ms += b;
                 acc_containers_ms += c;
                 acc_entities_ms += e;
@@ -753,6 +789,7 @@ pub fn apply_timeline_snapshot_on_server(
         }
         game.world.modified.clear();
     }
+    sync_streaming_lit_from_world(game);
 
     let t_player = std::time::Instant::now();
     restore_players_on_rollback(game, snap, policy, prev_dim, target_dim, is_scrub);

@@ -170,3 +170,226 @@ impl RollbackPolicy {
         true
     }
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum OverrideValue {
+    #[default]
+    Global,
+    Allow,
+    Deny,
+}
+
+impl OverrideValue {
+    pub fn resolve(self, global_val: bool) -> bool {
+        match self {
+            Self::Global => global_val,
+            Self::Allow => true,
+            Self::Deny => false,
+        }
+    }
+
+    pub fn from_token(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "global" | "default" | "auto" | "inherit" | "null" => Some(Self::Global),
+            "true" | "1" | "on" | "yes" | "allow" => Some(Self::Allow),
+            "false" | "0" | "off" | "no" | "deny" => Some(Self::Deny),
+            _ => None,
+        }
+    }
+
+    pub fn from_json(v: &serde_json::Value) -> Option<Self> {
+        if v.is_null() {
+            return Some(Self::Global);
+        }
+        if let Some(b) = v.as_bool() {
+            return Some(if b { Self::Allow } else { Self::Deny });
+        }
+        v.as_str().and_then(Self::from_token)
+    }
+
+    pub fn to_json(self) -> serde_json::Value {
+        match self {
+            Self::Global => serde_json::Value::String("global".to_owned()),
+            Self::Allow => serde_json::Value::Bool(true),
+            Self::Deny => serde_json::Value::Bool(false),
+        }
+    }
+}
+
+pub const PLAYER_POLICY_FIELDS: &[&str] = &[
+    "player_position",
+    "player_motion",
+    "player_health",
+    "player_hunger",
+    "player_experience",
+    "player_inventory",
+    "player_ender_chest",
+    "player_potion_effects",
+    "player_cooldowns",
+    "player_abilities",
+    "player_recipe_book",
+    "player_spawn_point",
+    "player_stats",
+];
+
+pub fn normalize_player_policy_field(key: &str) -> Option<&'static str> {
+    let norm = key.trim().to_ascii_lowercase().replace('.', "_");
+    match norm.as_str() {
+        "player_position" | "position" | "pos" => Some("player_position"),
+        "player_motion" | "motion" | "velocity" => Some("player_motion"),
+        "player_health" | "health" | "hp" => Some("player_health"),
+        "player_hunger" | "hunger" | "food" => Some("player_hunger"),
+        "player_experience" | "experience" | "xp" => Some("player_experience"),
+        "player_inventory" | "inventory" | "inv" => Some("player_inventory"),
+        "player_ender_chest" | "ender_chest" | "ender" => Some("player_ender_chest"),
+        "player_potion_effects" | "effects" | "potion_effects" => Some("player_potion_effects"),
+        "player_cooldowns" | "cooldowns" => Some("player_cooldowns"),
+        "player_abilities" | "abilities" | "gamemode" => Some("player_abilities"),
+        "player_recipe_book" | "recipe_book" | "recipes" => Some("player_recipe_book"),
+        "player_spawn_point" | "spawn_point" => Some("player_spawn_point"),
+        "player_stats" | "stats" => Some("player_stats"),
+        _ => None,
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PlayerPolicyOverrides {
+    pub player_position: OverrideValue,
+    pub player_motion: OverrideValue,
+    pub player_health: OverrideValue,
+    pub player_hunger: OverrideValue,
+    pub player_experience: OverrideValue,
+    pub player_inventory: OverrideValue,
+    pub player_ender_chest: OverrideValue,
+    pub player_potion_effects: OverrideValue,
+    pub player_cooldowns: OverrideValue,
+    pub player_abilities: OverrideValue,
+    pub player_recipe_book: OverrideValue,
+    pub player_spawn_point: OverrideValue,
+    pub player_stats: OverrideValue,
+}
+
+impl PlayerPolicyOverrides {
+    pub fn get(&self, key: &str) -> OverrideValue {
+        match normalize_player_policy_field(key) {
+            Some("player_position") => self.player_position,
+            Some("player_motion") => self.player_motion,
+            Some("player_health") => self.player_health,
+            Some("player_hunger") => self.player_hunger,
+            Some("player_experience") => self.player_experience,
+            Some("player_inventory") => self.player_inventory,
+            Some("player_ender_chest") => self.player_ender_chest,
+            Some("player_potion_effects") => self.player_potion_effects,
+            Some("player_cooldowns") => self.player_cooldowns,
+            Some("player_abilities") => self.player_abilities,
+            Some("player_recipe_book") => self.player_recipe_book,
+            Some("player_spawn_point") => self.player_spawn_point,
+            Some("player_stats") => self.player_stats,
+            _ => OverrideValue::Global,
+        }
+    }
+
+    pub fn set(&mut self, key: &str, val: OverrideValue) -> bool {
+        match normalize_player_policy_field(key) {
+            Some("player_position") => self.player_position = val,
+            Some("player_motion") => self.player_motion = val,
+            Some("player_health") => self.player_health = val,
+            Some("player_hunger") => self.player_hunger = val,
+            Some("player_experience") => self.player_experience = val,
+            Some("player_inventory") => self.player_inventory = val,
+            Some("player_ender_chest") => self.player_ender_chest = val,
+            Some("player_potion_effects") => self.player_potion_effects = val,
+            Some("player_cooldowns") => self.player_cooldowns = val,
+            Some("player_abilities") => self.player_abilities = val,
+            Some("player_recipe_book") => self.player_recipe_book = val,
+            Some("player_spawn_point") => self.player_spawn_point = val,
+            Some("player_stats") => self.player_stats = val,
+            _ => return false,
+        }
+        true
+    }
+
+    pub fn set_all(&mut self, val: OverrideValue) {
+        for &f in PLAYER_POLICY_FIELDS {
+            let _ = self.set(f, val);
+        }
+    }
+
+    pub fn count_custom(&self) -> usize {
+        PLAYER_POLICY_FIELDS
+            .iter()
+            .filter(|&&f| self.get(f) != OverrideValue::Global)
+            .count()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.count_custom() == 0
+    }
+
+    pub fn apply_to_policy(&self, base: &RollbackPolicy) -> RollbackPolicy {
+        let mut out = *base;
+        out.player_position = self.player_position.resolve(base.player_position);
+        out.player_motion = self.player_motion.resolve(base.player_motion);
+        out.player_health = self.player_health.resolve(base.player_health);
+        out.player_hunger = self.player_hunger.resolve(base.player_hunger);
+        out.player_experience = self.player_experience.resolve(base.player_experience);
+        out.player_inventory = self.player_inventory.resolve(base.player_inventory);
+        out.player_ender_chest = self.player_ender_chest.resolve(base.player_ender_chest);
+        out.player_potion_effects = self.player_potion_effects.resolve(base.player_potion_effects);
+        out.player_cooldowns = self.player_cooldowns.resolve(base.player_cooldowns);
+        out.player_abilities = self.player_abilities.resolve(base.player_abilities);
+        out.player_recipe_book = self.player_recipe_book.resolve(base.player_recipe_book);
+        out.player_spawn_point = self.player_spawn_point.resolve(base.player_spawn_point);
+        out.player_stats = self.player_stats.resolve(base.player_stats);
+        out
+    }
+
+    pub fn to_sparse_json(&self) -> serde_json::Value {
+        let mut map = serde_json::Map::new();
+        for &f in PLAYER_POLICY_FIELDS {
+            let v = self.get(f);
+            if v != OverrideValue::Global {
+                map.insert(f.to_owned(), serde_json::Value::Bool(v == OverrideValue::Allow));
+            }
+        }
+        serde_json::Value::Object(map)
+    }
+
+    pub fn to_full_json(&self, base: &RollbackPolicy) -> serde_json::Value {
+        let resolved = self.apply_to_policy(base).to_json();
+        let mut raw = serde_json::Map::new();
+        for &f in PLAYER_POLICY_FIELDS {
+            raw.insert(f.to_owned(), self.get(f).to_json());
+        }
+        serde_json::json!({
+            "overrides": serde_json::Value::Object(raw),
+            "effective": resolved,
+        })
+    }
+
+    pub fn from_json(v: &serde_json::Value) -> Self {
+        let mut out = Self::default();
+        let Some(obj) = v.as_object() else {
+            return out;
+        };
+        for (k, val) in obj {
+            if let Some(ov) = OverrideValue::from_json(val) {
+                let _ = out.set(k, ov);
+            }
+        }
+        out
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PlayerProfileOverrides {
+    pub name: String,
+    pub rollback: PlayerPolicyOverrides,
+    pub scrub: PlayerPolicyOverrides,
+}
+
+impl PlayerProfileOverrides {
+    pub fn is_empty(&self) -> bool {
+        self.rollback.is_empty() && self.scrub.is_empty()
+    }
+}

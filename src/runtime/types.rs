@@ -4,7 +4,10 @@ use horizon_client::lang;
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
-    sync::{Mutex, OnceLock},
+    sync::{
+        atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering},
+        Mutex, OnceLock,
+    },
 };
 
 pub const MOD_ID: &str = "rreturn";
@@ -268,6 +271,14 @@ pub struct RollbackBenchmark {
     pub player_ms: f64,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OnlinePlayerInfo {
+    pub uuid: u128,
+    pub name: String,
+    pub dimension: String,
+    pub is_owner: bool,
+}
+
 pub struct RReturnState {
     pub current_slot: String,
     pub auto_save: bool,
@@ -283,7 +294,14 @@ pub struct RReturnState {
     pub save_on_boss_defeat: bool,
     pub logs: bool,
     pub policy: RollbackPolicy,
+    pub scrub_policy: RollbackPolicy,
+    pub scrub_history_seconds: i32,
+    pub scrub_wheel_sensitivity: i32,
+    pub scrub_reverse_audio: bool,
+    pub scrub_show_hud: bool,
     pub anchor: AnchorSettings,
+    pub player_overrides: HashMap<u128, PlayerProfileOverrides>,
+    pub online_players: Vec<OnlinePlayerInfo>,
     pub anchor_ids: HashSet<u128>,
     pub has_checkpoint: bool,
     pub last_save_tick: i64,
@@ -320,7 +338,14 @@ impl Default for RReturnState {
             logs: false,
             scrub_enabled: false,
             policy: RollbackPolicy::default(),
+            scrub_policy: RollbackPolicy::default(),
+            scrub_history_seconds: 1200,
+            scrub_wheel_sensitivity: 15,
+            scrub_reverse_audio: true,
+            scrub_show_hud: true,
             anchor: AnchorSettings::default(),
+            player_overrides: HashMap::new(),
+            online_players: Vec::new(),
             anchor_ids: HashSet::new(),
             has_checkpoint: false,
             last_save_tick: 0,
@@ -338,6 +363,60 @@ impl Default for RReturnState {
             dev_mode: std::env::var_os("RRETURN_DEV").is_some_and(|v| v == "1" || v == "true"),
         }
     }
+}
+
+static SCRUB_MAX_TICKS_ATOMIC: AtomicUsize = AtomicUsize::new(24_000);
+static SCRUB_WHEEL_SENS_ATOMIC: AtomicI32 = AtomicI32::new(15);
+static SCRUB_REVERSE_AUDIO_ATOMIC: AtomicBool = AtomicBool::new(true);
+static SCRUB_SHOW_HUD_ATOMIC: AtomicBool = AtomicBool::new(true);
+
+pub fn sync_scrub_atomics_from_state(st: &RReturnState) {
+    let ticks = (st.scrub_history_seconds.clamp(30, 1200) as usize) * 20;
+    SCRUB_MAX_TICKS_ATOMIC.store(ticks, Ordering::Relaxed);
+    SCRUB_WHEEL_SENS_ATOMIC.store(st.scrub_wheel_sensitivity.clamp(5, 40), Ordering::Relaxed);
+    SCRUB_REVERSE_AUDIO_ATOMIC.store(st.scrub_reverse_audio, Ordering::Relaxed);
+    SCRUB_SHOW_HUD_ATOMIC.store(st.scrub_show_hud, Ordering::Relaxed);
+}
+
+pub fn scrub_max_history_ticks() -> usize {
+    SCRUB_MAX_TICKS_ATOMIC.load(Ordering::Relaxed).clamp(600, 24_000)
+}
+
+pub fn scrub_wheel_sens_factor() -> f64 {
+    f64::from(SCRUB_WHEEL_SENS_ATOMIC.load(Ordering::Relaxed).clamp(5, 40)) / 10.0
+}
+
+pub fn scrub_reverse_audio_enabled() -> bool {
+    SCRUB_REVERSE_AUDIO_ATOMIC.load(Ordering::Relaxed)
+}
+
+pub fn scrub_show_hud_enabled() -> bool {
+    SCRUB_SHOW_HUD_ATOMIC.load(Ordering::Relaxed)
+}
+
+pub fn collect_online_players(game: &Game<'_>) -> Vec<OnlinePlayerInfo> {
+    let Some(host) = game.lan.as_ref() else {
+        return Vec::new();
+    };
+    let owner_uuid = host.owner.as_ref().map(|o| o.uuid);
+    let mut list: Vec<OnlinePlayerInfo> = host
+        .hub
+        .guests
+        .iter()
+        .filter(|g| g.placed)
+        .map(|g| OnlinePlayerInfo {
+            uuid: g.uuid,
+            name: g.name.clone(),
+            dimension: g.dimension.clone(),
+            is_owner: owner_uuid == Some(g.uuid),
+        })
+        .collect();
+    list.sort_by(|a, b| {
+        b.is_owner
+            .cmp(&a.is_owner)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+    list
 }
 
 static STATE: OnceLock<Mutex<RReturnState>> = OnceLock::new();
@@ -411,4 +490,84 @@ pub fn resolve_anchors(
             vec![online[index]]
         }
     }
+}
+
+pub fn resolve_player_effective_policy(
+    st: &RReturnState,
+    base: &RollbackPolicy,
+    is_scrub: bool,
+    uuid: u128,
+    name: Option<&str>,
+) -> RollbackPolicy {
+    let profile = st.player_overrides.get(&uuid).or_else(|| {
+        let wanted = name?;
+        st.player_overrides
+            .values()
+            .find(|p| !p.name.is_empty() && p.name.eq_ignore_ascii_case(wanted))
+    });
+    match profile {
+        Some(p) => {
+            let ov = if is_scrub { &p.scrub } else { &p.rollback };
+            ov.apply_to_policy(base)
+        }
+        None => *base,
+    }
+}
+
+pub fn find_local_player_identity(game: &Game<'_>) -> Option<(u128, String)> {
+    if let Some(host) = game.lan.as_ref() {
+        let target = game
+            .serving
+            .as_ref()
+            .map(|s| s.owner)
+            .or_else(|| host.owner.as_ref().map(|o| o.uuid));
+        if let Some(u) = target {
+            if let Some(g) = host.hub.guests.iter().find(|g| g.uuid == u) {
+                return Some((g.uuid, g.name.clone()));
+            }
+            if let Some(o) = host.owner.as_ref().filter(|o| o.uuid == u) {
+                return Some((o.uuid, String::new()));
+            }
+            return Some((u, String::new()));
+        }
+        if let Some(g) = host.hub.guests.first() {
+            return Some((g.uuid, g.name.clone()));
+        }
+    }
+    None
+}
+
+pub fn resolve_local_client_policy(game: &Game<'_>, is_scrub: bool) -> RollbackPolicy {
+    let ident = find_local_player_identity(game);
+    with_state(|st| {
+        let base = if is_scrub { st.scrub_policy } else { st.policy };
+        if let Some((uuid, name)) = ident {
+            resolve_policy_via_online(st, &base, is_scrub, uuid, Some(&name))
+        } else if let Some(owner) = st
+            .online_players
+            .iter()
+            .find(|p| p.is_owner)
+            .or_else(|| st.online_players.first())
+        {
+            resolve_player_effective_policy(st, &base, is_scrub, owner.uuid, Some(&owner.name))
+        } else {
+            base
+        }
+    })
+}
+
+fn resolve_policy_via_online(
+    st: &RReturnState,
+    base: &RollbackPolicy,
+    is_scrub: bool,
+    uuid: u128,
+    name: Option<&str>,
+) -> RollbackPolicy {
+    let resolved_name = name.filter(|s| !s.is_empty()).or_else(|| {
+        st.online_players
+            .iter()
+            .find(|p| p.uuid == uuid)
+            .map(|p| p.name.as_str())
+    });
+    resolve_player_effective_policy(st, base, is_scrub, uuid, resolved_name)
 }

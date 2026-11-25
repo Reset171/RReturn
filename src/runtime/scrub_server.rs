@@ -160,7 +160,7 @@ impl ServerScrubJournal {
         let (anchor_set, policy) = with_state(|st| {
             let anchors: HashSet<u128> =
                 resolve_anchors(&st.anchor, &online, now, None).into_iter().collect();
-            (anchors, st.policy)
+            (anchors, st.scrub_policy)
         });
 
         let anchor_ids = if !start_new_segment
@@ -614,7 +614,8 @@ impl ServerScrubJournal {
         }
 
         self.total_ticks += 1;
-        while self.total_ticks > self.max_ticks {
+        let max_limit = scrub_max_history_ticks().min(self.max_ticks);
+        while self.total_ticks > max_limit {
             let next_kf = (1..self.segments.len()).find(|&i| self.segments[i].is_keyframe);
             let Some(drop_count) = next_kf else {
                 break;
@@ -933,9 +934,10 @@ impl ServerScrubJournal {
             .map(|g| (g.uuid, g.to_guest_snapshot(rec.game_time)))
             .collect();
 
+        let live_scrub_policy = with_state(|st| st.scrub_policy);
         Some(Arc::new(TimelineSnapshot {
             anchor_ids: (*rec.anchor_ids).clone(),
-            policy: rec.policy,
+            policy: live_scrub_policy,
             game_time: rec.game_time,
             day_time: rec.day_time,
             weather: rec.weather,

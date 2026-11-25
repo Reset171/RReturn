@@ -99,6 +99,7 @@ pub fn execute_rreturn_command(
             "[RReturn] In-memory snapshots cleared.".to_owned()
         }
         "anchor" => handle_anchor_subcommand(game, &words[2..], requester),
+        "player" | "players" => handle_player_subcommand(game, &words[2..], requester),
         "autosave" => handle_autosave_subcommand(game, &words[2..]),
         "bench" | "benchmark" => handle_bench_subcommand(),
         "hitboxes" | "f3" => {
@@ -277,6 +278,26 @@ pub fn handle_trigger_subcommand(
     }
 }
 
+fn resolve_anchor_target(game: &Game<'_>, name: Option<&str>, requester: Option<u128>) -> Option<u128> {
+    match name {
+        Some(n) => game.lan.as_ref().and_then(|h| {
+            h.hub
+                .guests
+                .iter()
+                .find(|g| g.name.eq_ignore_ascii_case(n))
+                .map(|g| g.uuid)
+        }),
+        None => requester.or_else(|| {
+            game.lan.as_ref().and_then(|h| {
+                h.owner
+                    .as_ref()
+                    .map(|o| o.uuid)
+                    .or_else(|| h.hub.guests.iter().find(|g| g.placed).map(|g| g.uuid))
+            })
+        }),
+    }
+}
+
 pub fn handle_anchor_subcommand(
     game: &mut Game<'_>,
     args: &[&str],
@@ -307,19 +328,7 @@ pub fn handle_anchor_subcommand(
             format!("[RReturn] Key player rotation interval set to {} s", seconds)
         }
         "pin" => {
-            let target = match args.get(1) {
-                Some(name) => {
-                    let host = game.lan.as_ref();
-                    host.and_then(|h| {
-                        h.hub
-                            .guests
-                            .iter()
-                            .find(|g| g.name.eq_ignore_ascii_case(name))
-                            .map(|g| g.uuid)
-                    })
-                }
-                None => requester,
-            };
+            let target = resolve_anchor_target(game, args.get(1).copied(), requester);
             if let Some(uuid) = target {
                 let added = with_state_mut(|st| {
                     if !st.anchor.pinned.contains(&uuid) {
@@ -340,19 +349,12 @@ pub fn handle_anchor_subcommand(
             }
         }
         "unpin" => {
-            let target = match args.get(1) {
-                Some(name) => {
-                    let host = game.lan.as_ref();
-                    host.and_then(|h| {
-                        h.hub
-                            .guests
-                            .iter()
-                            .find(|g| g.name.eq_ignore_ascii_case(name))
-                            .map(|g| g.uuid)
-                    })
-                }
-                None => requester,
-            };
+            if args.get(1).is_some_and(|s| *s == "all" || *s == "*") {
+                with_state_mut(|st| st.anchor.pinned.clear());
+                save_current_settings(game);
+                return "[RReturn] Cleared all pinned key players.".to_owned();
+            }
+            let target = resolve_anchor_target(game, args.get(1).copied(), requester);
             if let Some(uuid) = target {
                 let removed = with_state_mut(|st| {
                     if let Some(idx) = st.anchor.pinned.iter().position(|u| *u == uuid) {
@@ -372,6 +374,11 @@ pub fn handle_anchor_subcommand(
                 "[RReturn] Player not found.".to_owned()
             }
         }
+        "clear" => {
+            with_state_mut(|st| st.anchor.pinned.clear());
+            save_current_settings(game);
+            "[RReturn] Cleared all pinned key players.".to_owned()
+        }
         "mode" => {
             let mode_str = args.get(1).copied().unwrap_or("fixed");
             let mode = AnchorMode::by_id(mode_str);
@@ -388,6 +395,238 @@ pub fn handle_anchor_subcommand(
             format!("[RReturn] Key player mode: {}", mode.id())
         }
         _ => report_status(game),
+    }
+}
+
+fn resolve_player_uuid_and_name(
+    game: &Game<'_>,
+    token: &str,
+    requester: Option<u128>,
+) -> Option<(u128, String)> {
+    if token.eq_ignore_ascii_case("@s") || token.eq_ignore_ascii_case("self") {
+        if let Some(u) = resolve_anchor_target(game, None, requester) {
+            let name = game
+                .lan
+                .as_ref()
+                .and_then(|h| h.hub.guests.iter().find(|g| g.uuid == u).map(|g| g.name.clone()))
+                .or_else(|| {
+                    with_state(|st| {
+                        st.online_players
+                            .iter()
+                            .find(|p| p.uuid == u)
+                            .map(|p| p.name.clone())
+                    })
+                })
+                .unwrap_or_default();
+            return Some((u, name));
+        }
+    }
+    if let Some(g) = game
+        .lan
+        .as_ref()
+        .and_then(|h| h.hub.guests.iter().find(|g| g.name.eq_ignore_ascii_case(token)))
+    {
+        return Some((g.uuid, g.name.clone()));
+    }
+    let clean_hex = token.trim().replace('-', "");
+    if clean_hex.len() == 32
+        && let Ok(u) = u128::from_str_radix(&clean_hex, 16)
+    {
+        let name = game
+            .lan
+            .as_ref()
+            .and_then(|h| h.hub.guests.iter().find(|g| g.uuid == u).map(|g| g.name.clone()))
+            .or_else(|| {
+                with_state(|st| {
+                    st.player_overrides
+                        .get(&u)
+                        .map(|p| p.name.clone())
+                        .or_else(|| st.online_players.iter().find(|p| p.uuid == u).map(|p| p.name.clone()))
+                })
+            })
+            .unwrap_or_default();
+        return Some((u, name));
+    }
+    with_state(|st| {
+        st.online_players
+            .iter()
+            .find(|p| p.name.eq_ignore_ascii_case(token))
+            .map(|p| (p.uuid, p.name.clone()))
+            .or_else(|| {
+                st.player_overrides
+                    .iter()
+                    .find(|(_, p)| p.name.eq_ignore_ascii_case(token))
+                    .map(|(&u, p)| (u, p.name.clone()))
+            })
+    })
+}
+
+pub fn handle_player_subcommand(
+    game: &mut Game<'_>,
+    args: &[&str],
+    requester: Option<u128>,
+) -> String {
+    let players_now = collect_online_players(game);
+    if !players_now.is_empty() {
+        with_state_mut(|st| st.online_players = players_now);
+    }
+    let sub = args.first().copied().unwrap_or("list");
+    match sub {
+        "list" => {
+            let list = with_state(|st| {
+                let mut rows = Vec::new();
+                for p in &st.online_players {
+                    let prof = st.player_overrides.get(&p.uuid);
+                    rows.push(serde_json::json!({
+                        "uuid": format!("{:032x}", p.uuid),
+                        "name": p.name,
+                        "online": true,
+                        "is_owner": p.is_owner,
+                        "rollback": prof.map(|pr| pr.rollback.to_sparse_json()).unwrap_or_else(|| serde_json::json!({})),
+                        "scrub": prof.map(|pr| pr.scrub.to_sparse_json()).unwrap_or_else(|| serde_json::json!({})),
+                    }));
+                }
+                for (&uuid, prof) in &st.player_overrides {
+                    if st.online_players.iter().any(|p| p.uuid == uuid) {
+                        continue;
+                    }
+                    rows.push(serde_json::json!({
+                        "uuid": format!("{:032x}", uuid),
+                        "name": prof.name,
+                        "online": false,
+                        "is_owner": false,
+                        "rollback": prof.rollback.to_sparse_json(),
+                        "scrub": prof.scrub.to_sparse_json(),
+                    }));
+                }
+                serde_json::Value::Array(rows)
+            });
+            serde_json::to_string_pretty(&list).unwrap_or_else(|_| "[]".to_owned())
+        }
+        "get" => {
+            let target_tok = args.get(1).copied().unwrap_or("@s");
+            let scope = args.get(2).copied().unwrap_or("rollback").to_ascii_lowercase();
+            let Some((uuid, name)) = resolve_player_uuid_and_name(game, target_tok, requester) else {
+                return format!("[RReturn] Player '{}' not found.", target_tok);
+            };
+            let val = with_state(|st| {
+                let is_scrub = scope == "scrub";
+                let base = if is_scrub { st.scrub_policy } else { st.policy };
+                let empty = PlayerPolicyOverrides::default();
+                let ov = st
+                    .player_overrides
+                    .get(&uuid)
+                    .map(|p| if is_scrub { &p.scrub } else { &p.rollback })
+                    .unwrap_or(&empty);
+                serde_json::json!({
+                    "uuid": format!("{:032x}", uuid),
+                    "name": name,
+                    "scope": if is_scrub { "scrub" } else { "rollback" },
+                    "data": ov.to_full_json(&base),
+                })
+            });
+            serde_json::to_string_pretty(&val).unwrap_or_else(|_| "{}".to_owned())
+        }
+        "set" => {
+            let target_tok = args.get(1).copied().unwrap_or("");
+            let field = args.get(2).copied().unwrap_or("");
+            let val_tok = args.get(3).copied().unwrap_or("");
+            let scope = args.get(4).copied().unwrap_or("rollback").to_ascii_lowercase();
+            if target_tok.is_empty() || field.is_empty() || val_tok.is_empty() {
+                return "[RReturn] Usage: /rreturn player set <name|@s> <field|all> <global|true|false> [rollback|scrub|both]".to_owned();
+            }
+            let Some((uuid, name)) = resolve_player_uuid_and_name(game, target_tok, requester) else {
+                return format!("[RReturn] Player '{}' not found.", target_tok);
+            };
+            let Some(ov_val) = OverrideValue::from_token(val_tok) else {
+                return format!("[RReturn] Invalid override '{}': expected global, true, or false.", val_tok);
+            };
+            let set_rb = scope != "scrub";
+            let set_sc = scope == "scrub" || scope == "both" || scope == "all";
+            let ok = with_state_mut(|st| {
+                let entry = st.player_overrides.entry(uuid).or_insert_with(|| PlayerProfileOverrides {
+                    name: name.clone(),
+                    ..Default::default()
+                });
+                if !name.is_empty() {
+                    entry.name = name.clone();
+                }
+                let mut valid = true;
+                if field.eq_ignore_ascii_case("all") {
+                    if set_rb {
+                        entry.rollback.set_all(ov_val);
+                    }
+                    if set_sc {
+                        entry.scrub.set_all(ov_val);
+                    }
+                } else {
+                    if set_rb {
+                        valid &= entry.rollback.set(field, ov_val);
+                    }
+                    if set_sc {
+                        valid &= entry.scrub.set(field, ov_val);
+                    }
+                }
+                if entry.is_empty() {
+                    st.player_overrides.remove(&uuid);
+                }
+                valid
+            });
+            if !ok {
+                return format!("[RReturn] Unknown player policy field '{}'.", field);
+            }
+            save_current_settings(game);
+            format!(
+                "[RReturn] Player '{}' ({}) override '{}' set cleanly.",
+                if name.is_empty() { target_tok } else { &name },
+                scope,
+                field
+            )
+        }
+        "reset" => {
+            let target_tok = args.get(1).copied().unwrap_or("all");
+            let scope = args.get(2).copied().unwrap_or("both").to_ascii_lowercase();
+            if target_tok == "all" || target_tok == "*" {
+                with_state_mut(|st| {
+                    if scope == "both" || scope == "all" {
+                        st.player_overrides.clear();
+                    } else {
+                        for p in st.player_overrides.values_mut() {
+                            if scope == "scrub" {
+                                p.scrub.set_all(OverrideValue::Global);
+                            } else {
+                                p.rollback.set_all(OverrideValue::Global);
+                            }
+                        }
+                        st.player_overrides.retain(|_, p| !p.is_empty());
+                    }
+                });
+                save_current_settings(game);
+                return "[RReturn] Player policy overrides cleared to global.".to_owned();
+            }
+            let Some((uuid, name)) = resolve_player_uuid_and_name(game, target_tok, requester) else {
+                return format!("[RReturn] Player '{}' not found.", target_tok);
+            };
+            with_state_mut(|st| {
+                if let Some(p) = st.player_overrides.get_mut(&uuid) {
+                    if scope != "scrub" {
+                        p.rollback.set_all(OverrideValue::Global);
+                    }
+                    if scope == "scrub" || scope == "both" || scope == "all" {
+                        p.scrub.set_all(OverrideValue::Global);
+                    }
+                    if p.is_empty() {
+                        st.player_overrides.remove(&uuid);
+                    }
+                }
+            });
+            save_current_settings(game);
+            format!(
+                "[RReturn] Cleared overrides for player '{}'.",
+                if name.is_empty() { target_tok } else { &name }
+            )
+        }
+        _ => "[RReturn] Usage: /rreturn player <list|get|set|reset> ...".to_owned(),
     }
 }
 
@@ -720,7 +959,40 @@ fn handle_scrub_subcommand(game: &mut Game<'_>, args: &[&str], requester: Option
             commit_scrub(game);
             format!("[RReturn] Scrubbed back by {:.0} ticks.", ticks)
         }
-        _ => "[RReturn] Usage: /rreturn scrub [on|off|toggle|start|step <N>|commit|cancel|status|rewind <sec>]".to_owned(),
+        "policy" => {
+            let psub = args.get(1).copied().unwrap_or("get");
+            match psub {
+                "get" => {
+                    let pol = with_state(|st| st.scrub_policy.to_json());
+                    serde_json::to_string_pretty(&pol).unwrap_or_else(|_| "{}".to_owned())
+                }
+                "set" => {
+                    let key = args.get(2).copied().unwrap_or("");
+                    let val = match args.get(3).copied().unwrap_or("").to_ascii_lowercase().as_str() {
+                        "true" | "1" | "on" => Some(true),
+                        "false" | "0" | "off" => Some(false),
+                        _ => None,
+                    };
+                    if key.is_empty() || val.is_none() {
+                        return "[RReturn] Usage: /rreturn scrub policy set <field> <true|false>".to_owned();
+                    }
+                    let ok = with_state_mut(|st| st.scrub_policy.set_field(key, val.unwrap()));
+                    if ok {
+                        save_current_settings(game);
+                        format!("[RReturn] Scrub policy '{}' set to {}.", key, val.unwrap())
+                    } else {
+                        format!("[RReturn] Unknown scrub policy field '{}'.", key)
+                    }
+                }
+                "reset" => {
+                    with_state_mut(|st| st.scrub_policy = RollbackPolicy::default());
+                    save_current_settings(game);
+                    "[RReturn] Scrub policy reset to deterministic defaults.".to_owned()
+                }
+                _ => "[RReturn] Usage: /rreturn scrub policy <get|set|reset> [field] [value]".to_owned(),
+            }
+        }
+        _ => "[RReturn] Usage: /rreturn scrub [on|off|toggle|start|step <N>|commit|cancel|status|rewind <sec>|policy ...]".to_owned(),
     }
 }
 

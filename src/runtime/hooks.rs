@@ -207,7 +207,9 @@ pub fn handle_server_started(game: &mut Game<'_>) {
             st.has_checkpoint = false;
         });
     }
+    let players = collect_online_players(game);
     with_state_mut(|st| {
+        st.online_players = players;
         st.current_slot = "default".to_owned();
         st.anchor_ids = restored_anchors;
         st.pending_death_rollback = None;
@@ -318,6 +320,16 @@ pub fn handle_tick(game: &mut Game<'_>) {
 }
 
 pub fn handle_server_tick(game: &mut Game<'_>, world_running: bool) {
+    if game.world.game_time % 20 == 0 || with_state(|st| st.online_players.is_empty()) {
+        let players = collect_online_players(game);
+        if !players.is_empty() {
+            with_state_mut(|st| {
+                if st.online_players != players {
+                    st.online_players = players;
+                }
+            });
+        }
+    }
     if with_state(|st| st.scrub_enabled) && !is_scrubbing() && world_running {
         record_server_tick(game);
     }

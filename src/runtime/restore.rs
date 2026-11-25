@@ -20,6 +20,32 @@ pub fn rollback_checkpoint_on_server(game: &mut Game<'_>) -> bool {
     rollback_slot_checkpoint_on_server(game, &slot)
 }
 
+fn resolve_rollback_target_dim(
+    game: &Game<'_>,
+    snap: &TimelineSnapshot,
+    live_policy: &RollbackPolicy,
+    is_scrub: bool,
+) -> Dim {
+    let primary_ident = find_local_player_identity(game);
+    let primary_keeps_pos = with_state(|st| {
+        if let Some((u, n)) = &primary_ident {
+            !resolve_player_effective_policy(st, live_policy, is_scrub, *u, Some(n.as_str()))
+                .player_position
+        } else {
+            !live_policy.player_position
+        }
+    });
+    if primary_keeps_pos {
+        game.dim
+    } else {
+        snap.guests
+            .values()
+            .next()
+            .map(|g| Dim::from_id(&g.dimension))
+            .unwrap_or_else(|| snap.levels.keys().copied().next().unwrap_or(Dim::Overworld))
+    }
+}
+
 pub fn rollback_slot_checkpoint_on_server(game: &mut Game<'_>, slot: &str) -> bool {
     let t_hydrate = std::time::Instant::now();
     let mut snap = match get_slot_snapshot_clone(slot) {
@@ -30,14 +56,8 @@ pub fn rollback_slot_checkpoint_on_server(game: &mut Game<'_>, slot: &str) -> bo
         },
     };
 
-    let target_dim = snap
-        .guests
-        .values()
-        .next()
-        .map(|g| Dim::from_id(&g.dimension))
-        .unwrap_or_else(|| {
-            snap.levels.keys().copied().next().unwrap_or(Dim::Overworld)
-        });
+    let live_policy = with_state(|st| st.policy);
+    let target_dim = resolve_rollback_target_dim(game, &snap, &live_policy, false);
 
     if !snap.levels.contains_key(&target_dim) {
         if let Some(hydrated) = hydrate_slot_from_disk_on_server(game, slot) {
@@ -73,14 +93,8 @@ pub fn apply_timeline_snapshot_on_server(
     game.world.loaded_entities.clear();
     bench_accum(Phase::FlushSave, t_flush);
 
-    let target_dim = snap
-        .guests
-        .values()
-        .next()
-        .map(|g| Dim::from_id(&g.dimension))
-        .unwrap_or_else(|| {
-            snap.levels.keys().copied().next().unwrap_or(Dim::Overworld)
-        });
+    let live_policy = with_state(|st| if is_scrub { st.scrub_policy } else { st.policy });
+    let target_dim = resolve_rollback_target_dim(game, snap, &live_policy, is_scrub);
 
     let (need_force_disk, is_hot_rollback, disk_files_changed) = match origin {
         RollbackOrigin::DiskSlot(slot) => {
@@ -114,7 +128,7 @@ pub fn apply_timeline_snapshot_on_server(
     bench_accum(Phase::SaveDirStreaming, t_savedir);
 
     bench_add_players(snap.guests.len());
-    let policy = &snap.policy;
+    let policy = &live_policy;
 
     let t_globals = std::time::Instant::now();
     if policy.world_time {
@@ -577,7 +591,7 @@ pub fn apply_timeline_snapshot_on_server(
     {
         let t_stream = std::time::Instant::now();
         if let RollbackOrigin::DiskSlot(_) = origin {
-            restore_offline_files(&snap.offline_player_data, policy.player_stats);
+            restore_offline_files(&snap.offline_player_data, policy, is_scrub);
         }
         game.streaming.wait(std::time::Duration::from_millis(2));
         if let Ok((fresh_streaming, fresh_save, _)) = super::super::world_loading::make_streaming(
@@ -741,7 +755,7 @@ pub fn apply_timeline_snapshot_on_server(
     }
 
     let t_player = std::time::Instant::now();
-    restore_players_on_rollback(game, snap, prev_dim, target_dim, is_scrub);
+    restore_players_on_rollback(game, snap, policy, prev_dim, target_dim, is_scrub);
     bench_accum(Phase::PlayersOnline, t_player);
     let player_ms = (std::time::Instant::now() - t_player).as_secs_f64() * 1000.0;
     let total_ms = (std::time::Instant::now() - t_start).as_secs_f64() * 1000.0;

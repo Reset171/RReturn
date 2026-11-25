@@ -202,11 +202,27 @@ pub fn restore_player_motion(
     m.health.indicated_dir = None;
 }
 
-pub fn restore_offline_files(saved: &HashMap<PathBuf, Vec<u8>>, restore_stats: bool) {
+pub fn restore_offline_files(
+    saved: &HashMap<PathBuf, Vec<u8>>,
+    base_policy: &RollbackPolicy,
+    is_scrub: bool,
+) {
     for (path, bytes) in saved {
         let is_stat = path.to_string_lossy().contains("stats");
-        if is_stat && !restore_stats {
-            continue;
+        if is_stat {
+            let uuid_opt = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .and_then(|s| u128::from_str_radix(&s.replace('-', ""), 16).ok());
+            let allow_stats = match uuid_opt {
+                Some(uuid) => with_state(|st| {
+                    resolve_player_effective_policy(st, base_policy, is_scrub, uuid, None).player_stats
+                }),
+                None => base_policy.player_stats,
+            };
+            if !allow_stats {
+                continue;
+            }
         }
         if let Some(parent) = path.parent() {
             let _ = fs::create_dir_all(parent);
@@ -218,11 +234,11 @@ pub fn restore_offline_files(saved: &HashMap<PathBuf, Vec<u8>>, restore_stats: b
 pub fn restore_players_on_rollback(
     game: &mut Game<'_>,
     snap: &TimelineSnapshot,
+    policy: &RollbackPolicy,
     prev_dim: Dim,
     target_dim: Dim,
     is_scrub: bool,
 ) {
-    let policy = &snap.policy;
     let net_clock_rate = game.network_clock_rate();
     if let Some(mut host) = game.lan.take() {
         if policy.server_world_border && prev_dim != target_dim {
@@ -307,6 +323,10 @@ pub fn restore_players_on_rollback(
             }
             let uuid = host.hub.guests[gi].uuid;
             let conn = host.hub.guests[gi].conn;
+            let guest_name = host.hub.guests[gi].name.clone();
+            let p_policy = with_state(|st| {
+                resolve_player_effective_policy(st, policy, is_scrub, uuid, Some(&guest_name))
+            });
             let tracked = host.hub.guests[gi].tracker.ids();
             if is_scrub {
                 let to_remove: Vec<i32> = tracked
@@ -332,7 +352,7 @@ pub fn restore_players_on_rollback(
             if let Some(m) = &host.hub.guests[gi].menu {
                 close_windows.push(m.window);
             }
-            if policy.player_inventory {
+            if p_policy.player_inventory {
                 if let Some(play_state) = host.play.get_mut(&conn) {
                     if let Some(lec) = play_state.lectern.take() {
                         close_windows.push(lec.window);
@@ -345,14 +365,12 @@ pub fn restore_players_on_rollback(
                     }
                 }
                 host.hub.close_container(conn);
-            } else {
-                host.hub.close_container(conn);
-            }
-            close_windows.sort_unstable();
-            close_windows.dedup();
-            for w in close_windows {
-                host.hub.guests[gi]
-                    .send(&C::ContainerClose(play::ContainerClose { container: w }));
+                close_windows.sort_unstable();
+                close_windows.dedup();
+                for w in close_windows {
+                    host.hub.guests[gi]
+                        .send(&C::ContainerClose(play::ContainerClose { container: w }));
+                }
             }
             if prev_dim != target_dim {
                 host.hub.guests[gi].send(&C::StopSound(play::StopSound {
@@ -375,8 +393,8 @@ pub fn restore_players_on_rollback(
             if let Some(gs) = guest_snap {
                 let ent_id = host.hub.guests[gi].entity_id as i32;
                 let dim_changed =
-                    policy.player_position && host.hub.guests[gi].dimension != gs.dimension;
-                let old_effects: Vec<&'static str> = if policy.player_potion_effects {
+                    p_policy.player_position && host.hub.guests[gi].dimension != gs.dimension;
+                let old_effects: Vec<&'static str> = if p_policy.player_potion_effects {
                     let mut ids = std::collections::HashSet::new();
                     for e in &host.hub.guests[gi].effects.list {
                         ids.insert(e.id);
@@ -394,7 +412,7 @@ pub fn restore_players_on_rollback(
                     Vec::new()
                 };
                 host.hub.guests.update(gi, |g| {
-                    if policy.player_position {
+                    if p_policy.player_position {
                         g.dimension = gs.dimension.clone();
                         g.position = gs.position;
                         g.previous_position = gs.position;
@@ -404,14 +422,14 @@ pub fn restore_players_on_rollback(
                         g.head_yaw = gs.head_yaw;
                         g.on_ground = gs.on_ground;
                     }
-                    if policy.player_abilities {
+                    if p_policy.player_abilities {
                         g.game_mode = gs.game_mode;
                         g.previous_game_mode = gs.previous_game_mode;
                         g.abilities.flying = gs.flying;
                         g.abilities.flying_speed = gs.flying_speed;
                         g.abilities.may_fly = gs.allow_flight;
                     }
-                    if policy.player_motion {
+                    if p_policy.player_motion {
                         let want_sprint = if is_scrub { false } else { gs.sprinting };
                         g.sprinting = want_sprint;
                         g.client_sprinting = want_sprint;
@@ -455,26 +473,26 @@ pub fn restore_players_on_rollback(
                         }
                     }
 
-                    if policy.player_spawn_point {
+                    if p_policy.player_spawn_point {
                         g.spawn = gs.spawn;
                         g.respawn_elsewhere = gs.respawn_elsewhere.clone();
                     }
                     g.last_death = gs.last_death.clone();
-                    if policy.player_health {
+                    if p_policy.player_health {
                         g.health = gs.health.max(1.0);
                         g.saved_absorption = Some(gs.absorption);
                     }
-                    if policy.player_hunger {
+                    if p_policy.player_hunger {
                         g.food = gs.food;
                         g.saturation = gs.saturation;
                     }
-                    if policy.player_experience {
+                    if p_policy.player_experience {
                         g.xp_level = gs.xp_level;
                         g.xp_progress = gs.xp_progress;
                         g.xp_total = gs.xp_total;
                         g.xp_seed = gs.xp_seed;
                     }
-                    if policy.player_inventory {
+                    if p_policy.player_inventory {
                         g.inventory = gs.inventory.clone();
                         g.armor = gs.armor.clone();
                         g.offhand = gs.offhand.clone();
@@ -483,15 +501,15 @@ pub fn restore_players_on_rollback(
                         g.craft_result = gs.craft_result.clone();
                         g.carried = gs.carried.clone();
                     }
-                    if policy.player_ender_chest {
+                    if p_policy.player_ender_chest {
                         g.ender_items = gs.ender_items.clone();
                     }
-                    if policy.player_potion_effects {
+                    if p_policy.player_potion_effects {
                         g.effects.list = gs.effects.clone();
                         g.effects.tick_count = gs.effects_tick_count;
                         g.effects.changes = gs.effects_changes;
                     }
-                    if policy.player_recipe_book {
+                    if p_policy.player_recipe_book {
                         g.recipe_book = gs.recipe_book.clone();
                         g.send(&C::RecipeBookSettings(recipes::RecipeBookSettings {
                             books: std::array::from_fn(|idx| {
@@ -508,7 +526,9 @@ pub fn restore_players_on_rollback(
                     g.load_timeout = 0;
                     g.sent_health = None;
                     g.sent_xp = None;
-                    g.awaiting_teleport = None;
+                    if p_policy.player_position {
+                        g.awaiting_teleport = None;
+                    }
                     g.send(&C::SetHealth(play::SetHealth {
                         health: g.health,
                         food: g.food,
@@ -516,7 +536,7 @@ pub fn restore_players_on_rollback(
                     }));
                     g.send(&C::GameEvent(play::GameEvent {
                         event: 3,
-                        param: gs.game_mode as f32,
+                        param: g.game_mode as f32,
                     }));
                     g.send(&g.abilities_packet());
                     g.seen_credits = gs.seen_credits;
@@ -533,7 +553,7 @@ pub fn restore_players_on_rollback(
                     }
                     g.sent_air = (-1, -1.0);
                     g.sent_frozen = -1;
-                    if snap.policy.world_weather {
+                    if policy.world_weather {
                         let rain_level = if snap.weather.raining { 1.0 } else { 0.0 };
                         let thunder_level = if snap.weather.thundering { 1.0 } else { 0.0 };
                         g.send(&C::GameEvent(play::GameEvent {
@@ -551,20 +571,48 @@ pub fn restore_players_on_rollback(
                     }
                     g.sent_shared ^= -128;
                     g.sent_shoulders = [Some(-999), Some(-999)];
+                    let synced_attrs = g.motion.as_mut().map(|m| {
+                        restore_player_motion(m, gs, &p_policy, snap.game_time, is_scrub);
+                        horizon_client::lan::attributes::syncable(&m.attributes)
+                    });
+                    let (body_fire, body_air, body_fall, body_vel, body_exh, body_ft, body_frozen, body_sneak, body_ff, body_sprint) =
+                        if let Some(m) = g.motion.as_deref() {
+                            (
+                                m.fire_ticks,
+                                m.air,
+                                m.fall_distance,
+                                [m.velocity.x, m.velocity.y, m.velocity.z],
+                                m.health.food.exhaustion,
+                                m.health.food.timer,
+                                m.ticks_frozen,
+                                m.shift_key_down,
+                                m.fall_flying,
+                                m.sprinting,
+                            )
+                        } else {
+                            (
+                                if p_policy.player_health { gs.fire_ticks } else { 0 },
+                                if p_policy.player_health { gs.air } else { 300 },
+                                if p_policy.player_motion { gs.fall_distance } else { 0.0 },
+                                if p_policy.player_motion { [gs.velocity.x, gs.velocity.y, gs.velocity.z] } else { [0.0; 3] },
+                                if p_policy.player_hunger { gs.exhaustion } else { 0.0 },
+                                if p_policy.player_hunger { gs.food_timer } else { 0 },
+                                if p_policy.player_health { gs.ticks_frozen } else { 0 },
+                                g.sneaking,
+                                g.fall_flying,
+                                g.sprinting,
+                            )
+                        };
                     g.loaded_body = Some(SavedBody {
-                        fire_ticks: gs.fire_ticks,
-                        air: gs.air,
-                        fall_distance: gs.fall_distance,
-                        velocity: [gs.velocity.x, gs.velocity.y, gs.velocity.z],
-                        food_exhaustion: gs.exhaustion,
-                        food_tick_timer: gs.food_timer,
-                        ticks_frozen: gs.ticks_frozen,
+                        fire_ticks: body_fire,
+                        air: body_air,
+                        fall_distance: body_fall,
+                        velocity: body_vel,
+                        food_exhaustion: body_exh,
+                        food_tick_timer: body_ft,
+                        ticks_frozen: body_frozen,
                         invulnerable: false,
                         invulnerable_time: 0,
-                    });
-                    let synced_attrs = g.motion.as_mut().map(|m| {
-                        restore_player_motion(m, gs, policy, snap.game_time, is_scrub);
-                        horizon_client::lan::attributes::syncable(&m.attributes)
                     });
                     if let Some(values) = synced_attrs
                         && !values.is_empty()
@@ -577,16 +625,16 @@ pub fn restore_players_on_rollback(
                     let pose_now = g.pose();
                     g.sent_pose = pose_now;
                     let mut shared_flags: i8 = 0;
-                    if gs.fire_ticks > 0 {
+                    if body_fire > 0 {
                         shared_flags |= 0x01;
                     }
-                    if gs.sneaking {
+                    if body_sneak {
                         shared_flags |= 0x02;
                     }
-                    if !is_scrub && gs.sprinting {
+                    if !is_scrub && body_sprint {
                         shared_flags |= 0x08;
                     }
-                    if gs.fall_flying {
+                    if body_ff {
                         shared_flags |= 0x80u8 as i8;
                     }
 
@@ -606,7 +654,7 @@ pub fn restore_players_on_rollback(
                             (
                                 7,
                                 horizon_protocol::entity_data::serializer::INT,
-                                horizon_protocol::entity_data::Value::Int(gs.ticks_frozen),
+                                horizon_protocol::entity_data::Value::Int(body_frozen),
                             ),
                             (
                                 8,
@@ -625,7 +673,7 @@ pub fn restore_players_on_rollback(
                             ),
                         ],
                     }));
-                    if policy.player_inventory {
+                    if p_policy.player_inventory {
                         g.send(&C::SetHeldSlot(play::SetHeldSlot {
                             slot: gs.selected as i32,
                         }));
@@ -690,7 +738,7 @@ pub fn restore_players_on_rollback(
                     let prev_stats = std::mem::take(&mut play_state.stats);
                     let prev_hook = play_state.hook.extract();
                     let prev_left_game = play_state.left_game;
-                    let prev_menus = if !policy.player_inventory {
+                    let prev_menus = if !p_policy.player_inventory {
                         Some((
                             play_state.lectern.take(),
                             play_state.merchant.take(),
@@ -709,7 +757,7 @@ pub fn restore_players_on_rollback(
                         play_state.mount_window = mw;
                     }
 
-                    if policy.player_cooldowns {
+                    if p_policy.player_cooldowns {
                         let old_cds = extract_active_cooldowns(&prev_cooldowns);
                         let new_cds = extract_active_cooldowns(&gs.cooldowns);
                         for (old_grp, _) in &old_cds {
@@ -727,7 +775,7 @@ pub fn restore_players_on_rollback(
                         play_state.cooldowns = prev_cooldowns;
                     }
 
-                    if policy.player_stats {
+                    if p_policy.player_stats {
                         play_state.stats.values = gs.stats.clone();
                         play_state.stats.mark_all_dirty();
                         play_state.stats.events.clear();
@@ -778,11 +826,11 @@ pub fn restore_players_on_rollback(
                     host.hub.guests[gi].send(&C::Cooldown(play::Cooldown { group, duration }));
                 }
 
-                if policy.player_abilities {
+                if p_policy.player_abilities {
                     host.hub
                         .set_game_mode(conn, gs.game_mode, &game.world, Some(game.collision));
                 }
-                if policy.player_position {
+                if p_policy.player_position {
                     if dim_changed {
                         let target_dim = Dim::from_id(&gs.dimension);
                         game.level_teleports
@@ -797,10 +845,10 @@ pub fn restore_players_on_rollback(
                         host.hub.teleport(gi, Some(gs.position));
                     }
                 }
-                if policy.player_inventory {
+                if p_policy.player_inventory {
                     host.hub.send_inventory(gi);
                 }
-                if policy.player_potion_effects {
+                if p_policy.player_potion_effects {
                     for old_id in old_effects {
                         if !gs.effects.iter().any(|new_e| new_e.id == old_id) {
                             let full_id = if old_id.contains(':') {
@@ -936,29 +984,35 @@ pub fn restore_players_on_rollback(
     game.save_after_guest_turn = false;
     game.rotation_forced = false;
 
-    if let Some(gs) = snap.guests.values().next() {
-        if policy.player_abilities {
+    let local_ident = find_local_player_identity(game);
+    let local_gs = local_ident
+        .as_ref()
+        .and_then(|(u, _)| snap.guests.get(u))
+        .or_else(|| snap.guests.values().next());
+    if let Some(gs) = local_gs {
+        let local_policy = resolve_local_client_policy(game, is_scrub);
+        if local_policy.player_abilities {
             game.set_mode_id(gs.game_mode);
         }
-        if policy.player_cooldowns {
+        if local_policy.player_cooldowns {
             game.shield_cooldown = gs.shield_cooldown;
             game.cooldowns = gs.cooldowns.clone();
         }
         if let Some(p) = game.player.as_mut() {
-            restore_player_motion(p, gs, policy, snap.game_time, is_scrub);
+            restore_player_motion(p, gs, &local_policy, snap.game_time, is_scrub);
             p.client_side = true;
         }
-        if policy.player_inventory {
+        if local_policy.player_inventory {
             game.location_armor = game.armor.clone();
             game.apply_enchantment_attributes();
         }
-        if policy.player_potion_effects {
+        if local_policy.player_potion_effects {
             game.potions.effects.list = gs.effects.clone();
             game.potions.effects.tick_count = gs.effects_tick_count;
             game.potions.effects.changes = gs.effects_changes;
             game.level.active_effects = game.potions.effects.saved();
         }
-        if policy.player_potion_effects || policy.player_inventory {
+        if local_policy.player_potion_effects || local_policy.player_inventory {
             game.potions.applied.clear();
             game.apply_effect_status();
         }

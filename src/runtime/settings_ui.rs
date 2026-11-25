@@ -1,14 +1,10 @@
 use super::super::Game;
-use super::capture::create_slot_checkpoint_on_server;
 use super::hooks::handle_screen_key_pressed_any;
-use super::policy::RollbackPolicy;
-use super::restore::rollback_slot_checkpoint_on_server;
-use super::restore_client::{apply_client_level_rollback, apply_client_rollback_with_ui};
+use super::policy::{OverrideValue, PlayerProfileOverrides, RollbackPolicy};
 use super::scrub::{apply_scrub_wheel_delta, is_scrubbing};
 use super::scrub_hud::{
     consume_scrub_hud_release, handle_scrub_hud_mouse_pressed, handle_scrub_hud_mouse_released,
 };
-use super::policy::{OverrideValue, PlayerProfileOverrides};
 use super::settings_catalog::{
     count_tab_policies, read_bool_setting, read_slider_setting, write_bool_setting,
     write_slider_setting, UiGroup, UiTab, SETTINGS_CATALOG,
@@ -19,10 +15,6 @@ use super::settings_ui_players::draw_players_tab;
 use super::settings_ui_tabs::{draw_grouped_tab, draw_search_tab, draw_system_tab};
 use super::types::*;
 use super::ui::{save_current_settings, sync_scrub_runtime};
-use super::ui_snapshot::{
-    capture_client_ui_snapshot, close_client_container_local, resolve_ui_world_root,
-    save_client_ui_slot, set_active_ui_world_root,
-};
 use horizon_client::hud::HudBatch;
 use std::cell::RefCell;
 use std::time::Instant;
@@ -107,7 +99,7 @@ pub fn reset_settings_ui_state() {
 }
 
 pub fn flush_settings_ui_actions(game: &mut Game<'_>) {
-    let (open_req, close_req, save_req, scrub_sync, cp_now, rb_now) = UI_STATE.with(|cell| {
+    let (open_req, close_req, save_req, scrub_sync) = UI_STATE.with(|cell| {
         let mut ui = cell.borrow_mut();
         let o = ui.pending_open;
         let c = ui.pending_close;
@@ -115,11 +107,7 @@ pub fn flush_settings_ui_actions(game: &mut Game<'_>) {
         let s = ui.pending_save;
         ui.pending_save = false;
         let sc = ui.pending_scrub_sync.take();
-        let cp = ui.pending_checkpoint_now;
-        ui.pending_checkpoint_now = false;
-        let rb = ui.pending_rollback_now;
-        ui.pending_rollback_now = false;
-        (o, c, s, sc, cp, rb)
+        (o, c, s, sc)
     });
 
     if open_req && game.mod_screen_open(MOD_ID) {
@@ -133,49 +121,6 @@ pub fn flush_settings_ui_actions(game: &mut Game<'_>) {
     }
     if save_req {
         save_current_settings(game);
-    }
-    if cp_now {
-        let slot = with_state(|st| st.current_slot.clone());
-        let ui_snap = capture_client_ui_snapshot(game);
-        let (ok, root) = if let Some(server) = &game.integrated {
-            let slot_srv = slot.clone();
-            server
-                .call(move |srv| {
-                    let ok = has_cheat_permission(srv, None)
-                        && create_slot_checkpoint_on_server(srv, None, &slot_srv);
-                    (ok, srv.world_root.clone())
-                })
-                .unwrap_or((false, game.world_root.clone()))
-        } else {
-            let ok = has_cheat_permission(game, None) && create_slot_checkpoint_on_server(game, None, &slot);
-            (ok, resolve_ui_world_root(&game.world_root))
-        };
-        set_active_ui_world_root(&root);
-        if ok {
-            save_client_ui_slot(&root, &slot, ui_snap);
-        }
-    }
-    if rb_now {
-        let slot = with_state(|st| st.current_slot.clone());
-        let (ok, root) = if let Some(server) = &game.integrated {
-            let slot_srv = slot.clone();
-            server
-                .call(move |srv| {
-                    let ok = has_level_4_permission(srv, None) && rollback_slot_checkpoint_on_server(srv, &slot_srv);
-                    (ok, srv.world_root.clone())
-                })
-                .unwrap_or((false, game.world_root.clone()))
-        } else {
-            let ok = has_level_4_permission(game, None) && rollback_slot_checkpoint_on_server(game, &slot);
-            (ok, resolve_ui_world_root(&game.world_root))
-        };
-        set_active_ui_world_root(&root);
-        if ok {
-            game.mod_screen_close(MOD_ID);
-            close_client_container_local(game);
-            game.screen = super::super::Screen::Playing;
-            apply_client_rollback_with_ui(game, &slot, true);
-        }
     }
 }
 
@@ -225,29 +170,25 @@ pub fn render_settings_screen(game: &Game<'_>, draw: &mut HudBatch) {
     game.native_fill(draw, [0.0, 0.0, sw, sh * 0.5], UI_SCRIM_TOP);
     game.native_fill(draw, [0.0, sh * 0.5, sw, sh * 0.5], UI_SCRIM_BOT);
 
-    let mx_pad = if sw < 480.0 { 6.0 } else { 22.0 };
-    let my_pad = if sh < 280.0 { 5.0 } else { 14.0 };
-    let win_w = (sw - mx_pad * 2.0).clamp(300.0, 720.0);
-    let win_h = (sh - my_pad * 2.0).clamp(200.0, 420.0);
+    let mx_pad = if sw < 480.0 { 6.0 } else { 20.0 };
+    let my_pad = if sh < 280.0 { 5.0 } else { 12.0 };
+    let win_w = (sw - mx_pad * 2.0).clamp(300.0, 760.0);
+    let win_h = (sh - my_pad * 2.0).clamp(200.0, 440.0);
     let win_x = ((sw - win_w) * 0.5).floor();
     let win_y = ((sh - win_h) * 0.5).floor();
 
-    draw_rounded_rect(game, draw, [win_x - 3.0, win_y + 2.0, win_w + 6.0, win_h + 6.0], 11.0, UI_SHADOW);
+    draw_soft_shadow(game, draw, [win_x, win_y, win_w, win_h], 10.0, 4);
     draw_rounded_rect(game, draw, [win_x, win_y, win_w, win_h], 10.0, UI_WIN_BG);
     draw_rounded_border(game, draw, [win_x, win_y, win_w, win_h], 10.0, UI_WIN_BORDER);
 
-    let side_w = if win_w < 460.0 { 128.0 } else { 148.0 };
-    draw_rounded_rect(game, draw, [win_x + 1.0, win_y + 1.0, side_w, win_h - 2.0], 9.0, UI_SIDEBAR_BG);
-    game.native_fill(draw, [win_x + side_w - 6.0, win_y + 1.0, 7.0, win_h - 2.0], UI_SIDEBAR_BG);
+    let side_w = if win_w < 460.0 { 132.0 } else { 142.0 };
+    draw_rounded_left_rect(game, draw, [win_x + 1.0, win_y + 1.0, side_w, win_h - 2.0], 9.0, UI_SIDEBAR_BG);
     game.native_fill(draw, [win_x + side_w, win_y + 1.0, 1.0, win_h - 2.0], UI_WIN_BORDER);
 
     let (
         rb_counts,
         sc_counts,
         player_cnt,
-        cur_slot,
-        has_cp,
-        scrub_on,
         active_tab,
         search_q,
         search_focused,
@@ -259,9 +200,6 @@ pub fn render_settings_screen(game: &Game<'_>, draw: &mut HudBatch) {
                 count_tab_policies(st, UiTab::Rollback),
                 count_tab_policies(st, UiTab::Scrub),
                 st.online_players.len().max(st.player_overrides.len()),
-                st.current_slot.clone(),
-                st.has_checkpoint,
-                st.scrub_enabled,
                 ui.active_tab,
                 ui.search_query.clone(),
                 ui.search_focused,
@@ -272,13 +210,11 @@ pub fn render_settings_screen(game: &Game<'_>, draw: &mut HudBatch) {
 
     let mut regions: Vec<HitRegion> = Vec::with_capacity(112);
 
-    // Sidebar RReturn Menu brand + Search pill
-    draw_ui_icon(game, draw, UiIcon::RReturnLogo, win_x + 9.0, win_y + 10.0, UI_BLUE);
-    game.native_text(draw, "RReturn", [win_x + 24.0, win_y + 8.0], UI_TEXT_PRI, false);
-    let sub_fit = fit_text(game, draw, &tr("rreturn.ui.menu_subtitle"), (side_w - 30.0).max(20.0));
-    game.native_text(draw, &sub_fit, [win_x + 24.0, win_y + 18.5], UI_TEXT_MUTED, false);
+    // Sidebar compact RReturn header + Search pill
+    draw_ui_icon(game, draw, UiIcon::RReturnLogo, win_x + 10.0, win_y + 10.0, UI_BLUE);
+    game.native_text(draw, "RReturn", [win_x + 25.0, win_y + 11.5], UI_TEXT_PRI, false);
 
-    let search_rect = [win_x + 8.0, win_y + 31.0, side_w - 16.0, 17.0];
+    let search_rect = [win_x + 8.0, win_y + 28.0, side_w - 16.0, 17.0];
     let s_hov = hit_in_rect(mx, my, search_rect);
     draw_rounded_rect(game, draw, search_rect, 8.0, UI_SEARCH_BG);
     if search_focused || s_hov {
@@ -304,7 +240,7 @@ pub fn render_settings_screen(game: &Game<'_>, draw: &mut HudBatch) {
     // Sidebar 4 menu tabs with vector icons
     let searching = !search_q.trim().is_empty();
     let compact_side = win_h < 225.0;
-    let mut tab_y = win_y + 53.0;
+    let mut tab_y = win_y + 52.0;
     let tab_h = if compact_side { 20.0 } else { 22.0 };
     let tab_gap = if compact_side { 3.0 } else { 4.0 };
     for &tab in UiTab::ALL.iter() {
@@ -362,49 +298,7 @@ pub fn render_settings_screen(game: &Game<'_>, draw: &mut HudBatch) {
         tab_y += tab_h + tab_gap;
     }
 
-    // Sidebar bottom Menu Quick-Control Card (slot status + quick icons)
-    let footer_h = 38.0;
-    let footer_y = win_y + win_h - footer_h - 7.0;
-    if tab_y + 4.0 <= footer_y {
-        let card = [win_x + 8.0, footer_y, side_w - 16.0, footer_h];
-        draw_rounded_rect(game, draw, card, 8.0, UI_CARD_BG);
-        let dot_c = if has_cp { UI_GREEN } else { UI_TEXT_MUTED };
-        draw_rounded_rect(game, draw, [card[0] + 7.0, card[1] + 6.5, 5.0, 5.0], 2.5, dot_c);
-        let slot_str = fit_text(game, draw, &cur_slot, card[2] - 20.0);
-        game.native_text(draw, &slot_str, [card[0] + 15.0, card[1] + 4.5], UI_TEXT_SEC, false);
-
-        let qw = ((card[2] - 12.0) / 3.0).floor();
-        let qy = card[1] + 16.5;
-        let qh = 17.0;
-        let quick_items = [
-            ("menu.save_now", UiIcon::SaveCheckpoint, false, HitAction::SaveCheckpointNow),
-            ("menu.load_now", UiIcon::LoadRollback, false, HitAction::RollbackNow),
-            ("menu.toggle_scrub", UiIcon::Scrub, scrub_on, HitAction::ToggleScrubQuick),
-        ];
-        for (i, (qtag, qicon, active, qact)) in quick_items.into_iter().enumerate() {
-            let qr = [card[0] + 4.0 + i as f32 * (qw + 2.0), qy, qw, qh];
-            let qhov = hit_in_rect(mx, my, qr);
-            let bg = if active {
-                UI_BLUE
-            } else if qhov {
-                UI_PILL_HOV
-            } else {
-                UI_PILL_BG
-            };
-            draw_rounded_rect(game, draw, qr, 5.0, bg);
-            draw_ui_icon(
-                game,
-                draw,
-                qicon,
-                qr[0] + (qr[2] - 11.0) * 0.5,
-                qr[1] + (qr[3] - 11.0) * 0.5,
-                UI_TEXT_PRI,
-            );
-            regions.push(HitRegion { tag: qtag.to_owned(), rect: qr, action: qact });
-        }
-    }
-
-    // Right Viewing Header + Action pills + Close X
+    // Right Viewing Header + Close X
     let right_x = win_x + side_w + 12.0;
     let right_w = (win_w - side_w - 22.0).max(80.0);
     let close_rect = [win_x + win_w - 26.0, win_y + 10.0, 16.0, 16.0];
@@ -412,31 +306,16 @@ pub fn render_settings_screen(game: &Game<'_>, draw: &mut HudBatch) {
     draw_pill(game, draw, close_rect, "X", if c_hov { UI_PILL_HOV } else { UI_PILL_BG }, if c_hov { UI_TEXT_PRI } else { UI_TEXT_SEC });
     regions.push(HitRegion { tag: "close".to_owned(), rect: close_rect, action: HitAction::Close });
 
-    let mut actions_w = 24.0;
-    if !searching && active_tab == UiTab::Rollback {
-        let load_lbl = tr("rreturn.ui.load_now");
-        let save_lbl = tr("rreturn.ui.save_now");
-        let lw = (game.native_text_width(draw, &load_lbl) + 12.0).max(44.0);
-        let sw_b = (game.native_text_width(draw, &save_lbl) + 12.0).max(42.0);
-        let l_rect = [close_rect[0] - lw - 6.0, win_y + 10.0, lw, 16.0];
-        let s_rect = [l_rect[0] - sw_b - 5.0, win_y + 10.0, sw_b, 16.0];
-        actions_w += lw + sw_b + 16.0;
-        draw_pill(game, draw, s_rect, &save_lbl, if hit_in_rect(mx, my, s_rect) { UI_BLUE } else { UI_BLUE_SOFT }, if hit_in_rect(mx, my, s_rect) { UI_TEXT_PRI } else { UI_BLUE });
-        draw_pill(game, draw, l_rect, &load_lbl, if hit_in_rect(mx, my, l_rect) { UI_PILL_HOV } else { UI_PILL_BG }, UI_TEXT_PRI);
-        regions.push(HitRegion { tag: "save_now".to_owned(), rect: s_rect, action: HitAction::SaveCheckpointNow });
-        regions.push(HitRegion { tag: "load_now".to_owned(), rect: l_rect, action: HitAction::RollbackNow });
-    }
-
     let hdr_title = tr(if searching { "rreturn.ui.search_results" } else { active_tab.title_key() });
     let hdr_sub = if searching { search_q.trim().to_owned() } else { tr(active_tab.subtitle_key()) };
-    let hdr_text_max = (right_w - actions_w - 6.0).max(30.0);
+    let hdr_text_max = (right_w - 28.0).max(30.0);
     game.native_text(draw, &fit_text(game, draw, &hdr_title, hdr_text_max), [right_x, win_y + 10.0], UI_TEXT_PRI, false);
     game.native_text(draw, &fit_text(game, draw, &hdr_sub, hdr_text_max), [right_x, win_y + 22.0], UI_TEXT_MUTED, false);
 
-    // Quick-Jump Icon Bar (jumps directly to target section or Per-Player rules)
-    let mut list_top_off = 40.0;
+    // Quick-Jump Icon Bar only on multi-section Rollback / Scrub tabs
+    let mut list_top_off = 38.0;
     let mut jump_tooltip: Option<([f32; 2], String)> = None;
-    if !searching {
+    if !searching && matches!(active_tab, UiTab::Rollback | UiTab::Scrub) {
         let jbar = [right_x, win_y + 35.0, (right_w - 8.0).max(60.0), 22.0];
         jump_tooltip = draw_quick_jump_bar(
             game,
@@ -549,21 +428,10 @@ fn quick_jump_specs(tab: UiTab) -> &'static [JumpBtnSpec] {
         JumpBtnSpec { tab: UiTab::Scrub, section: "scrub_rules", icon: UiIcon::RulesShield, label_key: "rreturn.ui.jump.rules", tag: "jump.scrub_rules", scope_scrub: None },
         JumpBtnSpec { tab: UiTab::Players, section: "players_rules", icon: UiIcon::Players, label_key: "rreturn.ui.jump.players", tag: "jump.open_players", scope_scrub: Some(true) },
     ];
-    const PL_JUMPS: &[JumpBtnSpec] = &[
-        JumpBtnSpec { tab: UiTab::Players, section: "players_anchor", icon: UiIcon::Crown, label_key: "rreturn.ui.jump.anchors", tag: "jump.players_anchor", scope_scrub: None },
-        JumpBtnSpec { tab: UiTab::Players, section: "players_list", icon: UiIcon::Players, label_key: "rreturn.ui.jump.list", tag: "jump.players_list", scope_scrub: None },
-        JumpBtnSpec { tab: UiTab::Players, section: "players_rules", icon: UiIcon::PlayerRules, label_key: "rreturn.ui.jump.player_rules", tag: "jump.players_rules", scope_scrub: None },
-    ];
-    const SYS_JUMPS: &[JumpBtnSpec] = &[
-        JumpBtnSpec { tab: UiTab::System, section: "sys_diag", icon: UiIcon::System, label_key: "rreturn.ui.jump.diag", tag: "jump.sys_diag", scope_scrub: None },
-        JumpBtnSpec { tab: UiTab::System, section: "sys_keys", icon: UiIcon::Keyboard, label_key: "rreturn.ui.jump.keys", tag: "jump.sys_keys", scope_scrub: None },
-        JumpBtnSpec { tab: UiTab::System, section: "sys_reset", icon: UiIcon::Reset, label_key: "rreturn.ui.jump.reset", tag: "jump.sys_reset", scope_scrub: None },
-    ];
     match tab {
         UiTab::Rollback => RB_JUMPS,
         UiTab::Scrub => SC_JUMPS,
-        UiTab::Players => PL_JUMPS,
-        UiTab::System => SYS_JUMPS,
+        _ => &[],
     }
 }
 
@@ -743,18 +611,24 @@ pub fn handle_screen_mouse_pressed(game: &Game<'_>, button: i32, mx: f32, my: f3
                 ui.pending_jump_section = Some(sec_id);
             }
         }),
-        HitAction::ToggleScrubQuick => {
-            let next_val = with_state_mut(|st| {
-                let next = !st.scrub_enabled;
-                st.scrub_enabled = next;
-                sync_scrub_atomics_from_state(st);
-                next
+        HitAction::SetAutoSaveMode(mode) => {
+            with_state_mut(|st| {
+                st.auto_save = true;
+                match mode {
+                    AutoSaveScheduleMode::Fixed => {
+                        st.adaptive_mode = false;
+                        st.use_random_interval = false;
+                    }
+                    AutoSaveScheduleMode::Random => {
+                        st.adaptive_mode = false;
+                        st.use_random_interval = true;
+                    }
+                    AutoSaveScheduleMode::Adaptive => {
+                        st.adaptive_mode = true;
+                    }
+                }
             });
-            UI_STATE.with(|cell| {
-                let mut ui = cell.borrow_mut();
-                ui.pending_save = true;
-                ui.pending_scrub_sync = Some(next_val);
-            });
+            UI_STATE.with(|cell| cell.borrow_mut().pending_save = true);
         }
         HitAction::ToggleBool(id) => {
             let next_val = with_state_mut(|st| {
@@ -812,6 +686,29 @@ pub fn handle_screen_mouse_pressed(game: &Game<'_>, button: i32, mx: f32, my: f3
                     let _ = entry.scrub.set(field, val);
                 } else {
                     let _ = entry.rollback.set(field, val);
+                }
+                if entry.is_empty() {
+                    st.player_overrides.remove(&uuid);
+                }
+            });
+            UI_STATE.with(|cell| cell.borrow_mut().pending_save = true);
+        }
+        HitAction::BatchPlayerOverrides(uuid, name, scrub_scope, val) => {
+            with_state_mut(|st| {
+                let entry = st
+                    .player_overrides
+                    .entry(uuid)
+                    .or_insert_with(|| PlayerProfileOverrides {
+                        name: name.clone(),
+                        ..Default::default()
+                    });
+                if !name.is_empty() {
+                    entry.name = name;
+                }
+                if scrub_scope {
+                    entry.scrub.set_all(val);
+                } else {
+                    entry.rollback.set_all(val);
                 }
                 if entry.is_empty() {
                     st.player_overrides.remove(&uuid);
@@ -880,8 +777,6 @@ pub fn handle_screen_mouse_pressed(game: &Game<'_>, button: i32, mx: f32, my: f3
                 ui.pending_scrub_sync = Some(false);
             });
         }
-        HitAction::SaveCheckpointNow => UI_STATE.with(|cell| cell.borrow_mut().pending_checkpoint_now = true),
-        HitAction::RollbackNow => UI_STATE.with(|cell| cell.borrow_mut().pending_rollback_now = true),
         HitAction::ScrollTrack { track_y, track_h, max_scroll } => {
             let frac = ((my - track_y) / track_h.max(1.0)).clamp(0.0, 1.0);
             let target = (frac * max_scroll).clamp(0.0, max_scroll);

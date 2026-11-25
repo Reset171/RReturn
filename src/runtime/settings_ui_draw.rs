@@ -9,28 +9,34 @@ use std::time::Instant;
 // Dark theme color tokens
 pub const UI_SCRIM_TOP: u32 = 0x7A000000;
 pub const UI_SCRIM_BOT: u32 = 0x9E000000;
-pub const UI_SHADOW: u32 = 0x4E000000;
-pub const UI_WIN_BG: u32 = 0xF50B0B0F;
-pub const UI_WIN_BORDER: u32 = 0x1AFFFFFF;
-pub const UI_SIDEBAR_BG: u32 = 0xFF0E0F14;
-pub const UI_CARD_BG: u32 = 0xFF17181F;
-pub const UI_ROW_HOV: u32 = 0x0CFFFFFF;
+pub const UI_WIN_BG: u32 = 0xFC0C0D13;
+pub const UI_WIN_BORDER: u32 = 0x1EFFFFFF;
+pub const UI_SIDEBAR_BG: u32 = 0xFF0E0F15;
+pub const UI_CARD_BG: u32 = 0xFF171820;
+pub const UI_ROW_HOV: u32 = 0x10FFFFFF;
 pub const UI_DIVIDER: u32 = 0x16FFFFFF;
-pub const UI_PILL_BG: u32 = 0xFF21232C;
-pub const UI_PILL_HOV: u32 = 0xFF2B2E3A;
-pub const UI_SEARCH_BG: u32 = 0xFF1A1B23;
+pub const UI_PILL_BG: u32 = 0xFF21232D;
+pub const UI_PILL_HOV: u32 = 0xFF2C2F3D;
+pub const UI_SEARCH_BG: u32 = 0xFF191B23;
 pub const UI_BLUE: u32 = 0xFF3E8AFF;
-pub const UI_BLUE_SOFT: u32 = 0x293E8AFF;
+pub const UI_BLUE_SOFT: u32 = 0x2B3E8AFF;
 pub const UI_GREEN: u32 = 0xFF34C759;
 pub const UI_RED: u32 = 0xFFFF5C5C;
-pub const UI_RED_SOFT: u32 = 0x26FF5C5C;
+pub const UI_RED_SOFT: u32 = 0x28FF5C5C;
 pub const UI_SWITCH_OFF: u32 = 0xFF424552;
 pub const UI_THUMB: u32 = 0xFFF8FAFC;
 pub const UI_TRACK_BG: u32 = 0xFF333642;
-pub const UI_SEG_DOCK: u32 = 0xFF101117;
+pub const UI_SEG_DOCK: u32 = 0xFF101118;
 pub const UI_TEXT_PRI: u32 = 0xFFF4F5F7;
-pub const UI_TEXT_SEC: u32 = 0xFF9497A6;
-pub const UI_TEXT_MUTED: u32 = 0xFF727585;
+pub const UI_TEXT_SEC: u32 = 0xFF989CAB;
+pub const UI_TEXT_MUTED: u32 = 0xFF747888;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum AutoSaveScheduleMode {
+    Fixed,
+    Random,
+    Adaptive,
+}
 
 #[derive(Clone)]
 pub enum HitAction {
@@ -40,20 +46,19 @@ pub enum HitAction {
     SelectTab(UiTab),
     JumpToSection(UiTab, String, Option<bool>),
     ToggleBool(&'static str),
-    ToggleScrubQuick,
+    SetAutoSaveMode(AutoSaveScheduleMode),
     SliderStep(&'static str, i32),
     SliderDrag { id: &'static str, track_x: f32, track_w: f32, min: i32, max: i32, step: i32 },
     SetAnchorMode(AnchorMode),
     SelectPlayer(u128, String),
     SetPlayerScope(bool),
     SetPlayerOverride(u128, String, bool, &'static str, OverrideValue),
+    BatchPlayerOverrides(u128, String, bool, OverrideValue),
     ResetPlayerOverrides(u128, bool),
     TogglePinPlayer(u128),
     ClearPins,
     BatchGroup(UiGroup, bool),
     ResetDefaults,
-    SaveCheckpointNow,
-    RollbackNow,
     ScrollTrack { track_y: f32, track_h: f32, max_scroll: f32 },
 }
 
@@ -94,8 +99,6 @@ pub struct SettingsUiState {
     pub pending_close: bool,
     pub pending_save: bool,
     pub pending_scrub_sync: Option<bool>,
-    pub pending_checkpoint_now: bool,
-    pub pending_rollback_now: bool,
 }
 
 impl Default for SettingsUiState {
@@ -121,8 +124,6 @@ impl Default for SettingsUiState {
             pending_close: false,
             pending_save: false,
             pending_scrub_sync: None,
-            pending_checkpoint_now: false,
-            pending_rollback_now: false,
         }
     }
 }
@@ -151,58 +152,118 @@ pub fn draw_rounded_rect(game: &Game<'_>, draw: &mut HudBatch, [x, y, w, h]: [f3
     if w <= 0.0 || h <= 0.0 || (argb >> 24) == 0 {
         return;
     }
-    let r = radius.clamp(0.0, (w * 0.5).min(h * 0.5)).floor();
-    if r <= 0.5 {
-        game.native_fill(draw, [x, y, w, h], argb);
+    let x0 = x.round();
+    let y0 = y.round();
+    let x1 = (x + w).round();
+    let y1 = (y + h).round();
+    let rw = (x1 - x0).max(0.0);
+    let rh = (y1 - y0).max(0.0);
+    if rw <= 0.0 || rh <= 0.0 {
         return;
     }
-    if h > r * 2.0 {
-        game.native_fill(draw, [x, y + r, w, h - r * 2.0], argb);
+    let ri = (radius.clamp(0.0, (rw * 0.5).min(rh * 0.5)).floor() as i32).max(0);
+    if ri <= 0 {
+        game.native_fill(draw, [x0, y0, rw, rh], argb);
+        return;
     }
-    let ri = r as i32;
+    let rf = ri as f32;
+    if rh > rf * 2.0 {
+        game.native_fill(draw, [x0, y0 + rf, rw, rh - rf * 2.0], argb);
+    }
     for row in 0..ri {
-        let dy = (r - 0.5) - row as f32;
-        let dx = (r * r - dy * dy).max(0.0).sqrt();
-        let inset = (r - dx).max(0.0);
-        let row_w = (w - inset * 2.0).max(0.0);
+        let dy = (rf - 0.5) - row as f32;
+        let dx = (rf * rf - dy * dy).max(0.0).sqrt();
+        let inset = (rf - dx).round().max(0.0);
+        let row_w = (rw - inset * 2.0).max(0.0);
         if row_w > 0.0 {
-            game.native_fill(draw, [x + inset, y + row as f32, row_w, 1.0], argb);
-            game.native_fill(draw, [x + inset, y + h - 1.0 - row as f32, row_w, 1.0], argb);
+            game.native_fill(draw, [x0 + inset, y0 + row as f32, row_w, 1.0], argb);
+            game.native_fill(draw, [x0 + inset, y1 - 1.0 - row as f32, row_w, 1.0], argb);
         }
     }
 }
 
-pub fn draw_rounded_border(game: &Game<'_>, draw: &mut HudBatch, [x, y, w, h]: [f32; 4], radius: f32, argb: u32) {
-    if w <= 2.0 || h <= 2.0 || (argb >> 24) == 0 {
+pub fn draw_rounded_left_rect(game: &Game<'_>, draw: &mut HudBatch, [x, y, w, h]: [f32; 4], radius: f32, argb: u32) {
+    if w <= 0.0 || h <= 0.0 || (argb >> 24) == 0 {
         return;
     }
-    let r = radius.clamp(0.0, (w * 0.5).min(h * 0.5)).floor();
-    if r <= 0.5 {
-        game.native_fill(draw, [x, y, w, 1.0], argb);
-        game.native_fill(draw, [x, y + h - 1.0, w, 1.0], argb);
-        game.native_fill(draw, [x, y + 1.0, 1.0, h - 2.0], argb);
-        game.native_fill(draw, [x + w - 1.0, y + 1.0, 1.0, h - 2.0], argb);
+    let x0 = x.round();
+    let y0 = y.round();
+    let x1 = (x + w).round();
+    let y1 = (y + h).round();
+    let rw = (x1 - x0).max(0.0);
+    let rh = (y1 - y0).max(0.0);
+    let ri = (radius.clamp(0.0, rw.min(rh * 0.5)).floor() as i32).max(0);
+    if ri <= 0 {
+        game.native_fill(draw, [x0, y0, rw, rh], argb);
         return;
     }
-    let flat_w = (w - r * 2.0).max(0.0);
-    if flat_w > 0.0 {
-        game.native_fill(draw, [x + r, y, flat_w, 1.0], argb);
-        game.native_fill(draw, [x + r, y + h - 1.0, flat_w, 1.0], argb);
+    let rf = ri as f32;
+    if rh > rf * 2.0 {
+        game.native_fill(draw, [x0, y0 + rf, rw, rh - rf * 2.0], argb);
     }
-    let flat_h = (h - r * 2.0).max(0.0);
-    if flat_h > 0.0 {
-        game.native_fill(draw, [x, y + r, 1.0, flat_h], argb);
-        game.native_fill(draw, [x + w - 1.0, y + r, 1.0, flat_h], argb);
-    }
-    let ri = r as i32;
     for row in 0..ri {
-        let dy = (r - 0.5) - row as f32;
-        let dx = (r * r - dy * dy).max(0.0).sqrt();
-        let inset = (r - dx).round().max(0.0);
-        game.native_fill(draw, [x + inset, y + row as f32, 1.0, 1.0], argb);
-        game.native_fill(draw, [x + w - 1.0 - inset, y + row as f32, 1.0, 1.0], argb);
-        game.native_fill(draw, [x + inset, y + h - 1.0 - row as f32, 1.0, 1.0], argb);
-        game.native_fill(draw, [x + w - 1.0 - inset, y + h - 1.0 - row as f32, 1.0, 1.0], argb);
+        let dy = (rf - 0.5) - row as f32;
+        let dx = (rf * rf - dy * dy).max(0.0).sqrt();
+        let inset = (rf - dx).round().max(0.0);
+        let row_w = (rw - inset).max(0.0);
+        if row_w > 0.0 {
+            game.native_fill(draw, [x0 + inset, y0 + row as f32, row_w, 1.0], argb);
+            game.native_fill(draw, [x0 + inset, y1 - 1.0 - row as f32, row_w, 1.0], argb);
+        }
+    }
+}
+
+pub fn draw_soft_shadow(game: &Game<'_>, draw: &mut HudBatch, [x, y, w, h]: [f32; 4], radius: f32, layers: usize) {
+    let alphas: &[u32] = &[0x1800_0000, 0x1100_0000, 0x0B00_0000, 0x0600_0000];
+    let n = layers.min(alphas.len());
+    for i in (0..n).rev() {
+        let pad = (i + 1) as f32;
+        let sr = if radius > 0.5 { radius + pad } else { 0.0 };
+        draw_rounded_rect(
+            game,
+            draw,
+            [x - pad, y - pad + 1.0, w + pad * 2.0, h + pad * 2.0],
+            sr,
+            alphas[i],
+        );
+    }
+}
+
+pub fn draw_rounded_border(game: &Game<'_>, draw: &mut HudBatch, [x, y, w, h]: [f32; 4], radius: f32, argb: u32) {
+    let x0 = x.round();
+    let y0 = y.round();
+    let rw = ((x + w).round() - x0).max(0.0);
+    let rh = ((y + h).round() - y0).max(0.0);
+    if rw <= 2.0 || rh <= 2.0 || (argb >> 24) == 0 {
+        return;
+    }
+    let ri = (radius.clamp(0.0, (rw * 0.5).min(rh * 0.5)).floor() as i32).max(0);
+    if ri <= 0 {
+        game.native_fill(draw, [x0, y0, rw, 1.0], argb);
+        game.native_fill(draw, [x0, y0 + rh - 1.0, rw, 1.0], argb);
+        game.native_fill(draw, [x0, y0 + 1.0, 1.0, rh - 2.0], argb);
+        game.native_fill(draw, [x0 + rw - 1.0, y0 + 1.0, 1.0, rh - 2.0], argb);
+        return;
+    }
+    let rf = ri as f32;
+    let flat_w = (rw - rf * 2.0).max(0.0);
+    if flat_w > 0.0 {
+        game.native_fill(draw, [x0 + rf, y0, flat_w, 1.0], argb);
+        game.native_fill(draw, [x0 + rf, y0 + rh - 1.0, flat_w, 1.0], argb);
+    }
+    let flat_h = (rh - rf * 2.0).max(0.0);
+    if flat_h > 0.0 {
+        game.native_fill(draw, [x0, y0 + rf, 1.0, flat_h], argb);
+        game.native_fill(draw, [x0 + rw - 1.0, y0 + rf, 1.0, flat_h], argb);
+    }
+    for row in 0..ri {
+        let dy = (rf - 0.5) - row as f32;
+        let dx = (rf * rf - dy * dy).max(0.0).sqrt();
+        let inset = (rf - dx).round().max(0.0);
+        game.native_fill(draw, [x0 + inset, y0 + row as f32, 1.0, 1.0], argb);
+        game.native_fill(draw, [x0 + rw - 1.0 - inset, y0 + row as f32, 1.0, 1.0], argb);
+        game.native_fill(draw, [x0 + inset, y0 + rh - 1.0 - row as f32, 1.0, 1.0], argb);
+        game.native_fill(draw, [x0 + rw - 1.0 - inset, y0 + rh - 1.0 - row as f32, 1.0, 1.0], argb);
     }
 }
 

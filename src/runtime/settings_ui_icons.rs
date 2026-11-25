@@ -15,11 +15,6 @@ pub enum UiIcon {
     PlayerSingle,
     RulesShield,
     Crown,
-    PlayerRules,
-    Keyboard,
-    Reset,
-    SaveCheckpoint,
-    LoadRollback,
 }
 
 fn px(game: &Game<'_>, draw: &mut HudBatch, x: f32, y: f32, w: f32, h: f32, col: u32) {
@@ -46,7 +41,7 @@ pub fn draw_ui_icon(
             px(game, draw, ox + 3.5, oy + 7.0, 4.5, 1.5, fg);
             px(game, draw, ox + 2.0, oy + 2.0, 2.0, 2.0, fg);
         }
-        UiIcon::Rollback | UiIcon::LoadRollback => {
+        UiIcon::Rollback => {
             // Rewind arrows (<<)
             px(game, draw, ox + 1.5, oy + 4.5, 1.5, 2.0, col);
             px(game, draw, ox + 3.0, oy + 3.0, 1.5, 5.0, col);
@@ -126,40 +121,6 @@ pub fn draw_ui_icon(
             px(game, draw, ox + 3.0, oy + 5.0, 2.0, 2.0, col);
             px(game, draw, ox + 6.0, oy + 5.0, 2.0, 2.0, col);
             px(game, draw, ox + 1.5, oy + 7.5, 8.0, 1.5, col);
-        }
-        UiIcon::PlayerRules => {
-            // User + tuning dots
-            px(game, draw, ox + 2.0, oy + 1.5, 3.0, 3.0, col);
-            px(game, draw, ox + 1.0, oy + 5.5, 5.0, 3.5, col);
-            px(game, draw, ox + 7.0, oy + 2.5, 3.0, 1.5, col);
-            px(game, draw, ox + 7.0, oy + 5.0, 3.0, 1.5, col);
-            px(game, draw, ox + 7.0, oy + 7.5, 3.0, 1.5, col);
-        }
-        UiIcon::Keyboard => {
-            // Keycap box
-            px(game, draw, ox + 1.0, oy + 2.5, 9.0, 1.5, col);
-            px(game, draw, ox + 1.0, oy + 7.5, 9.0, 1.5, col);
-            px(game, draw, ox + 1.0, oy + 3.5, 1.5, 4.5, col);
-            px(game, draw, ox + 8.5, oy + 3.5, 1.5, 4.5, col);
-            px(game, draw, ox + 3.0, oy + 5.0, 2.0, 1.5, col);
-            px(game, draw, ox + 6.0, oy + 5.0, 2.0, 1.5, col);
-        }
-        UiIcon::Reset => {
-            // Circular reset arrow
-            px(game, draw, ox + 2.5, oy + 1.5, 6.0, 1.5, col);
-            px(game, draw, ox + 7.0, oy + 3.0, 2.0, 5.0, col);
-            px(game, draw, ox + 2.5, oy + 8.0, 6.0, 1.5, col);
-            px(game, draw, ox + 1.5, oy + 3.0, 2.0, 2.5, col);
-            px(game, draw, ox + 1.0, oy + 5.0, 3.5, 1.5, col);
-        }
-        UiIcon::SaveCheckpoint => {
-            // Downward bookmark / checkpoint save arrow into tray
-            px(game, draw, ox + 4.7, oy + 1.0, 1.6, 5.0, col);
-            px(game, draw, ox + 3.0, oy + 4.0, 5.0, 1.5, col);
-            px(game, draw, ox + 4.0, oy + 5.5, 3.0, 1.5, col);
-            px(game, draw, ox + 1.5, oy + 8.0, 8.0, 1.5, col);
-            px(game, draw, ox + 1.5, oy + 6.5, 1.5, 2.0, col);
-            px(game, draw, ox + 8.0, oy + 6.5, 1.5, 2.0, col);
         }
     }
 }

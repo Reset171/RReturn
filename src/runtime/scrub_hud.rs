@@ -173,9 +173,9 @@ pub fn draw_scrub_hud(game: &Game<'_>, draw: &mut HudBatch) {
     let bar_y = (sh - bar_h - bottom_margin).max(12.0).floor();
     let capsule = [bar_x, bar_y, bar_w, bar_h];
 
-    draw_rounded_rect(game, draw, [bar_x - 3.0, bar_y + 2.0, bar_w + 6.0, bar_h + 5.0], 12.0, UI_SHADOW);
-    draw_rounded_rect(game, draw, capsule, 11.0, 0xEC10_131C);
-    draw_rounded_border(game, draw, capsule, 11.0, 0x28FF_FFFF);
+    draw_soft_shadow(game, draw, capsule, 11.0, 4);
+    draw_rounded_rect(game, draw, capsule, 11.0, 0xF710_131C);
+    draw_rounded_border(game, draw, capsule, 11.0, 0x24FF_FFFF);
 
     let is_live = (max_t as f64 - curr).abs() < 0.25;
     let badge_label = if is_live {
@@ -299,11 +299,11 @@ pub fn draw_scrub_hud(game: &Game<'_>, draw: &mut HudBatch) {
             my,
             [track_x - 6.0, track_y - 6.0, track_w + 12.0, track_h + 12.0],
         );
-    let thumb_size = if thumb_hov { 13.0 } else { 11.0 };
+    let thumb_size = if thumb_hov { 12.0 } else { 10.0 };
     let thumb_r = thumb_size * 0.5;
     let thumb_rect = [
-        thumb_cx - thumb_r,
-        track_y + track_h * 0.5 - thumb_r,
+        (thumb_cx - thumb_r).round(),
+        (track_y + track_h * 0.5 - thumb_r).round(),
         thumb_size,
         thumb_size,
     ];

@@ -361,6 +361,8 @@ def test_115_rreturn_menu_icons_and_per_player_overrides(h):
     h.rreturn("scrub policy reset")
     h.rreturn("player reset all both")
     h.rreturn("anchor clear")
+    h.rreturn("autosave adaptive")
+    h.rreturn("autosave off")
     h.rreturn("scrub off")
     h.wait(2)
 
@@ -378,15 +380,77 @@ def test_115_rreturn_menu_icons_and_per_player_overrides(h):
         return controls[tag]
 
     try:
-        # 1. Open RReturn Menu on Rollback tab, inspect quick-jump icons & sidebar controls
+        # 1. Open RReturn Menu on Rollback tab; bottom card / quick action buttons must be removed,
+        # and autosave mode sliders must stay hidden while auto_save=false
         h.rreturn("menu rollback")
         h.wait(2)
         assert h.screen().get("screen") == "mod"
         b0 = ui_bounds()
         assert b0["active_tab"] == "rollback", b0
-        assert "menu.save_now" in b0["controls"] and "menu.load_now" in b0["controls"] and "menu.toggle_scrub" in b0["controls"]
+        for gone in ("menu.save_now", "menu.load_now", "menu.toggle_scrub", "save_now", "load_now"):
+            assert gone not in b0["controls"], f"Removed control '{gone}' still present: {b0['controls'].keys()}"
+        assert "opt.auto_save" in b0["controls"]
+        assert "slider.fixed_interval_sec" not in b0["controls"], (
+            f"Autosave sliders should stay hidden while auto_save is OFF: {b0['controls'].keys()}"
+        )
+
+        # Toggle auto_save ON (defaults to Adaptive 2x2 grid) and switch schedule modes cleanly
+        ax, ay = ui_pt("opt.auto_save")
+        h.raw_send(f"click-at {ax} {ay}")
+        h.wait(2)
+        b_adap = ui_bounds()
+        assert "slider.adaptive_interval_sec" in b_adap["controls"] and "slider.min_save_gap_sec" in b_adap["controls"], (
+            f"Expected Adaptive 2x2 top row sliders after enabling auto_save: {sorted(b_adap['controls'].keys())}"
+        )
+        assert "slider.fixed_interval_sec" not in b_adap["controls"], b_adap["controls"].keys()
+        assert "slider.random_min_sec" not in b_adap["controls"], b_adap["controls"].keys()
         h.raw_send(f"screenshot {scratch_dir / 'menu_rollback.png'}")
         h.wait(1)
+
+        fmx, fmy = ui_pt("autosave.mode.fixed")
+        h.raw_send(f"click-at {fmx} {fmy}")
+        h.wait(2)
+        b_fixed = ui_bounds()
+        assert "slider.fixed_interval_sec" in b_fixed["controls"], b_fixed["controls"].keys()
+        assert "slider.adaptive_interval_sec" not in b_fixed["controls"], b_fixed["controls"].keys()
+
+        rmx, rmy = ui_pt("autosave.mode.random")
+        h.raw_send(f"click-at {rmx} {rmy}")
+        h.wait(2)
+        b_rand = ui_bounds()
+        assert "slider.random_min_sec" in b_rand["controls"] and "slider.random_max_sec" in b_rand["controls"], (
+            f"Expected Random sliders: {sorted(b_rand['controls'].keys())}"
+        )
+        assert "slider.fixed_interval_sec" not in b_rand["controls"], b_rand["controls"].keys()
+
+        # Verify System tab omits jump icon buttons (fits on one screen cleanly)
+        sys_x, sys_y = ui_pt("tab.system")
+        h.raw_send(f"click-at {sys_x} {sys_y}")
+        h.wait(2)
+        b_sys = ui_bounds()
+        assert b_sys["active_tab"] == "system", b_sys
+        assert not any(k.startswith("jump.") for k in b_sys["controls"]), (
+            f"System tab should not show quick-jump icons: {b_sys['controls'].keys()}"
+        )
+
+        # Return to Rollback tab, verify newcomer inventory policy defaults to True (enabled = rollback)
+        assert h.rreturn("policy get").get("reset_new_player_inventory") is True
+        rb_x, rb_y = ui_pt("tab.rollback")
+        h.raw_send(f"click-at {rb_x} {rb_y}")
+        h.wait(2)
+
+        # Verify reset_new_player_inventory shows up via search and can be searched cleanly
+        sx0, sy0 = ui_pt("search")
+        h.raw_send(f"click-at {sx0} {sy0}")
+        h.wait(1)
+        h.raw_send("type reset_new_player_inventory")
+        h.wait(2)
+        b_srch = ui_bounds()
+        assert "opt.reset_new_player_inventory" in b_srch["controls"], b_srch["controls"]
+        cx0, cy0 = ui_pt("clear_search")
+        h.raw_send(f"click-at {cx0} {cy0}")
+        h.wait(2)
+        assert h.screen().get("screen") == "mod"
 
         # Click quick-jump icon to Player section -> must scroll cleanly below top
         jx, jy = ui_pt("jump.rb_player")
@@ -394,8 +458,9 @@ def test_115_rreturn_menu_icons_and_per_player_overrides(h):
         h.wait(3)
         b_jump = ui_bounds()
         assert b_jump["scroll_y"] > 50.0, f"Quick-jump icon did not scroll to Player section: {b_jump}"
+        assert "opt.player_position" in b_jump["controls"], b_jump["controls"]
 
-        # Click cross-tab Players icon button -> switches to Players tab & jumps to per-player rules
+        # Click cross-tab Players icon button -> opens Master-Detail Players view directly
         px, py = ui_pt("jump.open_players")
         h.raw_send(f"click-at {px} {py}")
         h.wait(3)
@@ -405,6 +470,7 @@ def test_115_rreturn_menu_icons_and_per_player_overrides(h):
         assert "p_rule.player_position.global" in b_pl["controls"], b_pl["controls"]
         assert "p_rule.player_position.allow" in b_pl["controls"]
         assert "p_rule.player_position.deny" in b_pl["controls"]
+        assert not any(k.startswith("jump.players") for k in b_pl["controls"]), b_pl["controls"]
         h.raw_send(f"screenshot {scratch_dir / 'menu_players.png'}")
         h.wait(1)
 
@@ -428,9 +494,19 @@ def test_115_rreturn_menu_icons_and_per_player_overrides(h):
         p_info_sc = h.rreturn("player get @s scrub")
         assert p_info_sc["data"]["overrides"]["player_position"] is False
 
-        # Toggle Scrub ON directly via sidebar quick icon button!
-        tsx, tsy = ui_pt("menu.toggle_scrub")
+        # Enable Scrub via Scrub tab toggle in UI!
+        sc_x, sc_y = ui_pt("tab.scrub")
+        h.raw_send(f"click-at {sc_x} {sc_y}")
+        h.wait(2)
+        tsx, tsy = ui_pt("opt.scrub_enabled")
         h.raw_send(f"click-at {tsx} {tsy}")
+        h.wait(2)
+        # Turn auto_save back off before gameplay rollback checks
+        rbx, rby = ui_pt("tab.rollback")
+        h.raw_send(f"click-at {rbx} {rby}")
+        h.wait(2)
+        asx, asy = ui_pt("opt.auto_save")
+        h.raw_send(f"click-at {asx} {asy}")
         h.wait(2)
 
         h.raw_send("key esc tap")
@@ -502,9 +578,6 @@ def test_115_rreturn_menu_icons_and_per_player_overrides(h):
         # 7. Reset per-player overrides back to Global via UI across both Rollback and Scrub scopes
         h.rreturn("menu players")
         h.wait(2)
-        jrx, jry = ui_pt("jump.players_rules")
-        h.raw_send(f"click-at {jrx} {jry}")
-        h.wait(3)
         rbx, rby = ui_pt("p_scope.rollback")
         h.raw_send(f"click-at {rbx} {rby}")
         h.wait(2)
@@ -527,6 +600,8 @@ def test_115_rreturn_menu_icons_and_per_player_overrides(h):
             h.raw_send("key esc tap")
             h.wait(2)
         h.rreturn("scrub off")
+        h.rreturn("autosave adaptive")
+        h.rreturn("autosave off")
         h.rreturn("policy reset")
         h.rreturn("scrub policy reset")
         h.rreturn("player reset all both")

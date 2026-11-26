@@ -103,6 +103,12 @@ file = "crates/horizon-client/src/game/network/lan_menus.rs"
 name = "rreturn_lan_menus"
 source = "src/ext/lan_menus_ext.rs"
 
+[[native.module]]
+id = "pointer_capture_ext"
+file = "crates/horizon-client/src/game/interface/pointer_capture.rs"
+name = "rreturn_pointer_capture"
+source = "src/ext/pointer_capture_ext.rs"
+
 [[native.mixin]]
 id = "remote-open-screen-pre"
 target = "horizon_client::game::remote::Game<'_>::remote_open_screen"

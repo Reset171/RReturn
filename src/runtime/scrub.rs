@@ -465,6 +465,22 @@ pub fn set_scrub_target_fraction(frac: f64, snap_now: bool) {
     }
 }
 
+pub fn ensure_scrub_pointer_free(game: &mut Game<'_>) {
+    game.rreturn_clear_regrab_on_refocus();
+    if game.rreturn_pointer_captured() {
+        game.capture(false);
+    }
+}
+
+pub fn sync_pointer_capture_after_scrub(game: &mut Game<'_>) {
+    let want_capture = game.screen == super::super::Screen::Playing
+        && !game.screen_over_playing()
+        && game.title.is_none();
+    if want_capture != game.rreturn_pointer_captured() {
+        game.capture(want_capture);
+    }
+}
+
 pub fn start_scrub(game: &mut Game<'_>) {
     if !with_state(|st| st.scrub_enabled) {
         mod_chat(game, &tr("command.rreturn.scrub.disabled"));
@@ -573,6 +589,7 @@ pub fn start_scrub(game: &mut Game<'_>) {
     }
 
     apply_interpolated_poses_to_game(game, start_t);
+    ensure_scrub_pointer_free(game);
 }
 
 pub fn apply_scrub_wheel_delta(wheel_y: f64) -> bool {
@@ -625,6 +642,9 @@ pub fn on_mouse_scroll(_game: &mut Game<'_>, scroll: [f64; 2], accumulated: [i32
 pub fn on_frame_render_pre(game: &mut Game<'_>, _world_partial: f32, _partial: f32) {
     if !with_state(|st| st.scrub_enabled) {
         return;
+    }
+    if is_scrubbing() {
+        ensure_scrub_pointer_free(game);
     }
     sync_scrub_hud_drag(game);
     if let Some(action) = take_pending_scrub_hud_action() {
@@ -875,6 +895,7 @@ pub fn commit_scrub(game: &mut Game<'_>) {
         });
     }
     clear_sprint_on_commit(game);
+    sync_pointer_capture_after_scrub(game);
 }
 
 pub fn cancel_scrub(game: &mut Game<'_>) {
@@ -932,6 +953,7 @@ pub fn cancel_scrub(game: &mut Game<'_>) {
             }
         });
     }
+    sync_pointer_capture_after_scrub(game);
     mod_chat(game, &tr("message.rreturn.scrub.cancel"));
 }
 

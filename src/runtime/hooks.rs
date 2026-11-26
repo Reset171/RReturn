@@ -8,8 +8,10 @@ use super::hydration::hydrate_slot_from_disk_on_server;
 use super::load_disk::load_checkpoint_from_disk;
 use super::restore::rollback_checkpoint_on_server;
 use super::restore_client::{apply_client_level_rollback, apply_client_rollback_with_ui};
+use super::scrub::ensure_scrub_pointer_free;
 use super::scrub_hud::{
-    draw_scrub_hud, handle_scrub_hud_mouse_pressed, handle_scrub_hud_mouse_released,
+    consume_scrub_hud_release, draw_scrub_hud, handle_scrub_hud_mouse_pressed,
+    handle_scrub_hud_mouse_released,
 };
 use super::settings_ui::{
     close_global_settings_modal, flush_settings_ui_actions, handle_screen_char_typed,
@@ -204,10 +206,14 @@ pub fn handle_screen_char_typed_dispatch(
     }
 }
 
-pub fn handle_play_mouse_button(game: &Game<'_>, button: i32, pressed: bool) -> bool {
+pub fn handle_play_mouse_button(game: &mut Game<'_>, button: i32, pressed: bool) -> bool {
     if !is_scrubbing() {
+        if !pressed && button == 0 && consume_scrub_hud_release() {
+            return true;
+        }
         return false;
     }
+    ensure_scrub_pointer_free(game);
     if pressed {
         let [mx, my] = game.cursor();
         let _ = handle_scrub_hud_mouse_pressed(button, mx, my);

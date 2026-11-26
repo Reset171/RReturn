@@ -110,6 +110,7 @@ use crate::game::end::rreturn_end::EndExt;
 use crate::game::fishing::rreturn_fishing::{GameFishingExt, HookExt};
 use crate::game::lan_menus::rreturn_lan_menus::LanMenusExt;
 use crate::game::mount_menu::rreturn_mount_menu::{MountMenuExt, MountMenuSnapshot};
+use crate::game::pointer_capture::rreturn_pointer_capture::PointerCaptureExt;
 use crate::game::potions::rreturn_potions::{PotionStateExt, ThrownPotionsSnapshot};
 use crate::game::recipe_book::rreturn_recipe_book::{RecipeBookExt, RecipeUiSnapshot};
 use crate::game::remote::rreturn_remote::{GameRemoteContainerExt, RemoteExt};

@@ -1,5 +1,6 @@
 use super::super::{game_mode::mode_from_id, Game};
 use super::rrtl::{MobPoseRecord, ParticleTickState};
+use super::scrub::ensure_scrub_pointer_free;
 use super::scrub_audio::play_scrub_sounds;
 use super::scrub_timeline::{with_scrub_ring, EntityPoseRecord};
 use super::types::*;
@@ -388,9 +389,6 @@ pub fn apply_interpolated_poses_to_game(game: &mut Game<'_>, target_time: f64) {
         }
     });
     if ui_changed && (scrub_policy.player_inventory || scrub_policy.player_recipe_book || scrub_policy.player_abilities) {
-        let prev_uncaptured = game.screen != super::super::Screen::Playing
-            || game.sign_edit.is_some()
-            || game.rreturn_is_book_editing();
         apply_client_ui_exact(
             game,
             &chosen_frame.ui,
@@ -398,12 +396,6 @@ pub fn apply_interpolated_poses_to_game(game: &mut Game<'_>, target_time: f64) {
             scrub_policy.player_recipe_book,
             true,
         );
-        let now_uncaptured = game.screen != super::super::Screen::Playing
-            || chosen_frame.ui.sign_edit.is_some()
-            || chosen_frame.ui.book.is_some();
-        if prev_uncaptured != now_uncaptured {
-            game.capture(!now_uncaptured);
-        }
     } else if scrub_policy.player_inventory {
         game.carried = (*chosen_frame.carried).clone();
         if chosen_frame.ui.craft_table.is_none()
@@ -419,6 +411,7 @@ pub fn apply_interpolated_poses_to_game(game: &mut Game<'_>, target_time: f64) {
             }
         }
     }
+    ensure_scrub_pointer_free(game);
     if scrub_policy.block_entities {
         if let Some(bes) = &chosen_frame.open_container_bes {
             let changed = LAST_PREVIEW_BES.with(|c| {

@@ -21,11 +21,17 @@ def test_112_scrub_blocks_chat_and_hud_controls(h):
     h.wait(25)
 
     try:
-        # 1. Start scrub with U key
+        # До скраба на игровом экране курсор захвачен
+        assert _ui(h)["pointer_captured"] is True, f"Expected captured pointer before scrub: {_ui(h)}"
+        assert h.state().get("pointer_grabbed") is True, h.state()
+
+        # 1. Start scrub with U key — курсор должен освободиться для HUD скраба
         h.raw_send("key u tap")
         h.wait(2)
         ui = _ui(h)
         assert ui["scrubbing"] is True, f"Scrub did not start on U: {ui}"
+        assert ui["pointer_captured"] is False, f"Cursor remained captured on Playing scrub start: {ui}"
+        assert h.state().get("pointer_grabbed") is False, h.state()
 
         # 2. Press T and / while scrubbing — chat must remain blocked!
         h.raw_send("key t tap")
@@ -53,18 +59,20 @@ def test_112_scrub_blocks_chat_and_hud_controls(h):
             f"Scrub HUD bounds invalid: {hud_bounds}"
         )
 
-        # 4. Enter commits scrub cleanly
+        # 4. Enter commits scrub cleanly and restores pointer capture on Playing
         h.raw_send("key enter tap")
         h.wait(3)
         ui_commit = _ui(h)
         assert ui_commit["scrubbing"] is False, f"Enter failed to commit scrub: {ui_commit}"
         assert h.screen().get("screen") == "playing"
+        assert ui_commit["pointer_captured"] is True, f"Cursor stayed uncaptured after Playing commit: {ui_commit}"
 
-        # 5. Re-enter scrub and Esc cancels cleanly
+        # 5. Re-enter scrub (pointer frees) and Esc cancels cleanly (pointer restores)
         h.wait(8)
         h.raw_send("key u tap")
         h.wait(2)
         assert _ui(h)["scrubbing"] is True
+        assert _ui(h)["pointer_captured"] is False
         h.raw_send("key left tap")
         h.wait(2)
         h.raw_send("key esc tap")
@@ -72,6 +80,7 @@ def test_112_scrub_blocks_chat_and_hud_controls(h):
         ui_cancel = _ui(h)
         assert ui_cancel["scrubbing"] is False, f"Esc failed to cancel scrub: {ui_cancel}"
         assert h.screen().get("screen") == "playing"
+        assert ui_cancel["pointer_captured"] is True, f"Cursor stayed uncaptured after Playing cancel: {ui_cancel}"
     finally:
         if _ui(h).get("scrubbing"):
             h.rreturn("scrub cancel")
@@ -361,17 +370,28 @@ def test_119_crafting_table_scrub_and_post_rollback_interaction(h):
         h.wait(2)
         ui_prev = _ui(h)
         assert ui_prev["scrubbing"] is True
+        assert ui_prev["pointer_captured"] is False, ui_prev
         assert ui_prev["screen"] == "inventory", f"Scrub preview closed craft table: {ui_prev}"
         assert ui_prev["craft_size"] == 3, f"Scrub collapsed 3x3 crafting table to 2x2: {ui_prev}"
         assert ui_prev["craft_table"] == [0, 65, 2], ui_prev
         scr_prev = h.screen()
         assert scr_prev.get("craft_size") == 3, scr_prev
 
-        # Commit on the open crafting table, verify craft_size=3, close, then seek/commit back to playing
+        # Scrub forward onto Playing while still scrubbing — pointer must stay uncaptured!
+        h.rreturn("scrub seek_ticks 12")
+        h.wait(2)
+        ui_fwd_play = _ui(h)
+        assert ui_fwd_play["screen"] == "playing" and ui_fwd_play["scrubbing"] is True, ui_fwd_play
+        assert ui_fwd_play["pointer_captured"] is False, f"Re-grabbed cursor on Playing during scrub: {ui_fwd_play}"
+
+        # Seek back to open crafting table, commit, verify craft_size=3 and cursor free
+        h.rreturn("scrub seek_ticks -12")
+        h.wait(2)
         h.raw_send("key enter tap")
         h.wait(3)
         ui_comm = _ui(h)
         assert ui_comm["scrubbing"] is False
+        assert ui_comm["pointer_captured"] is False, ui_comm
         assert ui_comm["screen"] == "inventory" and ui_comm["craft_size"] == 3, ui_comm
         assert ui_comm["craft_table"] == [0, 65, 2], ui_comm
 
@@ -379,15 +399,18 @@ def test_119_crafting_table_scrub_and_post_rollback_interaction(h):
         h.raw_send("key u tap")
         h.wait(2)
         assert _ui(h)["craft_size"] == 3, f"Opening scrub collapsed 3x3 craft table at anchor: {_ui(h)}"
+        assert _ui(h)["pointer_captured"] is False
         h.rreturn("scrub seek_ticks -12")
         h.wait(2)
         h.raw_send("key esc tap")
         h.wait(3)
         ui_canc = _ui(h)
         assert ui_canc["scrubbing"] is False
+        assert ui_canc["pointer_captured"] is False, ui_canc
         assert ui_canc["screen"] == "inventory" and ui_canc["craft_size"] == 3, ui_canc
         h.raw_send("key esc tap")
         h.wait(3)
+        assert _ui(h)["pointer_captured"] is True, _ui(h)
 
         # 3. Real look + right mouse click on Crafting Table after scrub MUST open Crafting Table (not 2x2 inventory)
         h.raw_send("look 0 25")

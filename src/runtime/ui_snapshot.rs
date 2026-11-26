@@ -1218,6 +1218,7 @@ pub fn ui_state_json(game: &Game<'_>) -> serde_json::Value {
             "pos": cb.pos, "command": cb.command, "cursor": cb.cursor
         })),
         "text_input_focused": is_text_input_focused(game),
+        "pointer_captured": game.rreturn_pointer_captured(),
         "scrubbing": is_scrubbing(),
     })
 }

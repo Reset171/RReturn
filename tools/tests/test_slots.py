@@ -1,6 +1,8 @@
 """Test 11: Timeline branching with named slots."""
 
 import os
+import shutil
+import time
 from tools.rreturn_harness import default_saves_dir
 from . import setup_clean_env
 
@@ -207,3 +209,131 @@ def test_44_disk_checkpoint_singleplayer_uuid_fallback(h):
     )
     h.tp(0.5, 65.0, 0.5)
     h.wait(4)
+
+
+def test_124_disk_checkpoint_reopen_entity_type_client_sync(h):
+    """F7 after world reopen must clear stale LAN entity tracker state so colliding IDs do not render old species on the client."""
+    orig_world = h.world
+    w_ent = f"rreturn_e2e_ent_kind_{int(time.time())}"
+
+    try:
+        h.open_world(w_ent, seed=12345, mode="creative")
+        h.command("gamerule spawn_mobs false")
+        h.command("difficulty hard")
+        h.tp(0.5, 65.0, -3.0)
+        h.command("fill -6 64 -6 10 64 10 minecraft:stone")
+        h.command("fill -6 65 -6 10 72 10 minecraft:air")
+        # Clear all ambient mobs, then reopen once so game.next_entity resets to 1 before F6
+        h.command("kill @e[type=!player]")
+        h.command("kill @e[type=!player]")
+        h.wait(4)
+        assert h.exit_to_title(timeout=30), "Failed initial clean reopen setup"
+        h.open_world(w_ent, seed=12345, mode="creative")
+        h.wait(6)
+
+        def _client_nearby_mobs():
+            return [
+                e for e in h.entities(12).get("entities", [])
+                if e.get("kind") == "mob"
+            ]
+
+        # Spawn 3 sheep + 1 pig -> low IDs starting right after player ID
+        for i in range(3):
+            h.command(f"summon minecraft:sheep {1.5 + i} 65.0 2.5 {{NoAI:1b,Tags:['t124_saved']}}")
+        h.command("summon minecraft:pig 4.5 65.0 2.5 {NoAI:1b,Tags:['t124_saved']}")
+        h.wait(8)
+
+        saved_mobs = _client_nearby_mobs()
+        near_types = [e.get("type") for e in saved_mobs]
+        assert near_types.count("minecraft:sheep") == 3 and near_types.count("minecraft:pig") == 1, (
+            f"Client did not receive initial sheep+pig: {saved_mobs}"
+        )
+        saved_ids = {int(e["id"]) for e in saved_mobs if e.get("type") in ("minecraft:sheep", "minecraft:pig")}
+        max_saved_id = max(saved_ids)
+
+        # F6 checkpoint + same-session F7 check
+        h.rreturn("set")
+        h.wait(4)
+        h.rreturn("load")
+        h.wait(6)
+        same_types = [e.get("type") for e in _client_nearby_mobs()]
+        assert same_types.count("minecraft:sheep") == 3 and same_types.count("minecraft:pig") == 1, (
+            f"Same-session F7 broke sheep+pig on client: {same_types}"
+        )
+
+        # Replace sheep+pig with enough chickens + zombies before exiting
+        # so reopening assigns colliding entity IDs (covering saved_ids) to chickens & zombies!
+        h.command("kill @e[type=!player]")
+        h.command("kill @e[type=!player]")
+        h.wait(4)
+        spawn_count = max_saved_id + 4
+        for i in range(spawn_count):
+            kind = "minecraft:chicken" if (i % 2 == 0) else "minecraft:zombie"
+            x = 1.5 + (i % 6)
+            z = 2.5 + ((i // 6) % 5)
+            h.command(f"summon {kind} {x} 65.0 {z} {{NoAI:1b,Tags:['t124_other']}}")
+        h.wait(8)
+
+        rep_mobs = _client_nearby_mobs()
+        rep_types = [e.get("type") for e in rep_mobs]
+        assert rep_types.count("minecraft:chicken") >= 1 and rep_types.count("minecraft:zombie") >= 1, (
+            f"Client did not receive replacement chicken+zombie: {rep_mobs}"
+        )
+
+        # Exit and reopen the world cleanly (fresh Server hub, replacement chickens+zombies take overlapping IDs)
+        assert h.exit_to_title(timeout=30), "Failed to exit world to title"
+        h.open_world(w_ent, seed=12345, mode="creative")
+        h.wait(8)
+
+        reopen_mobs = _client_nearby_mobs()
+        reopen_ids = {int(e["id"]) for e in reopen_mobs}
+        overlap_ids = saved_ids & reopen_ids
+        assert overlap_ids == saved_ids, (
+            f"Test setup failed to force full ID collision! saved_ids={sorted(saved_ids)}, reopen_ids={sorted(reopen_ids)}"
+        )
+
+        # Now press F7 after reopen -> disk hydration + client entity sync
+        h.rreturn("load")
+        h.wait(10)
+
+        # Server must hold the restored sheep & pig
+        assert h.has_entity("@e[type=minecraft:sheep,tag=t124_saved]"), "Server missing restored sheep"
+        assert h.has_entity("@e[type=minecraft:pig,tag=t124_saved]"), "Server missing restored pig"
+
+        # Client must visually show sheep + pig, NEVER stale chicken + zombie!
+        client_mobs = _client_nearby_mobs()
+        client_types = [e.get("type") for e in client_mobs]
+        client_remote = h.status().get("server", {}).get("entities", {})
+        assert client_types.count("minecraft:sheep") == 3 and client_types.count("minecraft:pig") == 1, (
+            f"Client rendered wrong species after reopen F7! saved_mobs={saved_mobs}, reopen_mobs={reopen_mobs}, after_mobs={client_mobs}, remote={client_remote}"
+        )
+        assert client_types.count("minecraft:chicken") == 0 and client_types.count("minecraft:zombie") == 0, (
+            f"Client kept chicken/zombie species after reopen F7! saved_mobs={saved_mobs}, reopen_mobs={reopen_mobs}, after_mobs={client_mobs}, remote={client_remote}"
+        )
+
+        # Also test direct disk hydration after purge_memory in the same running session
+        h.command("kill @e[type=!player]")
+        h.command("summon minecraft:chicken 1.5 65.0 2.5 {NoAI:1b,Tags:['t124_purge_chk']}")
+        h.command("summon minecraft:zombie 4.5 65.0 2.5 {NoAI:1b,Tags:['t124_purge_chk']}")
+        h.wait(6)
+        h.rreturn("purge_memory")
+        h.rreturn("load")
+        h.wait(10)
+        purge_types = [e.get("type") for e in _client_nearby_mobs()]
+        assert purge_types.count("minecraft:sheep") == 3 and purge_types.count("minecraft:pig") == 1, (
+            f"Client rendered wrong species after purge_memory + F7: {purge_types}"
+        )
+        assert purge_types.count("minecraft:chicken") == 0 and purge_types.count("minecraft:zombie") == 0, (
+            f"Client kept chicken/zombie after purge_memory + F7: {purge_types}"
+        )
+    finally:
+        h.exit_to_title(timeout=30)
+        try:
+            h.raw_send(f"world-delete {w_ent} --confirm")
+        except Exception:
+            pass
+        world_dir = default_saves_dir(h.instance) / w_ent
+        if world_dir.is_dir():
+            shutil.rmtree(world_dir, ignore_errors=True)
+        if orig_world and orig_world != w_ent:
+            h.open_world(orig_world, seed=12345)

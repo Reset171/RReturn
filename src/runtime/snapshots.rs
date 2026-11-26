@@ -487,3 +487,70 @@ pub fn delete_slot_snapshot(slot: &str) -> bool {
     }
     SLOTS.with(|cell| cell.borrow_mut().remove(slot).is_some())
 }
+
+std::thread_local! {
+    static SESSION_HIGH_ENTITY_ID: RefCell<u32> = const { RefCell::new(0) };
+    static DIM_HIGH_ENTITY_ID: RefCell<HashMap<Dim, u32>> = RefCell::new(HashMap::new());
+}
+
+/// Records the upper bound of entity IDs issued or assigned to live players
+/// during the current integrated server session (per dimension and globally).
+pub fn observe_session_entity_ids(game: &Game<'_>) {
+    let mut hi = game.next_entity.saturating_add(1);
+    if let Some(host) = &game.lan {
+        for g in host.hub.guests.as_slice() {
+            if g.entity_id >= 0 {
+                hi = hi.max((g.entity_id as u32).saturating_add(1));
+            }
+        }
+    }
+    SESSION_HIGH_ENTITY_ID.with(|cell| {
+        let mut cur = cell.borrow_mut();
+        if hi > *cur {
+            *cur = hi;
+        }
+    });
+    DIM_HIGH_ENTITY_ID.with(|cell| {
+        let mut map = cell.borrow_mut();
+        let entry = map.entry(game.dim).or_insert(0);
+        if hi > *entry {
+            *entry = hi;
+        }
+    });
+}
+
+pub fn session_entity_ceiling() -> u32 {
+    SESSION_HIGH_ENTITY_ID.with(|cell| *cell.borrow())
+}
+
+pub fn other_dims_entity_ceiling(target_dim: Dim) -> u32 {
+    DIM_HIGH_ENTITY_ID.with(|cell| {
+        cell.borrow()
+            .iter()
+            .filter(|&(&dim, _)| dim != target_dim)
+            .map(|(_, &hi)| hi)
+            .max()
+            .unwrap_or(0)
+    })
+}
+
+pub fn bump_session_entity_ceiling(hi: u32, dim: Dim) {
+    SESSION_HIGH_ENTITY_ID.with(|cell| {
+        let mut cur = cell.borrow_mut();
+        if hi > *cur {
+            *cur = hi;
+        }
+    });
+    DIM_HIGH_ENTITY_ID.with(|cell| {
+        let mut map = cell.borrow_mut();
+        let entry = map.entry(dim).or_insert(0);
+        if hi > *entry {
+            *entry = hi;
+        }
+    });
+}
+
+pub fn clear_session_entity_ids() {
+    SESSION_HIGH_ENTITY_ID.with(|cell| *cell.borrow_mut() = 0);
+    DIM_HIGH_ENTITY_ID.with(|cell| cell.borrow_mut().clear());
+}

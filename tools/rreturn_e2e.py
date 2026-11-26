@@ -37,6 +37,7 @@ from tools.tests.test_slots import (
     test_11_slots_branching,
     test_41_disk_checkpoint_reopen_and_rollback,
     test_44_disk_checkpoint_singleplayer_uuid_fallback,
+    test_124_disk_checkpoint_reopen_entity_type_client_sync,
 )
 from tools.tests.test_policies import test_12_policy_selective_inventory
 from tools.tests.test_containers import (
@@ -326,6 +327,7 @@ def build_test_catalog():
         (121, "Test 121: Scrub Creative Survival HUD Mode and XP Transitions", "scrubbing", test_121_scrub_creative_survival_hud_mode_and_xp_transitions),
         (122, "Test 122: Scrub F3+F4 GameModeSwitcher Display", "scrubbing", test_122_scrub_f3_f4_gamemode_switcher_display),
         (123, "Test 123: Scrub Mass TNT Disk Persistence on Reopen", "scrubbing", test_123_scrub_mass_tnt_disk_persistence_on_reopen),
+        (124, "Test 124: Disk Checkpoint Reopen Entity Type Client Sync", "slots", test_124_disk_checkpoint_reopen_entity_type_client_sync),
     ]
 
 

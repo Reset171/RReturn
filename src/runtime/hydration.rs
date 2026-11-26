@@ -20,6 +20,8 @@ pub fn hydrate_level_from_disk(
     slot: &str,
     dim: Dim,
     snap: &TimelineSnapshot,
+    fresh_cursor: &mut u32,
+    slot_orig_to_fresh: &mut HashMap<u32, u32>,
 ) -> Option<LevelSnapshot> {
     let cp_dir = slot_dir(&game.world_root, slot);
     let cp_dim_dir = horizon_client::save::dimension_dir(&cp_dir, dim.id());
@@ -59,6 +61,8 @@ pub fn hydrate_level_from_disk(
         snap,
         &chunk_keys,
         meta_val.as_ref(),
+        fresh_cursor,
+        slot_orig_to_fresh,
     );
 
     let raids_dat = fs::read(raids_dat_path(&cp_dir, dim)).ok();
@@ -151,6 +155,73 @@ pub fn hydrate_level_from_disk(
     })
 }
 
+fn remap_hydrated_id(
+    id: u32,
+    orig_to_fresh: &HashMap<u32, u32>,
+    session_ceiling: u32,
+) -> Option<u32> {
+    orig_to_fresh
+        .get(&id)
+        .copied()
+        .or_else(|| (id > session_ceiling).then_some(id))
+}
+
+fn remap_id_keyed_map<V>(
+    map: &mut HashMap<u32, V>,
+    orig_to_fresh: &HashMap<u32, u32>,
+    session_ceiling: u32,
+) {
+    let old = std::mem::take(map);
+    for (id, val) in old {
+        if let Some(new_id) = remap_hydrated_id(id, orig_to_fresh, session_ceiling) {
+            map.insert(new_id, val);
+        }
+    }
+}
+
+fn remap_timeline_snapshot_after_hydration(
+    snap: &mut TimelineSnapshot,
+    orig_to_fresh: &HashMap<u32, u32>,
+    fresh_cursor: &mut u32,
+    session_ceiling: u32,
+) {
+    for gs in snap.guests.values_mut() {
+        gs.vehicle = gs
+            .vehicle
+            .and_then(|vid| remap_hydrated_id(vid, orig_to_fresh, session_ceiling));
+        if let Some(hook) = gs.hook.as_mut()
+            && (hook.id <= *fresh_cursor || hook.id <= session_ceiling)
+        {
+            *fresh_cursor = fresh_cursor.saturating_add(1);
+            hook.id = *fresh_cursor;
+        }
+    }
+    remap_id_keyed_map(&mut snap.portals_entities, orig_to_fresh, session_ceiling);
+    remap_id_keyed_map(
+        &mut snap.end_gateway_cooldowns,
+        orig_to_fresh,
+        session_ceiling,
+    );
+    remap_id_keyed_map(&mut snap.lead_killers, orig_to_fresh, session_ceiling);
+
+    let old_attachments = std::mem::take(&mut snap.entity_attachments);
+    for (id, att) in old_attachments {
+        if let Some(new_id) = remap_hydrated_id(id, orig_to_fresh, session_ceiling) {
+            snap.entity_attachments.insert(new_id, att);
+        }
+    }
+
+    let old_mob_players = std::mem::take(&mut snap.mob_players);
+    for (id, conn) in old_mob_players {
+        if let Some(new_id) = remap_hydrated_id(id, orig_to_fresh, session_ceiling) {
+            snap.mob_players.insert(new_id, conn);
+        }
+    }
+
+    snap.next_entity = snap.next_entity.max(*fresh_cursor);
+    snap.ticked_entities_through = snap.ticked_entities_through.max(snap.next_entity);
+}
+
 pub fn hydrate_slot_from_disk_on_server(
     game: &mut Game<'_>,
     slot: &str,
@@ -160,9 +231,23 @@ pub fn hydrate_slot_from_disk_on_server(
         None => load_slot_from_disk(&game.world_root, slot)?,
     };
 
+    observe_session_entity_ids(game);
+    let session_ceiling = session_entity_ceiling();
+    let mut fresh_cursor = session_ceiling.max(game.next_entity).max(snap.next_entity);
+    let mut slot_orig_to_fresh: HashMap<u32, u32> = HashMap::new();
+    let mut any_hydrated = false;
+
     for dim in [Dim::Overworld, Dim::Nether, Dim::End] {
         if !snap.levels.contains_key(&dim) {
-            if let Some(lsnap) = hydrate_level_from_disk(game, slot, dim, &snap) {
+            if let Some(lsnap) = hydrate_level_from_disk(
+                game,
+                slot,
+                dim,
+                &snap,
+                &mut fresh_cursor,
+                &mut slot_orig_to_fresh,
+            ) {
+                any_hydrated = true;
                 if dim == game.dim {
                     set_client_slot_snapshot(
                         slot,
@@ -175,6 +260,16 @@ pub fn hydrate_slot_from_disk_on_server(
                 snap.levels.insert(dim, lsnap);
             }
         }
+    }
+
+    if any_hydrated {
+        remap_timeline_snapshot_after_hydration(
+            &mut snap,
+            &slot_orig_to_fresh,
+            &mut fresh_cursor,
+            session_ceiling,
+        );
+        bump_session_entity_ceiling(snap.next_entity, game.dim);
     }
 
     let arc = Arc::new(snap);

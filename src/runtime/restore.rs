@@ -284,8 +284,19 @@ pub fn apply_timeline_snapshot_on_server(
     game.adv.changed.clear();
     game.adv.unlocked.clear();
     game.adv.announced.clear();
-    game.next_entity = snap.next_entity;
-    game.ticked_entities_through = snap.ticked_entities_through;
+    let mut restored_next = snap.next_entity.max(other_dims_entity_ceiling(target_dim));
+    if !is_scrub {
+        while game
+            .lan
+            .as_ref()
+            .is_some_and(|h| h.hub.tracks(restored_next as i32))
+        {
+            restored_next = restored_next.saturating_add(1);
+        }
+        bump_session_entity_ceiling(restored_next, target_dim);
+    }
+    game.next_entity = restored_next;
+    game.ticked_entities_through = snap.ticked_entities_through.max(restored_next);
     game.ordered.announced = snap.ordered_announced;
     game.creatures.cat.next_tick = snap.cat_tick;
     game.stats.rreturn_set_phantom_tick(snap.phantom_tick);

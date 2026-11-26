@@ -98,6 +98,8 @@ pub fn hydrate_entities_from_disk(
     snap: &TimelineSnapshot,
     chunk_keys: &[(i32, i32)],
     meta: Option<&serde_json::Value>,
+    fresh_cursor: &mut u32,
+    slot_orig_to_fresh: &mut HashMap<u32, u32>,
 ) -> HydratedEntitiesResult {
     let mut disk_last_hurt_by_player = HashMap::new();
     let mut disk_love_cause = HashMap::new();
@@ -486,7 +488,8 @@ pub fn hydrate_entities_from_disk(
     let saved_ominous = std::mem::take(&mut game.ominous_spawners);
 
     game.world.game_time = snap.game_time;
-    game.next_entity = saved_next_entity.max(snap.next_entity);
+    let session_ceiling = session_entity_ceiling();
+    game.next_entity = (*fresh_cursor).max(saved_next_entity).max(snap.next_entity);
 
     for &(cx, cz) in chunk_keys {
         let tags = cp_save.load_entities(cx, cz);
@@ -496,296 +499,291 @@ pub fn hydrate_entities_from_disk(
     }
     game.spawn_loaded_entities();
 
-    if !disk_uuid_to_id.is_empty() {
-        let mut id_remap: HashMap<u32, u32> = HashMap::new();
-        for (&spawned_id, uuid) in game.persist.uuids.iter() {
-            if let Some(&orig_id) = disk_uuid_to_id.get(uuid) {
-                id_remap.insert(spawned_id, orig_id);
-            }
-        }
-        let map_id = |id: &mut u32| {
-            if let Some(&orig) = id_remap.get(id) {
-                *id = orig;
-            }
-        };
-        let map_opt_id = |opt: &mut Option<u32>| {
-            if let Some(id) = opt
-                && let Some(&orig) = id_remap.get(id)
-            {
-                *id = orig;
-            }
-        };
-        let map_who = |who: &mut horizon_client::mobs::Who| {
-            if let horizon_client::mobs::Who::Mob(id) = who
-                && let Some(&orig) = id_remap.get(id)
-            {
-                *id = orig;
-            }
-        };
-        for m in game.mobs.iter_mut() {
-            map_id(&mut m.id);
-            m.random = horizon_client::mobs::entity_random(m.id, m.position);
-            map_opt_id(&mut m.extra.mount);
-            map_opt_id(&mut m.extra.rider);
-            map_opt_id(&mut m.extra.leader);
-            if let Some(target) = m.ai.target.as_mut() {
-                map_who(target);
-            }
-            if let Some(hurt_by) = m.ai.last_hurt_by.as_mut() {
-                map_who(hurt_by);
-            }
-            if let Some(angry_at) = m.extra.angry_at.as_mut() {
-                map_who(angry_at);
-            }
-            if let Some(
-                horizon_client::mobs::leash::Holder::Mob(id)
-                | horizon_client::mobs::leash::Holder::Boat(id),
-            ) = m.extra.leash.as_mut()
-            {
-                map_id(id);
-            }
-            if let Some(bee) = m.extra.bee.as_mut()
-                && let Some(angry_at) = bee.angry_at.as_mut()
-            {
-                map_who(angry_at);
-            }
-            map_opt_id(&mut m.extra.frog.tongue_target);
-            if let Some(rt) = disk_mob_rt.get(&m.id) {
-                m.age = rt.age;
-                m.invulnerable = rt.invulnerable;
-                m.last_hurt = rt.last_hurt;
-                m.swell = rt.swell;
-                m.previous_swell = rt.previous_swell;
-                m.ambient_timer = rt.ambient_timer;
-                if rt.rng_state != 0 {
-                    m.random = horizon_core::random::EntityRandom::own(LegacyRandom::from_state(
-                        rt.rng_state,
-                    ));
-                }
-                m.extra.anger = rt.anger;
-                m.extra.anger_end = rt.anger_end;
-                m.extra.anger_stamp = rt.anger_stamp;
-                m.extra.counter = rt.counter;
-                m.extra.counter2 = rt.counter2;
-                m.extra.anim_ticks = rt.anim_ticks;
-                m.extra.egg_time = rt.egg_time;
-                m.extra.flag = rt.flag;
-                m.extra.flag2 = rt.flag2;
-                m.extra.vector = rt.vector;
-                m.extra.ints = rt.ints;
-                if rt.body_adopted {
-                    horizon_client::mobs::sulfur_cube::adopt_body(m);
-                }
-            }
-        }
-        for d in game.dropped.iter_mut() {
-            map_id(&mut d.id);
-            if let Some(rt) = disk_item_rt.get(&d.id) {
-                d.ticks = rt.ticks;
-                d.bob_offset = rt.bob_offset;
-                if rt.rng_state != 0 {
-                    d.random = horizon_core::random::EntityRandom::own(LegacyRandom::from_state(rt.rng_state));
-                }
-            }
-        }
-        for o in game.orbs.iter_mut() {
-            map_id(&mut o.id);
-            if let Some(&ticks) = disk_orb_rt.get(&o.id) {
-                o.ticks = ticks;
-            }
-        }
-        game.creatures.projectiles.for_each_mut(|p| {
-            map_id(&mut p.id);
-            if let Some(owner) = p.owner.as_mut() {
-                map_who(owner);
-            }
-        });
-        game.boats.for_each_mut(|b| {
-            map_id(&mut b.id);
-            if let Some(&vel) = disk_boat_velocities.get(&b.id) {
-                b.velocity = vel;
-            }
-        });
-        game.carts.for_each_mut(|c| {
-            map_id(&mut c.id);
-            if let Some(&vel) = disk_cart_velocities.get(&c.id) {
-                c.velocity = vel;
-            }
-        });
-        for t in game.tnts.iter_mut() {
-            map_id(&mut t.id);
-        }
-        game.falling.for_each_mut(|f| {
-            map_id(&mut f.id);
-        });
-        for tnt_val in disk_tnts {
-            if game.tnts.iter().all(|t| t.id != tnt_val.id) {
-                game.tnts.push(horizon_gameplay::tnt::PrimedTnt {
-                    attachment_lifetime: Default::default(),
-                    id: tnt_val.id,
-                    position: tnt_val.pos,
-                    previous: tnt_val.pos,
-                    velocity: tnt_val.vel,
-                    fuse: tnt_val.fuse,
-                    power: tnt_val.power,
-                    no_gravity: tnt_val.no_gravity,
-                    on_ground: tnt_val.on_ground,
-                    fall_distance: tnt_val.fall_distance,
-                    rotation: tnt_val.rot,
-                    used_portal: false,
-                    join: Default::default(),
-                    stuck: Vec3::ZERO,
-                    in_water: false,
-                    owner: None,
-                    guest: None,
-                    block_state: None,
-                });
-            }
-        }
-        for fb in disk_falling {
-            if game.falling.iter().all(|f| f.id != fb.id) {
-                let block_name = game
-                    .pack
-                    .assets
-                    .registry
-                    .state(fb.state)
-                    .map(|s| s.name.as_str())
-                    .unwrap_or("minecraft:sand");
-                let tag = Tag::compound([
-                    ("id", Tag::String("minecraft:falling_block".into())),
-                    (
-                        "Pos",
-                        Tag::List(vec![
-                            Tag::Double(fb.pos.x.to_bits()),
-                            Tag::Double(fb.pos.y.to_bits()),
-                            Tag::Double(fb.pos.z.to_bits()),
-                        ]),
-                    ),
-                    (
-                        "Motion",
-                        Tag::List(vec![
-                            Tag::Double(fb.vel.x.to_bits()),
-                            Tag::Double(fb.vel.y.to_bits()),
-                            Tag::Double(fb.vel.z.to_bits()),
-                        ]),
-                    ),
-                    ("Time", Tag::Int(fb.age)),
-                    (
-                        "BlockState",
-                        Tag::compound([("Name", Tag::String(block_name.into()))]),
-                    ),
-                    ("DropItem", Tag::Byte(if fb.drop_item { 1 } else { 0 })),
-                    ("NoGravity", Tag::Byte(if fb.no_gravity { 1 } else { 0 })),
-                    ("FallDistance", Tag::Float((fb.fall_distance as f32).to_bits())),
-                    ("OnGround", Tag::Byte(if fb.on_ground { 1 } else { 0 })),
-                ]);
-                game.load_falling(tag, None);
-                if !game.falling.is_empty() {
-                    let last_idx = game.falling.len() - 1;
-                    game.falling.update(last_idx, |last| {
-                        last.id = fb.id;
-                        last.rotation = fb.rot;
-                    });
-                }
-            }
-        }
-        for pr in disk_projectiles {
-            if game.creatures.projectiles.iter().all(|p| p.id != pr.id) {
-                let tag = Tag::compound([
-                    ("id", Tag::String((&pr.kind[..]).into())),
-                    (
-                        "Pos",
-                        Tag::List(vec![
-                            Tag::Double(pr.pos.x.to_bits()),
-                            Tag::Double(pr.pos.y.to_bits()),
-                            Tag::Double(pr.pos.z.to_bits()),
-                        ]),
-                    ),
-                    (
-                        "Motion",
-                        Tag::List(vec![
-                            Tag::Double(pr.vel.x.to_bits()),
-                            Tag::Double(pr.vel.y.to_bits()),
-                            Tag::Double(pr.vel.z.to_bits()),
-                        ]),
-                    ),
-                    (
-                        "Rotation",
-                        Tag::List(vec![
-                            Tag::Float(pr.yaw.to_bits()),
-                            Tag::Float(pr.pitch.to_bits()),
-                        ]),
-                    ),
-                    ("Age", Tag::Int(pr.age as i32)),
-                    ("inGround", Tag::Byte(if pr.stuck { 1 } else { 0 })),
-                ]);
-                let _ = game.load_listed(&pr.kind, None, None, tag);
-                if !game.creatures.projectiles.is_empty() {
-                    let last_idx = game.creatures.projectiles.len() - 1;
-                    game.creatures.projectiles.update(last_idx, |last| {
-                        last.id = pr.id;
-                    });
-                }
-            }
-        }
-        for p in &mut game.paintings {
-            map_id(&mut p.id);
-        }
-        for f in &mut game.item_frames {
-            map_id(&mut f.id);
-        }
-        for a in game.armor_stands.iter_mut() {
-            map_id(&mut a.id);
-            map_opt_id(&mut a.vehicle);
-        }
-        for c in &mut game.cushions {
-            map_id(&mut c.id);
-        }
-        game.others.for_each_mut(|o| map_id(&mut o.id));
-        for c in &mut game.crystals {
-            map_id(&mut c.id);
-        }
-        if let Some(d) = game.dragon.as_mut() {
-            map_id(&mut d.id);
-        }
-        for t in &mut game.tridents {
-            map_id(&mut t.id);
-            map_id(&mut t.owner);
-        }
-        for r in &mut game.rockets {
-            map_id(&mut r.id);
-            if let Some(owner) = r.owner.as_mut() {
-                map_who(owner);
-            }
-            map_opt_id(&mut r.attached_to);
-        }
-        game.breath_clouds.for_each_mut(|c| map_id(&mut c.id));
-        game.fangs.list.for_each_mut(|f| map_id(&mut f.id));
-        game.ominous_spawners.for_each_mut(|o| map_id(&mut o.id));
-        for id in game.knot_ids.values_mut() {
-            map_id(id);
-        }
-        let old_uuids: HashMap<u32, [i32; 4]> = (*std::mem::take(&mut game.persist.uuids)).clone();
-        for (mut k, v) in old_uuids {
-            map_id(&mut k);
-            game.persist.uuids.insert(k, v);
-        }
-        let old_raw = std::mem::take(&mut game.persist.raw);
-        for (mut k, v) in old_raw {
-            map_id(&mut k);
-            game.persist.raw.insert(k, v);
-        }
-        let old_pslots = std::mem::take(&mut game.persist.passenger_slots);
-        for (mut vid, mut slots) in old_pslots {
-            map_id(&mut vid);
-            for slot in &mut slots {
-                if let super::super::persist::PassengerSlot::Live(rider_id) = slot {
-                    map_id(rider_id);
-                }
-            }
-            game.persist.passenger_slots.insert(vid, slots);
+    let mut next_fresh = game.next_entity.max(*fresh_cursor);
+    let mut orig_to_fresh: HashMap<u32, u32> = HashMap::new();
+    let mut spawned_to_orig: HashMap<u32, u32> = HashMap::new();
+    for (&spawned_id, uuid) in game.persist.uuids.iter() {
+        if let Some(&orig_id) = disk_uuid_to_id.get(uuid) {
+            orig_to_fresh.insert(orig_id, spawned_id);
+            spawned_to_orig.insert(spawned_id, orig_id);
         }
     }
+
+    for m in game.mobs.iter_mut() {
+        let rt_id = spawned_to_orig.get(&m.id).copied().unwrap_or(m.id);
+        if let Some(rt) = disk_mob_rt.get(&rt_id) {
+            m.age = rt.age;
+            m.invulnerable = rt.invulnerable;
+            m.last_hurt = rt.last_hurt;
+            m.swell = rt.swell;
+            m.previous_swell = rt.previous_swell;
+            m.ambient_timer = rt.ambient_timer;
+            if rt.rng_state != 0 {
+                m.random = horizon_core::random::EntityRandom::own(LegacyRandom::from_state(
+                    rt.rng_state,
+                ));
+            }
+            m.extra.anger = rt.anger;
+            m.extra.anger_end = rt.anger_end;
+            m.extra.anger_stamp = rt.anger_stamp;
+            m.extra.counter = rt.counter;
+            m.extra.counter2 = rt.counter2;
+            m.extra.anim_ticks = rt.anim_ticks;
+            m.extra.egg_time = rt.egg_time;
+            m.extra.flag = rt.flag;
+            m.extra.flag2 = rt.flag2;
+            m.extra.vector = rt.vector;
+            m.extra.ints = rt.ints;
+            if rt.body_adopted {
+                horizon_client::mobs::sulfur_cube::adopt_body(m);
+            }
+        }
+    }
+    for d in game.dropped.iter_mut() {
+        let rt_id = spawned_to_orig.get(&d.id).copied().unwrap_or(d.id);
+        if let Some(rt) = disk_item_rt.get(&rt_id) {
+            d.ticks = rt.ticks;
+            d.bob_offset = rt.bob_offset;
+            if rt.rng_state != 0 {
+                d.random = horizon_core::random::EntityRandom::own(LegacyRandom::from_state(
+                    rt.rng_state,
+                ));
+            }
+        }
+    }
+    for o in game.orbs.iter_mut() {
+        let rt_id = spawned_to_orig.get(&o.id).copied().unwrap_or(o.id);
+        if let Some(&ticks) = disk_orb_rt.get(&rt_id) {
+            o.ticks = ticks;
+        }
+    }
+    game.boats.for_each_mut(|b| {
+        let rt_id = spawned_to_orig.get(&b.id).copied().unwrap_or(b.id);
+        if let Some(&vel) = disk_boat_velocities.get(&rt_id) {
+            b.velocity = vel;
+        }
+    });
+    game.carts.for_each_mut(|c| {
+        let rt_id = spawned_to_orig.get(&c.id).copied().unwrap_or(c.id);
+        if let Some(&vel) = disk_cart_velocities.get(&rt_id) {
+            c.velocity = vel;
+        }
+    });
+
+    let vec3_dist_sq = |a: Vec3, b: Vec3| -> f64 {
+        let dx = a.x - b.x;
+        let dy = a.y - b.y;
+        let dz = a.z - b.z;
+        dx * dx + dy * dy + dz * dz
+    };
+
+    for tnt_val in disk_tnts {
+        let existing_id = orig_to_fresh
+            .get(&tnt_val.id)
+            .copied()
+            .filter(|nid| game.tnts.iter().any(|t| t.id == *nid))
+            .or_else(|| {
+                game.tnts
+                    .iter()
+                    .find(|t| t.fuse == tnt_val.fuse && vec3_dist_sq(t.position, tnt_val.pos) < 1e-6)
+                    .map(|t| t.id)
+            });
+        if let Some(id) = existing_id {
+            orig_to_fresh.insert(tnt_val.id, id);
+        } else {
+            next_fresh = next_fresh.saturating_add(1);
+            let fresh_id = next_fresh;
+            orig_to_fresh.insert(tnt_val.id, fresh_id);
+            game.tnts.push(horizon_gameplay::tnt::PrimedTnt {
+                attachment_lifetime: Default::default(),
+                id: fresh_id,
+                position: tnt_val.pos,
+                previous: tnt_val.pos,
+                velocity: tnt_val.vel,
+                fuse: tnt_val.fuse,
+                power: tnt_val.power,
+                no_gravity: tnt_val.no_gravity,
+                on_ground: tnt_val.on_ground,
+                fall_distance: tnt_val.fall_distance,
+                rotation: tnt_val.rot,
+                used_portal: false,
+                join: Default::default(),
+                stuck: Vec3::ZERO,
+                in_water: false,
+                owner: None,
+                guest: None,
+                block_state: None,
+            });
+        }
+    }
+    for fb in disk_falling {
+        let existing_id = orig_to_fresh
+            .get(&fb.id)
+            .copied()
+            .filter(|nid| game.falling.iter().any(|f| f.id == *nid))
+            .or_else(|| {
+                game.falling
+                    .iter()
+                    .find(|f| {
+                        f.state == fb.state
+                            && f.age == fb.age
+                            && vec3_dist_sq(f.position, fb.pos) < 1e-6
+                    })
+                    .map(|f| f.id)
+            });
+        if let Some(id) = existing_id {
+            orig_to_fresh.insert(fb.id, id);
+        } else {
+            let block_name = game
+                .pack
+                .assets
+                .registry
+                .state(fb.state)
+                .map(|s| s.name.as_str())
+                .unwrap_or("minecraft:sand");
+            let tag = Tag::compound([
+                ("id", Tag::String("minecraft:falling_block".into())),
+                (
+                    "Pos",
+                    Tag::List(vec![
+                        Tag::Double(fb.pos.x.to_bits()),
+                        Tag::Double(fb.pos.y.to_bits()),
+                        Tag::Double(fb.pos.z.to_bits()),
+                    ]),
+                ),
+                (
+                    "Motion",
+                    Tag::List(vec![
+                        Tag::Double(fb.vel.x.to_bits()),
+                        Tag::Double(fb.vel.y.to_bits()),
+                        Tag::Double(fb.vel.z.to_bits()),
+                    ]),
+                ),
+                ("Time", Tag::Int(fb.age)),
+                (
+                    "BlockState",
+                    Tag::compound([("Name", Tag::String(block_name.into()))]),
+                ),
+                ("DropItem", Tag::Byte(if fb.drop_item { 1 } else { 0 })),
+                ("NoGravity", Tag::Byte(if fb.no_gravity { 1 } else { 0 })),
+                ("FallDistance", Tag::Float((fb.fall_distance as f32).to_bits())),
+                ("OnGround", Tag::Byte(if fb.on_ground { 1 } else { 0 })),
+            ]);
+            game.next_entity = next_fresh;
+            game.load_falling(tag, None);
+            if !game.falling.is_empty() {
+                let last_idx = game.falling.len() - 1;
+                let mut assigned = 0u32;
+                game.falling.update(last_idx, |last| {
+                    if last.id <= next_fresh {
+                        next_fresh = next_fresh.saturating_add(1);
+                        last.id = next_fresh;
+                    } else {
+                        next_fresh = last.id;
+                    }
+                    last.rotation = fb.rot;
+                    assigned = last.id;
+                });
+                next_fresh = next_fresh.max(game.next_entity);
+                if assigned != 0 {
+                    orig_to_fresh.insert(fb.id, assigned);
+                }
+            }
+        }
+    }
+    for pr in disk_projectiles {
+        let existing_id = orig_to_fresh
+            .get(&pr.id)
+            .copied()
+            .filter(|nid| game.creatures.projectiles.iter().any(|p| p.id == *nid))
+            .or_else(|| {
+                game.creatures
+                    .projectiles
+                    .iter()
+                    .find(|p| {
+                        p.kind.id() == pr.kind
+                            && p.age == pr.age
+                            && vec3_dist_sq(p.position, pr.pos) < 1e-6
+                    })
+                    .map(|p| p.id)
+            });
+        if let Some(id) = existing_id {
+            orig_to_fresh.insert(pr.id, id);
+        } else {
+            let tag = Tag::compound([
+                ("id", Tag::String((&pr.kind[..]).into())),
+                (
+                    "Pos",
+                    Tag::List(vec![
+                        Tag::Double(pr.pos.x.to_bits()),
+                        Tag::Double(pr.pos.y.to_bits()),
+                        Tag::Double(pr.pos.z.to_bits()),
+                    ]),
+                ),
+                (
+                    "Motion",
+                    Tag::List(vec![
+                        Tag::Double(pr.vel.x.to_bits()),
+                        Tag::Double(pr.vel.y.to_bits()),
+                        Tag::Double(pr.vel.z.to_bits()),
+                    ]),
+                ),
+                (
+                    "Rotation",
+                    Tag::List(vec![
+                        Tag::Float(pr.yaw.to_bits()),
+                        Tag::Float(pr.pitch.to_bits()),
+                    ]),
+                ),
+                ("Age", Tag::Int(pr.age as i32)),
+                ("inGround", Tag::Byte(if pr.stuck { 1 } else { 0 })),
+            ]);
+            game.next_entity = next_fresh;
+            let _ = game.load_listed(&pr.kind, None, None, tag);
+            if !game.creatures.projectiles.is_empty() {
+                let last_idx = game.creatures.projectiles.len() - 1;
+                let mut assigned = 0u32;
+                game.creatures.projectiles.update(last_idx, |last| {
+                    if last.id <= next_fresh {
+                        next_fresh = next_fresh.saturating_add(1);
+                        last.id = next_fresh;
+                    } else {
+                        next_fresh = last.id;
+                    }
+                    assigned = last.id;
+                });
+                next_fresh = next_fresh.max(game.next_entity);
+                if assigned != 0 {
+                    orig_to_fresh.insert(pr.id, assigned);
+                }
+            }
+        }
+    }
+
+    let map_level_id = |id: u32| -> Option<u32> {
+        orig_to_fresh
+            .get(&id)
+            .copied()
+            .or_else(|| (id > session_ceiling).then_some(id))
+    };
+    let remapped_portals_entities: HashMap<u32, horizon_client::nether_portal::PortalState> =
+        disk_portals_entities
+            .into_iter()
+            .filter_map(|(id, st)| map_level_id(id).map(|nid| (nid, st)))
+            .collect();
+    let remapped_last_hurt_by_player: HashMap<u32, super::super::combat::PlayerCredit> =
+        disk_last_hurt_by_player
+            .into_iter()
+            .filter_map(|(id, cred)| map_level_id(id).map(|nid| (nid, cred)))
+            .collect();
+    let remapped_love_cause: HashMap<u32, Option<u32>> = disk_love_cause
+        .into_iter()
+        .filter_map(|(id, parent)| {
+            map_level_id(id).map(|nid| (nid, parent.and_then(map_level_id)))
+        })
+        .collect();
+    *fresh_cursor = next_fresh;
+    slot_orig_to_fresh.extend(orig_to_fresh);
 
     let registry = game.pack.assets.registry;
     let tridents = game
@@ -889,7 +887,9 @@ pub fn hydrate_entities_from_disk(
     game.world.loaded_entities = saved_loaded_entities;
     game.world.game_time = saved_game_time;
     game.world.random = saved_random;
-    game.next_entity = saved_next_entity;
+    let advanced_next = next_fresh.max(saved_next_entity);
+    game.next_entity = advanced_next;
+    bump_session_entity_ceiling(advanced_next, dim);
 
     HydratedEntitiesResult {
         mobs,
@@ -916,8 +916,8 @@ pub fn hydrate_entities_from_disk(
         persist_uuids: (*persist_mem.uuids).clone(),
         persist_raw: persist_mem.raw,
         persist_passenger_slots: persist_mem.passenger_slots,
-        portals_entities: disk_portals_entities,
-        last_hurt_by_player: disk_last_hurt_by_player,
-        love_cause: disk_love_cause,
+        portals_entities: remapped_portals_entities,
+        last_hurt_by_player: remapped_last_hurt_by_player,
+        love_cause: remapped_love_cause,
     }
 }

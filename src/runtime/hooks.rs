@@ -416,6 +416,8 @@ pub fn handle_server_started(game: &mut Game<'_>) {
     set_active_ui_world_root(&game.world_root);
     load_saved_settings(game);
     clear_all_slots();
+    clear_session_entity_ids();
+    observe_session_entity_ids(game);
     clear_client_snapshots();
     with_scrub_ring_mut(|r| r.clear());
     clear_server_scrub();
@@ -470,6 +472,7 @@ pub fn handle_lifecycle(game: &mut Game<'_>, phase: WorldPhase) {
             clear_active_ui_world_root();
             reset_settings_ui_state();
             clear_all_slots();
+            clear_session_entity_ids();
             clear_client_snapshots();
             with_scrub_ring_mut(|r| r.clear());
             clear_server_scrub();
@@ -564,6 +567,7 @@ pub fn handle_tick(game: &mut Game<'_>) {
 }
 
 pub fn handle_server_tick(game: &mut Game<'_>, world_running: bool) {
+    observe_session_entity_ids(game);
     if game.world.game_time % 20 == 0 || with_state(|st| st.online_players.is_empty()) {
         let players = collect_online_players(game);
         if !players.is_empty() {

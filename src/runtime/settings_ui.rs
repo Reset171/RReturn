@@ -10,7 +10,7 @@ use super::settings_catalog::{
     write_slider_setting, UiGroup, UiTab, SETTINGS_CATALOG,
 };
 use super::settings_ui_draw::*;
-use super::settings_ui_icons::{draw_ui_icon, UiIcon};
+use super::settings_ui_icons::{draw_ui_icon, draw_ui_icon_sized, UiIcon};
 use super::settings_ui_players::draw_players_tab;
 use super::settings_ui_tabs::{draw_grouped_tab, draw_search_tab, draw_system_tab};
 use super::types::*;
@@ -323,7 +323,7 @@ fn render_settings_canvas<C: UiCanvas>(canvas: &C, draw: &mut HudBatch, game_tim
     let mut regions: Vec<HitRegion> = Vec::with_capacity(112);
 
     // Sidebar compact RReturn header + Search pill
-    draw_ui_icon(canvas, draw, UiIcon::RReturnLogo, win_x + 10.0, win_y + 10.0, UI_BLUE);
+    draw_ui_icon(canvas, draw, UiIcon::RReturnLogo, win_x + 10.0, win_y + 9.5, UI_BLUE);
     canvas.text(draw, "RReturn", [win_x + 25.0, win_y + 11.5], UI_TEXT_PRI, false);
 
     let search_rect = [win_x + 8.0, win_y + 28.0, side_w - 16.0, 17.0];
@@ -345,7 +345,15 @@ fn render_settings_canvas<C: UiCanvas>(canvas: &C, draw: &mut HudBatch, game_tim
             canvas.fill(draw, [search_rect[0] + 7.0 + cw + 1.0, search_rect[1] + 4.0, 1.0, 9.0], UI_BLUE);
         }
         let c_hov = hit_in_rect(mx, my, clr_rect);
-        canvas.text(draw, "x", [clr_rect[0] + 3.0, clr_rect[1] + 2.0], if c_hov { UI_RED } else { UI_TEXT_SEC }, false);
+        draw_ui_icon_sized(
+            canvas,
+            draw,
+            UiIcon::Close,
+            clr_rect[0] + 2.0,
+            clr_rect[1] + 2.0,
+            9.0,
+            if c_hov { UI_RED } else { UI_TEXT_SEC },
+        );
         regions.push(HitRegion { tag: "clear_search".to_owned(), rect: clr_rect, action: HitAction::ClearSearch });
     }
 
@@ -376,12 +384,12 @@ fn render_settings_canvas<C: UiCanvas>(canvas: &C, draw: &mut HudBatch, game_tim
             UiTab::Players => UiIcon::Players,
             UiTab::System => UiIcon::System,
         };
-        let icon_y = tr_rect[1] + (tab_h - 11.0) * 0.5;
+        let icon_y = tr_rect[1] + (tab_h - 12.0) * 0.5;
         draw_ui_icon(
             canvas,
             draw,
             icon,
-            tr_rect[0] + 7.0,
+            tr_rect[0] + 6.5,
             icon_y,
             if active { UI_BLUE } else { UI_TEXT_SEC },
         );
@@ -420,7 +428,16 @@ fn render_settings_canvas<C: UiCanvas>(canvas: &C, draw: &mut HudBatch, game_tim
     let right_w = (win_w - side_w - 22.0).max(80.0);
     let close_rect = [win_x + win_w - 26.0, win_y + 10.0, 16.0, 16.0];
     let c_hov = hit_in_rect(mx, my, close_rect);
-    draw_pill(canvas, draw, close_rect, "X", if c_hov { UI_PILL_HOV } else { UI_PILL_BG }, if c_hov { UI_TEXT_PRI } else { UI_TEXT_SEC });
+    draw_rounded_rect(canvas, draw, close_rect, 8.0, if c_hov { UI_PILL_HOV } else { UI_PILL_BG });
+    draw_ui_icon_sized(
+        canvas,
+        draw,
+        UiIcon::Close,
+        close_rect[0] + 3.0,
+        close_rect[1] + 3.0,
+        10.0,
+        if c_hov { UI_TEXT_PRI } else { UI_TEXT_SEC },
+    );
     regions.push(HitRegion { tag: "close".to_owned(), rect: close_rect, action: HitAction::Close });
 
     let hdr_title = tr(if searching { "rreturn.ui.search_results" } else { active_tab.title_key() });
@@ -670,8 +687,8 @@ fn draw_quick_jump_bar<C: UiCanvas>(
         } else {
             UI_TEXT_SEC
         };
-        let ix = if show_labels { br[0] + 5.0 } else { br[0] + (br[2] - 11.0) * 0.5 };
-        let iy = br[1] + (br[3] - 11.0) * 0.5;
+        let ix = if show_labels { br[0] + 5.0 } else { br[0] + (br[2] - 12.0) * 0.5 };
+        let iy = br[1] + (br[3] - 12.0) * 0.5;
         draw_ui_icon(canvas, draw, sp.icon, ix, iy, fg);
         if show_labels {
             let lfit = fit_text(canvas, draw, &lbl, (br[2] - 21.0).max(10.0));

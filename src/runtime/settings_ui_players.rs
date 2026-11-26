@@ -240,8 +240,8 @@ fn draw_players_column<C: UiCanvas>(
 
             let mut name_x = x + 19.0;
             if p.is_owner {
-                draw_ui_icon(canvas, draw, UiIcon::Crown, name_x, py + 6.5, UI_BLUE);
-                name_x += 13.0;
+                draw_ui_icon(canvas, draw, UiIcon::Crown, name_x, py + 5.5, UI_BLUE);
+                name_x += 14.0;
             }
             let custom_total = p.rb_custom + p.sc_custom;
             let mut badge_w = 0.0f32;

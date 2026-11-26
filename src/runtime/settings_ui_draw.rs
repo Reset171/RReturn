@@ -107,9 +107,32 @@ pub fn with_mode_state_mut<R>(mode: SettingsUiMode, f: impl FnOnce(&mut RReturnS
     }
 }
 
+fn argb_to_abgr(argb: u32) -> u32 {
+    let [a, r, g, b] = argb.to_be_bytes();
+    rgba(r, g, b, a)
+}
+
+fn canvas_picture(
+    atlas: &HudAtlas,
+    draw: &mut HudBatch,
+    name: &str,
+    [x, y, w, h]: [f32; 4],
+    argb: u32,
+) -> bool {
+    let before = draw.vertices.len();
+    draw.picture(atlas, name, x, y, w, h, argb_to_abgr(argb));
+    draw.vertices.len() > before
+}
+
+fn canvas_fill_quad(atlas: &HudAtlas, draw: &mut HudBatch, corners: [[f32; 2]; 4], argb: u32) {
+    draw.fill_quad(atlas, corners, argb_to_abgr(argb));
+}
+
 pub trait UiCanvas {
     fn screen_size(&self, draw: &HudBatch) -> [f32; 2];
     fn fill(&self, draw: &mut HudBatch, rect: [f32; 4], argb: u32);
+    fn fill_quad(&self, draw: &mut HudBatch, corners: [[f32; 2]; 4], argb: u32);
+    fn picture(&self, draw: &mut HudBatch, name: &str, rect: [f32; 4], argb: u32) -> bool;
     fn text(&self, draw: &mut HudBatch, text: &str, at: [f32; 2], argb: u32, shadow: bool);
     fn text_width(&self, draw: &HudBatch, text: &str) -> f32;
     fn cursor(&self) -> [f32; 2];
@@ -123,6 +146,14 @@ impl UiCanvas for Game<'_> {
 
     fn fill(&self, draw: &mut HudBatch, rect: [f32; 4], argb: u32) {
         self.native_fill(draw, rect, argb);
+    }
+
+    fn fill_quad(&self, draw: &mut HudBatch, corners: [[f32; 2]; 4], argb: u32) {
+        canvas_fill_quad(&self.gui.atlas, draw, corners, argb);
+    }
+
+    fn picture(&self, draw: &mut HudBatch, name: &str, rect: [f32; 4], argb: u32) -> bool {
+        canvas_picture(&self.gui.atlas, draw, name, rect, argb)
     }
 
     fn text(&self, draw: &mut HudBatch, text: &str, at: [f32; 2], argb: u32, shadow: bool) {
@@ -157,13 +188,20 @@ impl UiCanvas for MenuUiCanvas<'_> {
 
     fn fill(&self, draw: &mut HudBatch, rect: [f32; 4], argb: u32) {
         let [x, y, w, h] = rect;
-        let [a, r, g, b] = argb.to_be_bytes();
-        draw.fill(self.atlas, x, y, w, h, rgba(r, g, b, a));
+        draw.fill(self.atlas, x, y, w, h, argb_to_abgr(argb));
+    }
+
+    fn fill_quad(&self, draw: &mut HudBatch, corners: [[f32; 2]; 4], argb: u32) {
+        canvas_fill_quad(self.atlas, draw, corners, argb);
+    }
+
+    fn picture(&self, draw: &mut HudBatch, name: &str, rect: [f32; 4], argb: u32) -> bool {
+        canvas_picture(self.atlas, draw, name, rect, argb)
     }
 
     fn text(&self, draw: &mut HudBatch, text: &str, at: [f32; 2], argb: u32, shadow: bool) {
-        let [a, r, g, b] = argb.to_be_bytes();
-        if a == 0 {
+        let abgr = argb_to_abgr(argb);
+        if (argb >> 24) == 0 {
             return;
         }
         draw.text_styled(
@@ -171,7 +209,7 @@ impl UiCanvas for MenuUiCanvas<'_> {
             &Text::literal(text),
             at[0],
             at[1],
-            rgba(r, g, b, a),
+            abgr,
             shadow,
         );
     }

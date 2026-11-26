@@ -93,6 +93,7 @@ fn assemble_runtime(src_dir: &Path) {
     commands::OtherEntity,
     dragon::{Crystal, Dragon},
     fishing,
+    game_mode::mode_from_id,
     lan::LanHost,
     machines::HopperState,
 };
@@ -107,6 +108,7 @@ use crate::game::command_blocks::rreturn_command_blocks::{CommandBlockUiSnapshot
 use crate::game::dragon::rreturn_dragon::{DragonExt, FightExt};
 use crate::game::end::rreturn_end::EndExt;
 use crate::game::fishing::rreturn_fishing::{GameFishingExt, HookExt};
+use crate::game::lan_menus::rreturn_lan_menus::LanMenusExt;
 use crate::game::mount_menu::rreturn_mount_menu::{MountMenuExt, MountMenuSnapshot};
 use crate::game::potions::rreturn_potions::{PotionStateExt, ThrownPotionsSnapshot};
 use crate::game::recipe_book::rreturn_recipe_book::{RecipeBookExt, RecipeUiSnapshot};
@@ -126,13 +128,14 @@ use horizon_client::{
     containers::BlockEntity,
     cooldowns::Cooldowns,
     effects::{EffectInstance, PlayerEffects, SavedEffect},
-    entities::{ArmorStand, Cushion, ItemFrame, Painting},
+    entities::{ArmorStand, Cushion, Experience, ItemFrame, Painting},
     fast_hash::FxHashMap,
+    game_mode_switcher::GameModeSwitcher,
     gamerules::GameRules,
     hud::{HudAtlas, HudBatch, rgba},
     items::ItemStack,
     keybinds,
-    lan::guest::SavedBody,
+    lan::{abilities::PlayerAbilities, guest::SavedBody},
     lang,
     mobs::Species,
     mod_list::ModList,

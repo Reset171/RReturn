@@ -13,9 +13,10 @@ use horizon_client::{
     boss_overlay::BossOverlay,
     chunk::{Chunk, Section},
     containers::BlockEntity,
-    entities::{ArmorStand, Cushion, ItemFrame, Painting},
+    entities::{ArmorStand, Cushion, Experience, ItemFrame, Painting},
     fast_hash::FxHashMap,
     items::ItemStack,
+    lan::abilities::PlayerAbilities,
     particles::Particle,
     world::Weather,
     worldborder::WorldBorder,
@@ -158,6 +159,11 @@ pub struct TickHistoryFrame {
     pub player_ticks_frozen: i32,
     pub player_sneaking: bool,
     pub player_fall_flying: bool,
+    pub player_game_mode: i32,
+    pub player_previous_game_mode: Option<i32>,
+    pub player_experience: Experience,
+    pub player_acting_abilities: Option<PlayerAbilities>,
+    pub player_abilities: (bool, bool, bool, bool, f32),
     pub mobs: MobPoseFrameRef,
     pub items: Vec<EntityPoseRecord>,
     pub orbs: Vec<EntityPoseRecord>,
@@ -336,7 +342,6 @@ pub struct ScrubHistoryRing {
     last_craft_grid: Option<Arc<Vec<Option<ItemStack>>>>,
     last_ender_items: Option<Arc<Vec<Option<ItemStack>>>>,
     last_ui: Option<Arc<ClientUiSnapshot>>,
-    last_open_be_gens: Vec<((i32, i32, i32), u64)>,
     last_open_bes: Option<Arc<Vec<((i32, i32, i32), BlockEntity)>>>,
 }
 
@@ -426,6 +431,49 @@ pub fn extract_chunk_deltas(
     (deltas, swaps, biome_deltas)
 }
 
+fn open_container_be_equal(a: &BlockEntity, b: &BlockEntity) -> bool {
+    match (a, b) {
+        (BlockEntity::Chest(x), BlockEntity::Chest(y)) => x == y,
+        (BlockEntity::Furnace(x), BlockEntity::Furnace(y)) => {
+            x.kind == y.kind
+                && x.lit_remaining == y.lit_remaining
+                && x.lit_total == y.lit_total
+                && x.cooking_timer == y.cooking_timer
+                && x.cooking_total == y.cooking_total
+                && x.speed == y.speed
+                && x.items == y.items
+        }
+        (BlockEntity::Brewing(x), BlockEntity::Brewing(y)) => {
+            x.brew_time == y.brew_time
+                && x.total_brew_time == y.total_brew_time
+                && x.fuel == y.fuel
+                && x.total_fuel == y.total_fuel
+                && x.speed == y.speed
+                && x.ingredient == y.ingredient
+                && x.last_bottles == y.last_bottles
+                && x.items == y.items
+        }
+        (BlockEntity::Crafter(x), BlockEntity::Crafter(y)) => {
+            x.items == y.items
+                && x.disabled == y.disabled
+                && x.triggered == y.triggered
+                && x.crafting_ticks == y.crafting_ticks
+                && x.state_triggered == y.state_triggered
+        }
+        _ => false,
+    }
+}
+
+fn open_container_bes_equal(
+    a: &[((i32, i32, i32), BlockEntity)],
+    b: &[((i32, i32, i32), BlockEntity)],
+) -> bool {
+    a.len() == b.len()
+        && a.iter()
+            .zip(b.iter())
+            .all(|((pa, ba), (pb, bb))| pa == pb && open_container_be_equal(ba, bb))
+}
+
 impl ScrubHistoryRing {
     pub fn new() -> Self {
         Self {
@@ -463,7 +511,6 @@ impl ScrubHistoryRing {
             last_craft_grid: None,
             last_ender_items: None,
             last_ui: None,
-            last_open_be_gens: Vec::new(),
             last_open_bes: None,
         }
     }
@@ -504,7 +551,6 @@ impl ScrubHistoryRing {
         self.last_craft_grid = None;
         self.last_ender_items = None;
         self.last_ui = None;
-        self.last_open_be_gens.clear();
         self.last_open_bes = None;
     }
 
@@ -831,29 +877,37 @@ impl ScrubHistoryRing {
         };
         let open_container_bes = if game.container.is_some() {
             let parts = game.container_parts();
-            let gens: Vec<((i32, i32, i32), u64)> = parts
-                .iter()
-                .map(|&(pos, _)| (pos, game.world.block_entities.generation(&pos).unwrap_or(0)))
-                .collect();
-            if gens == self.last_open_be_gens && self.last_open_bes.is_some() {
-                self.last_open_bes.clone()
-            } else {
-                let mut vec = Vec::with_capacity(parts.len());
-                for (pos, _) in parts {
-                    if let Some(be) = game.world.block_entities.get(&pos) {
-                        vec.push((pos, be.clone()));
-                    }
+            let mut vec = Vec::with_capacity(parts.len());
+            for (pos, _) in parts {
+                if let Some(be) = game.world.block_entities.get(&pos) {
+                    vec.push((pos, be.clone()));
                 }
-                let arc = (!vec.is_empty()).then(|| Arc::new(vec));
-                self.last_open_be_gens = gens;
-                self.last_open_bes = arc.clone();
-                arc
+            }
+            if vec.is_empty() {
+                self.last_open_bes = None;
+                None
+            } else if let Some(prev) = &self.last_open_bes
+                && open_container_bes_equal(prev, &vec)
+            {
+                Some(Arc::clone(prev))
+            } else {
+                let arc = Arc::new(vec);
+                self.last_open_bes = Some(Arc::clone(&arc));
+                Some(arc)
             }
         } else {
-            self.last_open_be_gens.clear();
             self.last_open_bes = None;
             None
         };
+        let player_game_mode = game.mode_id();
+        let player_previous_game_mode = game.previous_mode.map(|m| m.id());
+        let player_experience = game.experience;
+        let player_acting_abilities = game.acting_abilities;
+        let player_abilities = game
+            .player
+            .as_ref()
+            .map(|p| (p.invulnerable, p.may_fly, p.spectator, p.flying, p.flying_speed))
+            .unwrap_or((false, false, false, false, 0.05));
 
         let fov_modifier = if game.view.fov_modifier > 0.05 {
             game.view.fov_modifier
@@ -1293,6 +1347,11 @@ impl ScrubHistoryRing {
             player_ticks_frozen,
             player_sneaking,
             player_fall_flying,
+            player_game_mode,
+            player_previous_game_mode,
+            player_experience,
+            player_acting_abilities,
+            player_abilities,
             mobs: MobPoseFrameRef::Inline(mobs),
             items,
             orbs,

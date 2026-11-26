@@ -353,6 +353,7 @@ pub fn restore_players_on_rollback(
                 close_windows.push(m.window);
             }
             if p_policy.player_inventory {
+                close_windows.extend(host.rreturn_clear_guest_menus(conn));
                 if let Some(play_state) = host.play.get_mut(&conn) {
                     if let Some(lec) = play_state.lectern.take() {
                         close_windows.push(lec.window);
@@ -428,6 +429,7 @@ pub fn restore_players_on_rollback(
                     if p_policy.player_abilities {
                         g.game_mode = gs.game_mode;
                         g.previous_game_mode = gs.previous_game_mode;
+                        g.abilities.update_for_mode(gs.game_mode);
                         g.abilities.flying = gs.flying;
                         g.abilities.flying_speed = gs.flying_speed;
                         g.abilities.may_fly = gs.allow_flight;

@@ -97,6 +97,22 @@ file = "crates/horizon-client/src/game/interface/startup_menu.rs"
 name = "rreturn_startup_menu"
 source = "src/ext/startup_menu_ext.rs"
 
+[[native.module]]
+id = "lan_menus_ext"
+file = "crates/horizon-client/src/game/network/lan_menus.rs"
+name = "rreturn_lan_menus"
+source = "src/ext/lan_menus_ext.rs"
+
+[[native.mixin]]
+id = "remote-open-screen-pre"
+target = "horizon_client::game::remote::Game<'_>::remote_open_screen"
+kind = "HEAD"
+helper = "src/hooks/hook_remote_open_screen.rs"
+bindings = [
+  { name = "game", ty = "&mut Game<'_>", value = "&mut *self" },
+  { name = "p", ty = "&horizon_protocol::packets::play::OpenScreen", value = "&p" },
+]
+
 [[native.mixin]]
 id = "native-key"
 target = "horizon_client::game::native_hooks::input_key::Game<'_>::native_input_key"

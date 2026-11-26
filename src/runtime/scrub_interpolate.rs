@@ -1,4 +1,4 @@
-use super::super::Game;
+use super::super::{game_mode::mode_from_id, Game};
 use super::rrtl::{MobPoseRecord, ParticleTickState};
 use super::scrub_audio::play_scrub_sounds;
 use super::scrub_timeline::{with_scrub_ring, EntityPoseRecord};
@@ -364,25 +364,17 @@ pub fn apply_interpolated_poses_to_game(game: &mut Game<'_>, target_time: f64) {
     if scrub_policy.player_ender_chest {
         game.ender_items = (*chosen_frame.ender_items).clone();
     }
-    if scrub_policy.block_entities {
-        if let Some(bes) = &chosen_frame.open_container_bes {
-            let changed = LAST_PREVIEW_BES.with(|c| {
-                let mut cur = c.borrow_mut();
-                if cur.as_ref().is_some_and(|p| Arc::ptr_eq(p, bes)) {
-                    false
-                } else {
-                    *cur = Some(Arc::clone(bes));
-                    true
-                }
-            });
-            if changed {
-                for (pos, be) in bes.iter() {
-                    game.world.block_entities.insert(*pos, be.clone());
-                }
-            }
-        } else {
-            LAST_PREVIEW_BES.with(|c| *c.borrow_mut() = None);
+    if scrub_policy.player_abilities {
+        if chosen_frame.player_game_mode != game.mode_id() {
+            game.set_mode_id(chosen_frame.player_game_mode);
         }
+        game.previous_mode = chosen_frame
+            .player_previous_game_mode
+            .map(mode_from_id);
+        game.acting_abilities = chosen_frame.player_acting_abilities;
+    }
+    if scrub_policy.player_experience {
+        game.experience = chosen_frame.player_experience;
     }
     let ui_changed = LAST_PREVIEW_UI.with(|c| {
         let mut cur = c.borrow_mut();
@@ -414,7 +406,10 @@ pub fn apply_interpolated_poses_to_game(game: &mut Game<'_>, target_time: f64) {
         }
     } else if scrub_policy.player_inventory {
         game.carried = (*chosen_frame.carried).clone();
-        if chosen_frame.ui.craft_table.is_none() && chosen_frame.ui.station.is_none() {
+        if chosen_frame.ui.craft_table.is_none()
+            && chosen_frame.ui.craft_size < 3
+            && chosen_frame.ui.station.is_none()
+        {
             let need = chosen_frame.craft_grid.len();
             if game.craft_grid.len() < need {
                 game.craft_grid.resize(need, None);
@@ -422,6 +417,26 @@ pub fn apply_interpolated_poses_to_game(game: &mut Game<'_>, target_time: f64) {
             for (dst, src) in game.craft_grid.iter_mut().zip(chosen_frame.craft_grid.iter()) {
                 *dst = src.clone();
             }
+        }
+    }
+    if scrub_policy.block_entities {
+        if let Some(bes) = &chosen_frame.open_container_bes {
+            let changed = LAST_PREVIEW_BES.with(|c| {
+                let mut cur = c.borrow_mut();
+                if cur.as_ref().is_some_and(|p| Arc::ptr_eq(p, bes)) {
+                    false
+                } else {
+                    *cur = Some(Arc::clone(bes));
+                    true
+                }
+            });
+            if changed {
+                for (pos, be) in bes.iter() {
+                    game.world.block_entities.insert(*pos, be.clone());
+                }
+            }
+        } else {
+            LAST_PREVIEW_BES.with(|c| *c.borrow_mut() = None);
         }
     }
     if scrub_policy.player_motion {
@@ -441,6 +456,14 @@ pub fn apply_interpolated_poses_to_game(game: &mut Game<'_>, target_time: f64) {
             p.teleported = true;
             p.teleported_delta = [false; 3];
             game.previous_position = p.position;
+        }
+        if scrub_policy.player_abilities {
+            let (invuln, may_fly, spec, flying, fly_speed) = chosen_frame.player_abilities;
+            p.invulnerable = invuln;
+            p.may_fly = may_fly;
+            p.spectator = spec;
+            p.flying = flying;
+            p.flying_speed = fly_speed;
         }
         if scrub_policy.player_motion {
             p.velocity = Default::default();

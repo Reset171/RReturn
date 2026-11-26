@@ -33,6 +33,8 @@ pub fn apply_client_level_rollback(game: &mut Game<'_>, slot: &str) {
         if let Some(r) = game.remote.as_mut() {
             r.rreturn_reset_client_state();
         }
+    } else if let Some(r) = game.remote.as_mut() {
+        r.rreturn_clear_transient_menu_state();
     }
     for (_, sound_id) in std::mem::take(&mut game.jukebox_sounds) {
         game.audio.stop_and_release(sound_id);

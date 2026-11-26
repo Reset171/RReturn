@@ -1,5 +1,6 @@
 use super::super::{
     chat::ChatDraft,
+    game_mode::mode_from_id,
     Screen, Game,
 };
 use super::policy::RollbackPolicy;
@@ -7,6 +8,8 @@ use super::scrub::is_scrubbing;
 use super::storage::slot_dir;
 use super::types::*;
 use horizon_client::{
+    containers::BlockEntity,
+    game_mode_switcher::GameModeSwitcher,
     items::ItemStack,
     save::{item_from_nbt, item_to_nbt},
 };
@@ -39,6 +42,7 @@ pub struct ClientUiSnapshot {
     pub in_bed_chat: bool,
     pub carried: Option<ItemStack>,
     pub craft_grid: Vec<Option<ItemStack>>,
+    pub craft_result: Option<ItemStack>,
     pub craft_size: usize,
     pub craft_table: Option<[i32; 3]>,
     pub container: Option<[i32; 3]>,
@@ -52,6 +56,7 @@ pub struct ClientUiSnapshot {
     pub sign_edit: Option<SignEditorSnapshot>,
     pub book: Option<BookScreenSnapshot>,
     pub command_block: Option<CommandBlockUiSnapshot>,
+    pub gamemode_switcher_selected: Option<i32>,
 }
 
 thread_local! {
@@ -211,8 +216,9 @@ pub fn capture_client_ui_snapshot(game: &Game<'_>) -> ClientUiSnapshot {
         in_bed_chat: game.ui.in_bed_chat,
         carried: game.carried.clone(),
         craft_grid: game.craft_grid.clone(),
+        craft_result: game.rreturn_craft_result(),
         craft_size: game.craft_size,
-        craft_table: game.craft_table,
+        craft_table: game.rreturn_craft_table_pos(),
         container: game.container.map(|p| [p.0, p.1, p.2]),
         open_container_slots: game
             .open_container_slots
@@ -226,6 +232,9 @@ pub fn capture_client_ui_snapshot(game: &Game<'_>) -> ClientUiSnapshot {
         sign_edit: game.rreturn_capture_sign_edit(),
         book: game.rreturn_capture_book(),
         command_block: game.rreturn_capture_command_block_ui(),
+        gamemode_switcher_selected: (game.screen == Screen::GameModeSwitcher)
+            .then(|| game.gamemode_switcher.as_ref().map(|s| s.selected.id()))
+            .flatten(),
     }
 }
 
@@ -477,6 +486,7 @@ fn ui_snapshot_to_json(s: &ClientUiSnapshot) -> serde_json::Value {
         "in_bed_chat": s.in_bed_chat,
         "carried": ui_encode_item(&s.carried),
         "craft_grid": ui_encode_items(&s.craft_grid),
+        "craft_result": ui_encode_item(&s.craft_result),
         "craft_size": s.craft_size,
         "craft_table": ui_encode_pos3(s.craft_table),
         "container": ui_encode_pos3(s.container),
@@ -497,6 +507,7 @@ fn ui_snapshot_to_json(s: &ClientUiSnapshot) -> serde_json::Value {
         "sign_edit": sign,
         "book": book,
         "command_block": cb,
+        "gamemode_switcher_selected": s.gamemode_switcher_selected,
     })
 }
 
@@ -640,6 +651,7 @@ fn ui_snapshot_from_json(v: &serde_json::Value) -> Option<ClientUiSnapshot> {
         in_bed_chat: v["in_bed_chat"].as_bool().unwrap_or(false),
         carried: ui_decode_item(&v["carried"]),
         craft_grid: ui_decode_items(&v["craft_grid"]),
+        craft_result: ui_decode_item(&v["craft_result"]),
         craft_size: v["craft_size"].as_u64().unwrap_or(2) as usize,
         craft_table: ui_decode_pos3(&v["craft_table"]),
         container: ui_decode_pos3(&v["container"]),
@@ -653,6 +665,7 @@ fn ui_snapshot_from_json(v: &serde_json::Value) -> Option<ClientUiSnapshot> {
         sign_edit,
         book,
         command_block,
+        gamemode_switcher_selected: v["gamemode_switcher_selected"].as_i64().map(|x| x as i32),
     })
 }
 
@@ -816,6 +829,9 @@ fn reopen_guest_container_on_server(
                 item: cursor,
             }));
         }
+        if ui.container.is_some() {
+            host.hub.sync_containers(&srv.world);
+        }
     }
     guest_mode
 }
@@ -845,6 +861,9 @@ pub fn apply_client_ui_exact(
     }
     if ui.screen != "command_block" {
         game.rreturn_restore_command_block_ui(None);
+    }
+    if ui.screen != "game_mode_switcher" {
+        game.gamemode_switcher = None;
     }
 
     match ui.screen.as_str() {
@@ -887,6 +906,7 @@ pub fn apply_client_ui_exact(
                     || ui.container.is_some()
                     || ui.ender_open.is_some()
                     || ui.craft_table.is_some()
+                    || ui.craft_size >= 3
                     || ui.mount_menu.is_some())
             {
                 r.rreturn_clear_remote_menu();
@@ -920,19 +940,34 @@ pub fn apply_client_ui_exact(
                 game.ender_open = None;
                 game.craft_table = None;
                 game.rreturn_apply_mount_client_ui(Some(&mm_apply));
-            } else if ui.container.is_some() || ui.ender_open.is_some() || ui.craft_table.is_some()
+            } else if ui.container.is_some()
+                || ui.ender_open.is_some()
+                || ui.craft_table.is_some()
+                || ui.craft_size >= 3
             {
                 game.station = None;
                 game.rreturn_apply_mount_client_ui(None);
-                if ui.container.is_some() || game.container.is_none() || is_scrub_preview {
-                    game.container = ui.container.map(|p| (p[0], p[1], p[2]));
+                if ui.container.is_some() || ui.ender_open.is_some() {
+                    if ui.container.is_some() || game.container.is_none() || is_scrub_preview {
+                        game.container = ui.container.map(|p| (p[0], p[1], p[2]));
+                    }
+                    if let Some((p, n)) = ui.open_container_slots {
+                        game.open_container_slots = Some(((p[0], p[1], p[2]), n));
+                    }
+                    game.ender_open = ui.ender_open.map(|p| (p[0], p[1], p[2]));
+                    game.craft_table = None;
+                    game.craft_size = ui.craft_size.max(2);
+                } else {
+                    game.container = None;
+                    game.open_container_slots = None;
+                    game.ender_open = None;
+                    game.craft_table = if game.remote.is_none() || is_scrub_preview {
+                        ui.craft_table
+                    } else {
+                        None
+                    };
+                    game.craft_size = ui.craft_size.max(3);
                 }
-                if let Some((p, n)) = ui.open_container_slots {
-                    game.open_container_slots = Some(((p[0], p[1], p[2]), n));
-                }
-                game.ender_open = ui.ender_open.map(|p| (p[0], p[1], p[2]));
-                game.craft_table = ui.craft_table;
-                game.craft_size = ui.craft_size.max(2);
             } else {
                 close_client_container_local(game);
                 game.station = None;
@@ -1001,6 +1036,20 @@ pub fn apply_client_ui_exact(
                 game.capture(true);
             }
         }
+        "game_mode_switcher" => {
+            close_client_container_local(game);
+            let cur_mode = mode_from_id(game.mode_id());
+            let selected_mode = ui.gamemode_switcher_selected.map(mode_from_id);
+            let mut switcher = GameModeSwitcher::new(cur_mode, game.previous_mode);
+            if let Some(sel) = selected_mode {
+                switcher.selected = sel;
+            }
+            game.gamemode_switcher = Some(switcher);
+            game.set_screen(Screen::GameModeSwitcher);
+            if !is_scrub_preview {
+                game.capture(false);
+            }
+        }
         _ => {
             close_client_container_local(game);
             game.set_screen(Screen::Playing);
@@ -1012,13 +1061,19 @@ pub fn apply_client_ui_exact(
 
     if restore_items {
         game.carried = ui.carried.clone();
-        if ui.craft_table.is_some() || ui.station.is_none() {
+        if ui.craft_table.is_some() || ui.craft_size >= 3 || ui.station.is_none() {
             let need = ui.craft_grid.len().max(game.craft_size * game.craft_size);
             if game.craft_grid.len() < need {
                 game.craft_grid.resize(need, None);
             }
-            for (dst, src) in game.craft_grid.iter_mut().zip(ui.craft_grid.iter()) {
-                *dst = src.clone();
+            for (i, slot) in game.craft_grid.iter_mut().enumerate() {
+                *slot = ui.craft_grid.get(i).cloned().flatten();
+            }
+            if ui.screen == "inventory"
+                && (is_scrub_preview
+                    || (game.rreturn_craft_result().is_none() && ui.craft_result.is_some()))
+            {
+                game.rreturn_set_craft_result(ui.craft_result.clone());
             }
         }
     }
@@ -1104,9 +1159,43 @@ pub fn ui_state_json(game: &Game<'_>) -> serde_json::Value {
         "carried_count": s.carried.as_ref().map(|st| st.count).unwrap_or(0),
         "craft_size": s.craft_size,
         "craft_grid_items": s.craft_grid.iter().map(|it| it.as_ref().map(|st| serde_json::json!([st.item.to_string(), st.count]))).collect::<Vec<_>>(),
+        "craft_result": s.craft_result.as_ref().map(|st| serde_json::json!([st.item.to_string(), st.count])),
         "craft_table": s.craft_table,
         "container": s.container,
+        "container_be": game.container.and_then(|pos| game.world.block_entities.get(&pos)).map(|be| match be {
+            BlockEntity::Furnace(f) => serde_json::json!({
+                "kind": "furnace",
+                "lit_remaining": f.lit_remaining,
+                "lit_total": f.lit_total,
+                "cooking_timer": f.cooking_timer,
+                "cooking_total": f.cooking_total,
+                "items": f.items.iter().map(|it| it.as_ref().map(|st| serde_json::json!([st.item.to_string(), st.count]))).collect::<Vec<_>>(),
+            }),
+            BlockEntity::Brewing(b) => serde_json::json!({
+                "kind": "brewing",
+                "brew_time": b.brew_time,
+                "total_brew_time": b.total_brew_time,
+                "fuel": b.fuel,
+                "total_fuel": b.total_fuel,
+            }),
+            BlockEntity::Crafter(c) => serde_json::json!({
+                "kind": "crafter",
+                "disabled": c.disabled,
+                "triggered": c.triggered,
+                "crafting_ticks": c.crafting_ticks,
+            }),
+            BlockEntity::Chest(items) => serde_json::json!({
+                "kind": "chest",
+                "count": items.iter().filter(|x| x.is_some()).count(),
+            }),
+            _ => serde_json::json!({ "kind": "other" }),
+        }),
         "ender_open": s.ender_open,
+        "gamemode_switcher_selected": s.gamemode_switcher_selected,
+        "client_game_mode": game.mode_id(),
+        "creative": game.creative,
+        "xp_level": game.experience.level,
+        "xp_progress": game.experience.progress,
         "station_kind": s.station.as_ref().map(|st| st.kind.clone()),
         "anvil_name": s.station.as_ref().map(|st| st.anvil_name.clone()),
         "station_inputs": s.station.as_ref().map(|st| st.inputs.iter().map(|it| it.as_ref().map(|i| i.item.to_string())).collect::<Vec<_>>()),

@@ -2,6 +2,7 @@ use super::super::{
     Dim, ExperienceOrb, FallingBlock, Game, ItemEntity, Mob,
     commands::OtherEntity,
     dragon::Crystal,
+    game_mode::mode_from_id,
 };
 use super::policy::RollbackPolicy;
 use super::restore::apply_timeline_snapshot_on_server;
@@ -24,9 +25,10 @@ use horizon_client::{
     boss_overlay::BossOverlay,
     chunk::Chunk,
     containers::BlockEntity,
-    entities::{ArmorStand, Cushion, ItemFrame, Painting},
+    entities::{ArmorStand, Cushion, Experience, ItemFrame, Painting},
     fast_hash::FxHashMap,
     items::ItemStack,
+    lan::abilities::PlayerAbilities,
     world::Weather,
     worldborder::WorldBorder,
 };
@@ -91,6 +93,10 @@ pub struct AnchorClientState {
     pub ender_items: Vec<Option<ItemStack>>,
     pub ui: ClientUiSnapshot,
     pub open_container_bes: Vec<((i32, i32, i32), BlockEntity)>,
+    pub game_mode: i32,
+    pub previous_game_mode: Option<i32>,
+    pub experience: Experience,
+    pub acting_abilities: Option<PlayerAbilities>,
 }
 
 thread_local! {
@@ -210,6 +216,10 @@ fn capture_anchor_client_state(game: &mut Game<'_>) -> AnchorClientState {
         } else {
             Vec::new()
         },
+        game_mode: game.mode_id(),
+        previous_game_mode: game.previous_mode.map(|m| m.id()),
+        experience: game.experience,
+        acting_abilities: game.acting_abilities,
     }
 }
 
@@ -328,6 +338,12 @@ fn restore_anchor_client_state(game: &mut Game<'_>, anchor: AnchorClientState) {
     };
     game.particles.tick(&level);
     game.particles.sounds.clear();
+    if anchor.game_mode != game.mode_id() {
+        game.set_mode_id(anchor.game_mode);
+    }
+    game.previous_mode = anchor.previous_game_mode.map(mode_from_id);
+    game.acting_abilities = anchor.acting_abilities;
+    game.experience = anchor.experience;
     game.player = anchor.player;
     game.yaw = anchor.yaw;
     game.pitch = anchor.pitch;

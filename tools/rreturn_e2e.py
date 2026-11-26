@@ -61,6 +61,10 @@ from tools.tests.test_ui_rollback_scrub import (
     test_112_scrub_blocks_chat_and_hud_controls,
     test_113_checkpoint_inside_creative_chat_and_containers,
     test_114_text_focus_ctrl_u_and_reversible_ui_scrub,
+    test_119_crafting_table_scrub_and_post_rollback_interaction,
+    test_120_scrub_furnace_cooking_progress_client_sync,
+    test_121_scrub_creative_survival_hud_mode_and_xp_transitions,
+    test_122_scrub_f3_f4_gamemode_switcher_display,
 )
 from tools.tests.test_portals import (
     test_24_nether_portal_cold_chunk,
@@ -316,6 +320,10 @@ def build_test_catalog():
         (116, "Test 116: Death Rollback Toggle On Off", "death", test_116_death_rollback_toggle),
         (117, "Test 117: Post-Rollback Teleport Movement Sync", "investigation", test_117_post_rollback_teleport_movement_sync),
         (118, "Test 118: Mods Global vs World K Settings Menu Isolation", "world_settings", test_118_mods_global_vs_world_settings),
+        (119, "Test 119: Crafting Table Scrub and Post-Rollback Interaction", "scrubbing", test_119_crafting_table_scrub_and_post_rollback_interaction),
+        (120, "Test 120: Scrub Furnace Cooking Progress Client Sync", "scrubbing", test_120_scrub_furnace_cooking_progress_client_sync),
+        (121, "Test 121: Scrub Creative Survival HUD Mode and XP Transitions", "scrubbing", test_121_scrub_creative_survival_hud_mode_and_xp_transitions),
+        (122, "Test 122: Scrub F3+F4 GameModeSwitcher Display", "scrubbing", test_122_scrub_f3_f4_gamemode_switcher_display),
     ]
 
 

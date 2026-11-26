@@ -196,6 +196,7 @@ pub fn apply_client_level_rollback(game: &mut Game<'_>, slot: &str) {
             let elapsed_ms = (t_start.elapsed().as_nanos() as f64) / 1_000_000.0;
 
             sync_client_epoch();
+            game.mob_index = Default::default();
 
             let mut report = format!(
                 "[RReturn][Client-Spark] === CLIENT ROLLBACK [{slot}]: {elapsed_ms:.2} ms ===\n\
@@ -428,6 +429,7 @@ pub fn apply_client_level_rollback(game: &mut Game<'_>, slot: &str) {
     let elapsed_ms = (t_start.elapsed().as_nanos() as f64) / 1_000_000.0;
 
     sync_client_epoch();
+    game.mob_index = Default::default();
 
     let mut report = format!(
         "[RReturn][Client-Spark] === CLIENT ROLLBACK [{slot}]: {elapsed_ms:.2} ms ===\n\

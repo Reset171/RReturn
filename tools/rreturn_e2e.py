@@ -165,6 +165,8 @@ from tools.tests.test_scrubbing_advanced import (
     test_109_scrub_commit_no_sprint_effect,
     test_110_scrub_commit_no_sound_channel_leak,
     test_123_scrub_mass_tnt_disk_persistence_on_reopen,
+    test_128_scrub_live_tnt_preview_multi_chunk_block_restoration,
+    test_129_scrub_mob_species_villager_tp_and_dead_resurrection,
 )
 
 HEAVY_WORLD_GROUPS = {"chunks", "dimensions", "portals"}
@@ -334,6 +336,8 @@ def build_test_catalog():
         (125, "Test 125: Chat History Rollback and Scrub", "ui_state", test_125_chat_history_rollback_and_scrub),
         (126, "Test 126: Sign Editor Wheel and Scrub HUD Drag Lock", "scrubbing", test_126_sign_edit_wheel_and_scrub_hud_drag_lock),
         (127, "Test 127: UI Polish Boss Default Players Heads and Modes", "world_settings", test_127_ui_polish_boss_default_players_heads_and_modes),
+        (128, "Test 128: Scrub Live TNT Multi-Chunk Preview Restoration", "scrubbing", test_128_scrub_live_tnt_preview_multi_chunk_block_restoration),
+        (129, "Test 129: Scrub Mob Species Villager TP and Dead Resurrection", "scrubbing", test_129_scrub_mob_species_villager_tp_and_dead_resurrection),
     ]
 
 

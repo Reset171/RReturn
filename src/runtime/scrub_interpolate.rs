@@ -2,7 +2,9 @@ use super::super::{game_mode::mode_from_id, Game};
 use super::rrtl::{MobPoseRecord, ParticleTickState};
 use super::scrub::ensure_scrub_pointer_free;
 use super::scrub_audio::play_scrub_sounds;
-use super::scrub_timeline::{with_scrub_ring, EntityPoseRecord};
+use super::scrub_timeline::{
+    EntityPoseRecord, sync_mob_appearance_from_template, with_scrub_ring,
+};
 use super::types::*;
 use super::ui_snapshot::*;
 use horizon_client::{
@@ -30,6 +32,7 @@ pub fn reset_scrub_ui_preview_cache() {
 
 #[derive(Clone, Copy, Debug)]
 pub struct InterpolatedMobPose {
+    pub template_idx: u32,
     pub pos: [f64; 3],
     pub yaw: f32,
     pub body_yaw: f32,
@@ -50,9 +53,48 @@ pub struct InterpolatedMobPose {
     pub villager_level: i32,
     pub variant: u8,
     pub variant2: u8,
+    pub variant3: u8,
     pub age: i32,
     pub sitting: bool,
     pub sitting_pose: bool,
+    pub charged: bool,
+    pub invisible: bool,
+    pub glowing: bool,
+    pub on_fire: bool,
+}
+
+fn interpolated_pose_from_record(r: &MobPoseRecord) -> InterpolatedMobPose {
+    InterpolatedMobPose {
+        template_idx: r.template_idx,
+        pos: r.pos,
+        yaw: r.yaw,
+        body_yaw: r.body_yaw,
+        head_yaw: r.head_yaw,
+        head_pitch: r.head_pitch,
+        limb_position: r.limb_position,
+        limb_speed: r.limb_speed,
+        attack_anim: r.attack_anim,
+        swell: r.swell,
+        health: r.health,
+        alive: r.alive,
+        hurt_time: r.hurt_time,
+        death_time: r.death_time,
+        sheared: r.sheared,
+        color: r.color,
+        size: r.size,
+        profession: r.profession,
+        villager_level: r.villager_level,
+        variant: r.variant,
+        variant2: r.variant2,
+        variant3: r.variant3,
+        age: r.age,
+        sitting: r.sitting,
+        sitting_pose: r.sitting_pose,
+        charged: r.charged,
+        invisible: r.invisible,
+        glowing: r.glowing,
+        on_fire: r.on_fire,
+    }
 }
 
 #[inline]
@@ -90,6 +132,11 @@ pub fn interpolate_mob_pose(
     let a64 = f64::from(alpha);
     let pick_right = alpha > 0.5;
     InterpolatedMobPose {
+        template_idx: if pick_right {
+            right.template_idx
+        } else {
+            left.template_idx
+        },
         pos: [
             lerp_f64(left.pos[0], right.pos[0], a64),
             lerp_f64(left.pos[1], right.pos[1], a64),
@@ -126,9 +173,18 @@ pub fn interpolate_mob_pose(
         villager_level: if pick_right { right.villager_level } else { left.villager_level },
         variant: if pick_right { right.variant } else { left.variant },
         variant2: if pick_right { right.variant2 } else { left.variant2 },
+        variant3: if pick_right { right.variant3 } else { left.variant3 },
         age: if pick_right { right.age } else { left.age },
         sitting: if pick_right { right.sitting } else { left.sitting },
         sitting_pose: if pick_right { right.sitting_pose } else { left.sitting_pose },
+        charged: if pick_right { right.charged } else { left.charged },
+        invisible: if pick_right {
+            right.invisible
+        } else {
+            left.invisible
+        },
+        glowing: if pick_right { right.glowing } else { left.glowing },
+        on_fire: if pick_right { right.on_fire } else { left.on_fire },
     }
 }
 
@@ -498,86 +554,68 @@ pub fn apply_interpolated_poses_to_game(game: &mut Game<'_>, target_time: f64) {
         if let Some(right_mob) = right_mobs_by_id.get(&left_mob.id) {
             interpolated_mobs.insert(left_mob.id, interpolate_mob_pose(left_mob, right_mob, alpha));
         } else if alpha <= 0.5 {
-            interpolated_mobs.insert(
-                left_mob.id,
-                InterpolatedMobPose {
-                    pos: left_mob.pos,
-                    yaw: left_mob.yaw,
-                    body_yaw: left_mob.body_yaw,
-                    head_yaw: left_mob.head_yaw,
-                    head_pitch: left_mob.head_pitch,
-                    limb_position: left_mob.limb_position,
-                    limb_speed: left_mob.limb_speed,
-                    attack_anim: left_mob.attack_anim,
-                    swell: left_mob.swell,
-                    health: left_mob.health,
-                    alive: left_mob.alive,
-                    hurt_time: left_mob.hurt_time,
-                    death_time: left_mob.death_time,
-                    sheared: left_mob.sheared,
-                    color: left_mob.color,
-                    size: left_mob.size,
-                    profession: left_mob.profession,
-                    villager_level: left_mob.villager_level,
-                    variant: left_mob.variant,
-                    variant2: left_mob.variant2,
-                    age: left_mob.age,
-                    sitting: left_mob.sitting,
-                    sitting_pose: left_mob.sitting_pose,
-                },
-            );
+            interpolated_mobs.insert(left_mob.id, interpolated_pose_from_record(left_mob));
         }
     }
     if alpha > 0.5 {
         for rm in &right_mobs {
-            interpolated_mobs.entry(rm.id).or_insert(InterpolatedMobPose {
-                pos: rm.pos,
-                yaw: rm.yaw,
-                body_yaw: rm.body_yaw,
-                head_yaw: rm.head_yaw,
-                head_pitch: rm.head_pitch,
-                limb_position: rm.limb_position,
-                limb_speed: rm.limb_speed,
-                attack_anim: rm.attack_anim,
-                swell: rm.swell,
-                health: rm.health,
-                alive: rm.alive,
-                hurt_time: rm.hurt_time,
-                death_time: rm.death_time,
-                sheared: rm.sheared,
-                color: rm.color,
-                size: rm.size,
-                profession: rm.profession,
-                villager_level: rm.villager_level,
-                variant: rm.variant,
-                variant2: rm.variant2,
-                age: rm.age,
-                sitting: rm.sitting,
-                sitting_pose: rm.sitting_pose,
-            });
+            interpolated_mobs
+                .entry(rm.id)
+                .or_insert_with(|| interpolated_pose_from_record(rm));
         }
     }
 
-    let mut present_mobs = HashSet::new();
-    game.mobs.retain_mut(|live_mob| {
-        if let Some(pose) = interpolated_mobs.get(&live_mob.id) {
+    with_scrub_ring(|ring| {
+        for (id, pose) in interpolated_mobs.iter_mut() {
+            if let Some(lm) = left_mobs.iter().find(|m| m.id == *id)
+                && let Some(rm) = right_mobs_by_id.get(id)
+                && lm.template_idx != rm.template_idx
+                && let (Some(lt), Some(rt)) = (
+                    ring.entity_pool.mob_templates.get(lm.template_idx as usize),
+                    ring.entity_pool.mob_templates.get(rm.template_idx as usize),
+                )
+                && !Arc::ptr_eq(&lt.kind, &rt.kind)
+                && lt.kind.id != rt.kind.id
+            {
+                *pose = interpolated_pose_from_record(if alpha > 0.5 { rm } else { lm });
+            }
+        }
+
+        let mut mobs_structure_changed = false;
+        let mut present_mobs = HashSet::new();
+        game.mobs.retain_mut(|live_mob| {
+            let Some(pose) = interpolated_mobs.get(&live_mob.id) else {
+                mobs_structure_changed = true;
+                return false;
+            };
+            let Some(tpl) = ring.entity_pool.mob_templates.get(pose.template_idx as usize) else {
+                mobs_structure_changed = true;
+                return false;
+            };
+            if live_mob.removed
+                || (!Arc::ptr_eq(&live_mob.kind, &tpl.kind) && live_mob.kind.id != tpl.kind.id)
+            {
+                mobs_structure_changed = true;
+                return false;
+            }
             present_mobs.insert(live_mob.id);
+            sync_mob_appearance_from_template(live_mob, tpl);
             apply_mob_pose(live_mob, pose);
             true
-        } else {
-            false
-        }
-    });
-    with_scrub_ring(|ring| {
+        });
         for (&id, pose) in &interpolated_mobs {
             if !present_mobs.contains(&id)
-                && let Some(template) = ring.entity_pool.mobs.get(&id)
+                && let Some(tpl) = ring.entity_pool.mob_templates.get(pose.template_idx as usize)
             {
-                let mut resurrected = template.clone();
+                let mut resurrected = tpl.clone();
                 resurrected.removed = false;
                 apply_mob_pose(&mut resurrected, pose);
                 game.mobs.push(resurrected);
+                mobs_structure_changed = true;
             }
+        }
+        if mobs_structure_changed {
+            game.mob_index = Default::default();
         }
     });
 
@@ -1073,20 +1111,40 @@ fn apply_mob_pose(live_mob: &mut super::super::Mob, pose: &InterpolatedMobPose) 
     live_mob.anim.attack_anim = pose.attack_anim;
     live_mob.anim.attack_anim_o = pose.attack_anim;
 
-    live_mob.health = pose.health;
+    live_mob.removed = false;
+    live_mob.health = if pose.alive {
+        pose.health.max(0.01)
+    } else {
+        0.0
+    };
     live_mob.hurt_time = pose.hurt_time;
-    live_mob.death_time = pose.death_time;
+    live_mob.death_time = if pose.alive { 0 } else { pose.death_time };
+    live_mob.invisible = pose.invisible;
+    live_mob.glowing = pose.glowing;
+    live_mob.fire_ticks = if pose.on_fire {
+        live_mob.fire_ticks.max(20)
+    } else {
+        0
+    };
     live_mob.extra.sheared = pose.sheared;
     live_mob.extra.color = pose.color;
     live_mob.extra.size = pose.size;
-    live_mob.extra.profession =
-        horizon_client::mobs::villager::ProfessionState::from_index(pose.profession);
+    if !matches!(
+        live_mob.extra.profession,
+        horizon_client::mobs::villager::ProfessionState::Registered { .. }
+            | horizon_client::mobs::villager::ProfessionState::Unresolved(_)
+    ) {
+        live_mob.extra.profession =
+            horizon_client::mobs::villager::ProfessionState::from_index(pose.profession);
+    }
     live_mob.extra.villager_level = pose.villager_level;
     live_mob.extra.variant = pose.variant;
     live_mob.extra.variant2 = pose.variant2;
+    live_mob.extra.variant3 = pose.variant3;
     live_mob.extra.age = pose.age;
     live_mob.extra.sitting = pose.sitting;
     live_mob.extra.sitting_pose = pose.sitting_pose;
+    live_mob.extra.charged = pose.charged;
 }
 
 pub fn interpolate_lossless_particles(
@@ -1272,22 +1330,42 @@ pub fn apply_block_rewind_to_game(game: &mut Game<'_>, from_tick: i64, to_tick: 
         }
     });
 
+    let mut any_world_change = false;
     if !section_swaps.is_empty() {
-        let mut any_swapped = false;
-        for ((cx, cz, s_idx), target_sec) in &section_swaps {
-            if let Some(live_chunk) = game.world.chunks.get(&(*cx, *cz)).cloned() {
+        let mut by_chunk: FxHashMap<(i32, i32), Vec<(usize, Arc<horizon_client::chunk::Section>)>> =
+            FxHashMap::default();
+        for ((cx, cz, s_idx), target_sec) in section_swaps {
+            by_chunk.entry((cx, cz)).or_default().push((s_idx, target_sec));
+        }
+        for ((cx, cz), secs) in by_chunk {
+            if let Some(live_chunk) = game.world.chunks.get(&(cx, cz)).cloned() {
                 let mut chunk = (*live_chunk).clone();
-                if let Some(sec_slot) = chunk.sections.get_mut(*s_idx) {
-                    if !Arc::ptr_eq(sec_slot, target_sec) {
-                        *sec_slot = Arc::clone(target_sec);
-                        game.world.chunks.insert((*cx, *cz), Arc::new(chunk));
-                        mark_section_dirty_3x3(game, *cx, *s_idx, *cz);
-                        any_swapped = true;
+                let mut chunk_changed = false;
+                for (s_idx, target_sec) in secs {
+                    if let Some(cur_sec) = chunk.sections.get(s_idx)
+                        && !Arc::ptr_eq(cur_sec, &target_sec)
+                    {
+                        let mut values = [0u32; 4096];
+                        target_sec.unpack(&mut values);
+                        chunk.replace_blocks(s_idx, &values);
+                        chunk.sections[s_idx] = target_sec;
+                        mark_section_dirty_3x3(game, cx, s_idx, cz);
+                        chunk_changed = true;
                     }
+                }
+                if chunk_changed {
+                    game.world.chunks.insert((cx, cz), Arc::new(chunk));
+                    game.world.modified.insert((cx, cz));
+                    for dz in -1..=1 {
+                        for dx in -1..=1 {
+                            game.world.dirty_light.insert((cx + dx, cz + dz));
+                        }
+                    }
+                    any_world_change = true;
                 }
             }
         }
-        if any_swapped {
+        if any_world_change {
             game.world.revision = game.world.revision.wrapping_add(1);
         }
     }
@@ -1309,7 +1387,9 @@ pub fn apply_block_rewind_to_game(game: &mut Game<'_>, from_tick: i64, to_tick: 
                 }
             }
         }
-        let _ = game.world.set(x, y, z, BlockStateId(state_id));
+        if game.world.set(x, y, z, BlockStateId(state_id)).is_ok() {
+            any_world_change = true;
+        }
     }
 
     if !biome_swaps.is_empty() {
@@ -1321,9 +1401,25 @@ pub fn apply_block_rewind_to_game(game: &mut Game<'_>, from_tick: i64, to_tick: 
                 }
                 game.world.chunks.insert((cx, cz), Arc::new(chunk));
                 mark_section_dirty_3x3(game, cx, s_idx, cz);
+                any_world_change = true;
             }
         }
         game.world.revision = game.world.revision.wrapping_add(1);
+    }
+
+    if any_world_change {
+        let cam_block = game
+            .player
+            .as_ref()
+            .map(|p| {
+                [
+                    p.position.x.floor() as i32,
+                    p.position.y.floor() as i32,
+                    p.position.z.floor() as i32,
+                ]
+            })
+            .unwrap_or([0, 64, 0]);
+        game.world.mark_nearby_dirty_immediate(cam_block, 768.0, 256);
     }
 }
 

@@ -880,10 +880,15 @@ def test_110_scrub_commit_no_sound_channel_leak(h):
 
 
 def _query_gametime(h):
-    raw = str(h.command("time query gametime"))
-    m = re.search(r"(\d+)", raw)
-    assert m is not None, f"Failed to parse gametime from: {raw}"
-    return int(m.group(1))
+    st = _parse_res(h.rreturn("scrub status"))
+    if st.get("enabled") and int(st.get("server_max_tick", 0)) > 0:
+        return int(st["server_max_tick"])
+    res = h.command("time query gametime")
+    for line in res.get("chat", []):
+        m = re.search(r"(?:the time is|время|time)\D+(\d+)", str(line), re.I)
+        if m:
+            return int(m.group(1))
+    raise AssertionError(f"Failed to parse gametime from: {res} (scrub status={st})")
 
 
 def test_123_scrub_mass_tnt_disk_persistence_on_reopen(h):
@@ -994,6 +999,317 @@ def test_123_scrub_mass_tnt_disk_persistence_on_reopen(h):
             shutil.rmtree(world_dir, ignore_errors=True)
         if orig_world and orig_world != w_test:
             h.open_world(orig_world, seed=12345)
+
+
+def test_128_scrub_live_tnt_preview_multi_chunk_block_restoration(h):
+    """Live backward/forward scrubbing from a 11x11x11 TNT blast must restore all crater & TNT blocks on client preview even under SetTime jitter."""
+    _setup_scrub(h)
+    try:
+        h.command("gamemode creative")
+        h.command("fill -10 62 -10 10 64 10 minecraft:stone")
+        h.command("fill -10 65 -10 10 85 10 minecraft:air")
+        h.tp(0.5, 76.0, -8.5)
+        h.wait(8)
+
+        h.command("fill -5 65 -5 5 75 5 minecraft:tnt")
+        h.wait(12)
+        t_tnt_ready = _query_gametime(h)
+
+        ready_checks = [
+            ((-5, 64, -5), "minecraft:stone"),
+            ((-1, 64, -1), "minecraft:stone"),
+            ((0, 64, 0), "minecraft:stone"),
+            ((5, 64, 5), "minecraft:stone"),
+            ((-2, 63, -2), "minecraft:stone"),
+            ((2, 63, 2), "minecraft:stone"),
+            ((-5, 65, -5), "minecraft:tnt"),
+            ((0, 70, 0), "minecraft:tnt"),
+            ((5, 75, 5), "minecraft:tnt"),
+            ((-5, 65, 5), "minecraft:tnt"),
+            ((5, 65, -5), "minecraft:tnt"),
+        ]
+        for (bx, by, bz), want in ready_checks:
+            got = h.block(bx, by, bz).get("block", "")
+            assert want in got, f"Initial setup mismatch at {(bx, by, bz)}: expected {want}, got {got}"
+
+        # Ignite mass TNT cube and wait until explosion crater finishes
+        h.command("setblock 0 76 0 minecraft:redstone_block")
+        h.wait(90)
+        for _ in range(15):
+            if not h.has_entity("@e[type=minecraft:tnt]"):
+                break
+            h.wait(10)
+        assert not h.has_entity("@e[type=minecraft:tnt]"), "TNT did not finish detonating"
+        h.wait(8)
+
+        crater_points = [
+            (-5, 65, -5),
+            (0, 70, 0),
+            (5, 75, 5),
+            (-1, 64, -1),
+            (0, 64, 0),
+            (-2, 63, -2),
+        ]
+        for bx, by, bz in crater_points:
+            got = h.block(bx, by, bz).get("block", "")
+            assert "air" in got, f"Expected crater air at {(bx, by, bz)} before scrub, got {got}"
+
+        # Enter scrub and rewind both via wheel steps and direct seek WITHOUT committing yet
+        res_s = h.rreturn("scrub start")
+        assert "started" in str(res_s).lower(), f"Failed to start scrub: {res_s}"
+        st_scrub = _parse_res(h.rreturn("scrub status"))
+        anchor_tick = int(st_scrub.get("anchor_tick", 0))
+        delta_ready = t_tnt_ready - anchor_tick
+        assert delta_ready < -80, (
+            f"Unexpectedly small rewind span {delta_ready} (t_tnt_ready={t_tnt_ready}, status={st_scrub})"
+        )
+
+        # Step backward partly first, then seek precisely from current cursor to t_tnt_ready
+        h.rreturn("scrub step -30.0")
+        st_mid = _parse_res(h.rreturn("scrub status"))
+        curr_mid = float(st_mid.get("current_time", anchor_tick))
+        seek_rem = t_tnt_ready - round(curr_mid)
+        h.rreturn(f"scrub seek_ticks {seek_rem}")
+        h.wait(2)
+        st_at_ready = _parse_res(h.rreturn("scrub status"))
+
+        # Assert live client preview BEFORE commit restores EVERY sampled block across all 4 chunks
+        for (bx, by, bz), want in ready_checks:
+            got = h.block(bx, by, bz).get("block", "")
+            assert want in got, (
+                f"Live scrub preview missed block at {(bx, by, bz)} (t_tnt_ready={t_tnt_ready}, status={st_at_ready}): expected {want}, got {got}"
+            )
+        got_igniter = h.block(0, 76, 0).get("block", "")
+        assert "air" in got_igniter, f"Igniter redstone block remained in preview: {got_igniter}"
+
+        # Scrub forward back to crater and confirm live preview re-explodes cleanly
+        fwd_delta = anchor_tick - round(float(st_at_ready.get("current_time", t_tnt_ready)))
+        h.rreturn(f"scrub seek_ticks {fwd_delta}")
+        h.wait(2)
+        for bx, by, bz in crater_points:
+            got = h.block(bx, by, bz).get("block", "")
+            assert "air" in got, f"Forward scrub preview did not re-apply crater at {(bx, by, bz)}: got {got}"
+
+        # Scrub back to TNT cube again, verify preview, and commit
+        st_crater = _parse_res(h.rreturn("scrub status"))
+        back_delta2 = t_tnt_ready - round(float(st_crater.get("current_time", anchor_tick)))
+        h.rreturn(f"scrub seek_ticks {back_delta2}")
+        h.wait(1)
+        for (bx, by, bz), want in ready_checks:
+            got = h.block(bx, by, bz).get("block", "")
+            assert want in got, f"Second backward preview mismatch at {(bx, by, bz)}: expected {want}, got {got}"
+
+        res_c = h.rreturn("scrub commit")
+        assert "committed" in str(res_c).lower(), f"Failed to commit scrub: {res_c}"
+        h.wait(6)
+
+        for (bx, by, bz), want in ready_checks:
+            got = h.block(bx, by, bz).get("block", "")
+            assert want in got, f"Post-commit block mismatch at {(bx, by, bz)}: expected {want}, got {got}"
+    finally:
+        try:
+            h.rreturn("scrub cancel")
+        except Exception:
+            pass
+        h.command("kill @e[type=!player]")
+        h.command("fill -10 65 -10 10 85 10 minecraft:air")
+        h.command("fill -10 64 -10 10 64 10 minecraft:stone")
+        h.rreturn("scrub off")
+        h.wait(2)
+
+
+def test_129_scrub_mob_species_villager_tp_and_dead_resurrection(h):
+    """Scrubbing back before TP -> forward to villagers, dead mob resurrection, and post-commit spawns must preserve exact client mob species & visuals."""
+    _setup_scrub(h)
+    try:
+        h.command("gamerule spawn_mobs false")
+        h.command("kill @e[type=!player]")
+        h.wait(4)
+
+        def _client_mobs(radius=24):
+            return [e for e in h.entities(radius).get("entities", []) if e.get("kind") == "mob"]
+
+        # 1. Pre-populate distinct villagers in a far unloaded chunk (240, 240)
+        h.command("forceload remove all")
+        h.tp(240.5, 65.0, 236.5)
+        h.command("fill 234 64 234 246 64 246 minecraft:stone")
+        h.command("fill 234 65 234 246 72 246 minecraft:air")
+        h.command(
+            'summon minecraft:villager 238.5 65.0 240.5 {NoAI:1b,Tags:["t129_v1"],VillagerData:{type:"minecraft:savanna",profession:"minecraft:librarian",level:3}}'
+        )
+        h.command(
+            'summon minecraft:villager 240.5 65.0 240.5 {NoAI:1b,Tags:["t129_v2"],VillagerData:{type:"minecraft:desert",profession:"minecraft:armorer",level:2}}'
+        )
+        h.command(
+            'summon minecraft:villager 242.5 65.0 240.5 {NoAI:1b,Age:-24000,Tags:["t129_v3"],VillagerData:{type:"minecraft:snow",profession:"minecraft:none",level:1}}'
+        )
+        h.wait(6)
+
+        # Return to origin, wait for far villager chunks to unload on client, summon sheep & pig
+        h.command("fill -6 64 -6 8 64 8 minecraft:stone")
+        h.command("fill -6 65 -6 8 72 8 minecraft:air")
+        h.tp(0.5, 65.0, 0.5)
+        h.wait(20)
+        h.command('summon minecraft:sheep 1.5 65.0 2.5 {NoAI:1b,Tags:["t129_origin"]}')
+        h.command('summon minecraft:sheep 2.5 65.0 2.5 {NoAI:1b,Tags:["t129_origin"]}')
+        h.command('summon minecraft:pig 3.5 65.0 2.5 {NoAI:1b,Tags:["t129_origin"]}')
+        h.wait(8)
+
+        pre_mobs = _client_mobs(16)
+        pre_types = [e.get("type") for e in pre_mobs]
+        assert pre_types.count("minecraft:sheep") == 2 and pre_types.count("minecraft:pig") == 1, (
+            f"Expected initial sheep+pig near origin, got {pre_mobs}"
+        )
+        t_before_tp = _query_gametime(h)
+
+        # Teleport to villagers (streaming chunks/entities live while scrub records)
+        h.tp(240.5, 65.0, 236.5)
+        h.wait(12)
+        t_at_villagers = _query_gametime(h)
+
+        vil_mobs = [e for e in _client_mobs(24) if e.get("type") == "minecraft:villager"]
+        assert len(vil_mobs) == 3, f"Expected 3 client villagers after TP, got {_client_mobs(24)}"
+
+        def _assert_villager_visuals(mobs_list, label):
+            vils = [e for e in mobs_list if e.get("type") == "minecraft:villager"]
+            non_vils_other = [
+                e.get("type")
+                for e in mobs_list
+                if e.get("type") not in ("minecraft:villager", "minecraft:cow")
+            ]
+            assert len(vils) == 3 and not non_vils_other, (
+                f"{label}: expected 3 villagers without swapped species, got {mobs_list}"
+            )
+            details = [
+                (
+                    v.get("villager", {}).get("type"),
+                    v.get("villager", {}).get("profession"),
+                    v.get("villager", {}).get("level"),
+                    bool(v.get("baby", False)),
+                )
+                for v in vils
+            ]
+            assert ("savanna", "librarian", 3, False) in details, (
+                f"{label}: missing savanna librarian lvl3 in {details}"
+            )
+            assert ("desert", "armorer", 2, False) in details, (
+                f"{label}: missing desert armorer lvl2 in {details}"
+            )
+            assert any(t == "snow" and b is True for (t, _, _, b) in details), (
+                f"{label}: missing snow baby villager in {details}"
+            )
+
+        _assert_villager_visuals(_client_mobs(24), "Baseline after TP")
+
+        # 2. Scrub back BEFORE TP, verify sheep+pig appear, then scrub FORWARD to villagers
+        res_s = h.rreturn("scrub start")
+        assert "started" in str(res_s).lower(), f"Failed to start scrub: {res_s}"
+        anchor_tick = int(_parse_res(h.rreturn("scrub status")).get("anchor_tick", 0))
+        d_before_tp = t_before_tp - anchor_tick
+        d_at_vil = t_at_villagers - anchor_tick
+        assert d_before_tp < d_at_vil <= 0, f"Invalid deltas: {d_before_tp}, {d_at_vil}"
+
+        h.rreturn(f"scrub seek_ticks {d_before_tp}")
+        h.wait(1)
+        back_mobs = _client_mobs(16)
+        back_types = [e.get("type") for e in back_mobs]
+        assert back_types.count("minecraft:sheep") == 2 and back_types.count("minecraft:pig") == 1, (
+            f"Scrub back before TP lost sheep/pig: {back_mobs}"
+        )
+        assert back_types.count("minecraft:villager") == 0, (
+            f"Scrub back before TP leaked villagers: {back_mobs}"
+        )
+
+        # Scrub forward to villagers and verify ZERO species/profession/variant swap on client
+        h.rreturn(f"scrub seek_ticks {t_at_villagers - t_before_tp}")
+        h.wait(1)
+        _assert_villager_visuals(_client_mobs(24), "Live forward scrub to villagers")
+
+        res_can = h.rreturn("scrub cancel")
+        assert "cancel" in str(res_can).lower(), f"Failed to cancel scrub: {res_can}"
+        h.wait(4)
+
+        # 3. Dead mob resurrection during scrub (kill -> wait past death_time=20 -> scrub back)
+        h.command('summon minecraft:cow 239.5 65.0 238.5 {NoAI:1b,Tags:["t129_cow"]}')
+        h.wait(6)
+        t_cow_alive = _query_gametime(h)
+        assert any(e.get("type") == "minecraft:cow" for e in _client_mobs(24)), (
+            f"Cow not visible before kill: {_client_mobs(24)}"
+        )
+
+        h.command("kill @e[tag=t129_cow]")
+        h.wait(28)
+        assert not any(e.get("type") == "minecraft:cow" for e in _client_mobs(24)), (
+            f"Killed cow still on client after 28t: {_client_mobs(24)}"
+        )
+
+        res_s2 = h.rreturn("scrub start")
+        assert "started" in str(res_s2).lower(), f"Failed to start scrub 2: {res_s2}"
+        anchor2 = int(_parse_res(h.rreturn("scrub status")).get("anchor_tick", 0))
+        h.rreturn(f"scrub seek_ticks {t_cow_alive - anchor2}")
+        h.wait(1)
+
+        resurrected_mobs = _client_mobs(24)
+        cows = [e for e in resurrected_mobs if e.get("type") == "minecraft:cow"]
+        assert len(cows) == 1 and float(cows[0].get("health", 0.0)) > 0.0, (
+            f"Resurrected cow broken on client preview: {resurrected_mobs}"
+        )
+        _assert_villager_visuals(resurrected_mobs, "Live scrub at cow resurrection")
+
+        # Commit while cow is alive & verify post-commit entity spawns cannot collide on ID
+        res_c2 = h.rreturn("scrub commit")
+        assert "committed" in str(res_c2).lower(), f"Failed to commit scrub 2: {res_c2}"
+        h.wait(6)
+        assert h.has_entity("@e[type=minecraft:cow,tag=t129_cow]"), "Committed cow missing on server"
+
+        h.command('summon minecraft:chicken 237.5 65.0 238.5 {NoAI:1b,Tags:["t129_post"]}')
+        h.command('summon minecraft:zombie 241.5 65.0 238.5 {NoAI:1b,Tags:["t129_post"]}')
+        h.wait(8)
+        t_post = _query_gametime(h)
+        post_types = [e.get("type") for e in _client_mobs(24)]
+        assert (
+            post_types.count("minecraft:chicken") == 1
+            and post_types.count("minecraft:zombie") == 1
+            and post_types.count("minecraft:cow") == 1
+            and post_types.count("minecraft:villager") == 3
+        ), f"Post-commit spawn/species collision detected: {_client_mobs(24)}"
+
+        # Scrub back before post-commit spawns and forward again to verify versioned templates hold
+        h.rreturn("scrub start")
+        anchor3 = int(_parse_res(h.rreturn("scrub status")).get("anchor_tick", 0))
+        h.rreturn(f"scrub seek_ticks {t_cow_alive - anchor3}")
+        h.wait(1)
+        mid3 = _client_mobs(24)
+        mid3_types = [e.get("type") for e in mid3]
+        assert (
+            mid3_types.count("minecraft:cow") == 1
+            and mid3_types.count("minecraft:chicken") == 0
+            and mid3_types.count("minecraft:zombie") == 0
+        ), f"Scrub back before post-commit spawn wrong: {mid3}"
+        _assert_villager_visuals(mid3, "Post-commit backward scrub")
+
+        h.rreturn(f"scrub seek_ticks {t_post - t_cow_alive}")
+        h.wait(1)
+        fwd3 = _client_mobs(24)
+        fwd3_types = [e.get("type") for e in fwd3]
+        assert (
+            fwd3_types.count("minecraft:chicken") == 1
+            and fwd3_types.count("minecraft:zombie") == 1
+            and fwd3_types.count("minecraft:cow") == 1
+            and fwd3_types.count("minecraft:villager") == 3
+        ), f"Scrub forward after commit swapped species: {fwd3}"
+    finally:
+        try:
+            h.rreturn("scrub cancel")
+        except Exception:
+            pass
+        h.command("kill @e[type=!player]")
+        h.command("fill 234 64 234 246 72 246 minecraft:air")
+        h.tp(0.5, 65.0, 0.5)
+        h.command("kill @e[type=!player]")
+        h.rreturn("scrub off")
+        h.wait(2)
+
 
 
 

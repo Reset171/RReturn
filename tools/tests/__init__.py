@@ -11,6 +11,7 @@ def setup_clean_env(h):
     h.rreturn("slot select default")
     h.rreturn("death on")
     h.rreturn("autosave off")
+    h.rreturn("scrub sensitivity 15")
     h.rreturn("scrub off")
 
     st = h.state()

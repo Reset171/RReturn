@@ -249,6 +249,7 @@ fn restore_anchor_client_state(game: &mut Game<'_>, anchor: AnchorClientState) {
     }
     game.world.moving_pistons = anchor.moving_pistons;
     game.mobs = anchor.mobs;
+    game.mob_index = Default::default();
     game.dropped = anchor.dropped;
     game.orbs = anchor.orbs;
     game.tnts = anchor.tnts;
@@ -859,12 +860,20 @@ pub fn commit_scrub(game: &mut Game<'_>) {
 
         with_scrub_ring_mut(|r| {
             r.frames.retain(|f| f.game_time <= final_tick);
+            r.unsealed_inline_frames = r
+                .frames
+                .iter()
+                .filter(|f| matches!(f.particles, ParticleFrameRef::Inline(_)))
+                .count();
             r.checkpoint_markers.retain(|&t| t <= final_tick);
             r.dim_markers.retain(|&(t, _)| t <= final_tick);
             r.damage_markers.retain(|&t| t <= final_tick);
+            r.carried_sounds.clear();
             r.reference_chunks = (&*game.world.chunks).clone();
             r.last_world_revision = game.world.revision;
+            r.last_chunks_membership_rev = game.world.chunks.membership_revision();
             r.last_dim = Some(game.dim);
+            r.last_rollback_epoch = get_rollback_epoch();
         });
         rrtl_truncate_client_after(final_tick);
         horizon_threads::release_free_memory();
@@ -892,6 +901,8 @@ pub fn commit_scrub(game: &mut Game<'_>) {
         with_scrub_ring_mut(|r| {
             r.reference_chunks = (&*game.world.chunks).clone();
             r.last_world_revision = game.world.revision;
+            r.last_chunks_membership_rev = game.world.chunks.membership_revision();
+            r.last_rollback_epoch = get_rollback_epoch();
         });
     }
     clear_sprint_on_commit(game);
@@ -938,6 +949,8 @@ pub fn cancel_scrub(game: &mut Game<'_>) {
     with_scrub_ring_mut(|r| {
         r.reference_chunks = (&*game.world.chunks).clone();
         r.last_world_revision = game.world.revision;
+        r.last_chunks_membership_rev = game.world.chunks.membership_revision();
+        r.last_rollback_epoch = get_rollback_epoch();
     });
 
     game.clock.set_frozen(was_frozen);

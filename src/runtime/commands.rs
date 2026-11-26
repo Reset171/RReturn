@@ -1191,7 +1191,21 @@ fn handle_scrub_subcommand(game: &mut Game<'_>, args: &[&str], requester: Option
                 _ => "[RReturn] Usage: /rreturn scrub policy <get|set|reset> [field] [value]".to_owned(),
             }
         }
-        _ => "[RReturn] Usage: /rreturn scrub [on|off|toggle|start|step <N>|commit|cancel|status|rewind <sec>|policy ...]".to_owned(),
+        "sensitivity" | "sens" => {
+            if let Some(val) = args.get(1).and_then(|s| s.parse::<i32>().ok()) {
+                let clamped = val.clamp(5, 40);
+                with_state_mut(|st| {
+                    st.scrub_wheel_sensitivity = clamped;
+                    sync_scrub_atomics_from_state(st);
+                });
+                save_current_settings(game);
+                format!("[RReturn] Scrub wheel sensitivity set to {}.", clamped)
+            } else {
+                let cur = with_state(|st| st.scrub_wheel_sensitivity);
+                format!("[RReturn] Scrub wheel sensitivity: {} (range: 5..40).", cur)
+            }
+        }
+        _ => "[RReturn] Usage: /rreturn scrub [on|off|toggle|start|step <N>|commit|cancel|status|rewind <sec>|sensitivity <5..40>|policy ...]".to_owned(),
     }
 }
 

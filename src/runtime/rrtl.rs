@@ -14,7 +14,7 @@ use std::{
 };
 
 pub const RRTL_MAGIC: [u8; 4] = *b"RRTL";
-pub const RRTL_VERSION: u16 = 1;
+pub const RRTL_VERSION: u16 = 2;
 pub const RRTL_HEADER_LEN: u64 = 64;
 pub const RRTL_SEGMENT_TICKS: usize = 100;
 pub const MAX_RRTL_SERVER_RAM_BYTES: usize = 96 * 1024 * 1024;
@@ -28,6 +28,7 @@ pub const RRTL_STREAM_CLIENT_MOBS: u8 = 7;
 #[derive(Clone, Copy, Debug)]
 pub struct MobPoseRecord {
     pub id: u32,
+    pub template_idx: u32,
     pub pos: [f64; 3],
     pub yaw: f32,
     pub body_yaw: f32,
@@ -48,9 +49,14 @@ pub struct MobPoseRecord {
     pub villager_level: i32,
     pub variant: u8,
     pub variant2: u8,
+    pub variant3: u8,
     pub age: i32,
     pub sitting: bool,
     pub sitting_pose: bool,
+    pub charged: bool,
+    pub invisible: bool,
+    pub glowing: bool,
+    pub on_fire: bool,
 }
 
 pub fn rrtl_crc32(data: &[u8]) -> u32 {
@@ -711,6 +717,13 @@ fn encode_client_mobs_soa_raw(frames: &[Vec<MobPoseRecord>]) -> Vec<u8> {
     c_i32!(|p: &MobPoseRecord| p.size);
     c_i32!(|p: &MobPoseRecord| p.villager_level);
     c_i32!(|p: &MobPoseRecord| p.age);
+    {
+        let mut prev = 0u32;
+        for p in &flat {
+            raw.extend_from_slice(&(p.template_idx ^ prev).to_le_bytes());
+            prev = p.template_idx;
+        }
+    }
     for p in &flat {
         let mut flags = 0u8;
         if p.alive {
@@ -725,6 +738,18 @@ fn encode_client_mobs_soa_raw(frames: &[Vec<MobPoseRecord>]) -> Vec<u8> {
         if p.sitting_pose {
             flags |= 8;
         }
+        if p.charged {
+            flags |= 16;
+        }
+        if p.invisible {
+            flags |= 32;
+        }
+        if p.glowing {
+            flags |= 64;
+        }
+        if p.on_fire {
+            flags |= 128;
+        }
         raw.push(flags);
     }
     for p in &flat {
@@ -738,6 +763,9 @@ fn encode_client_mobs_soa_raw(frames: &[Vec<MobPoseRecord>]) -> Vec<u8> {
     }
     for p in &flat {
         raw.push(p.variant2);
+    }
+    for p in &flat {
+        raw.push(p.variant3);
     }
     raw
 }
@@ -810,6 +838,14 @@ fn decode_client_mobs_soa_raw(raw: &[u8]) -> Option<Vec<Vec<MobPoseRecord>>> {
     let sz = read_i32_col(raw, &mut pos)?;
     let vill_lvl = read_i32_col(raw, &mut pos)?;
     let age = read_i32_col(raw, &mut pos)?;
+    let mut template_idxs = Vec::with_capacity(total);
+    {
+        let mut prev = 0u32;
+        for _ in 0..total {
+            prev ^= read_u32(raw, &mut pos)?;
+            template_idxs.push(prev);
+        }
+    }
     let flags = raw.get(pos..pos + total)?;
     pos += total;
     let colors = raw.get(pos..pos + total)?;
@@ -819,6 +855,8 @@ fn decode_client_mobs_soa_raw(raw: &[u8]) -> Option<Vec<Vec<MobPoseRecord>>> {
     let variants = raw.get(pos..pos + total)?;
     pos += total;
     let variants2 = raw.get(pos..pos + total)?;
+    pos += total;
+    let variants3 = raw.get(pos..pos + total)?;
     pos += total;
     let mut out = Vec::with_capacity(frame_count);
     let mut cursor = 0usize;
@@ -830,6 +868,7 @@ fn decode_client_mobs_soa_raw(raw: &[u8]) -> Option<Vec<Vec<MobPoseRecord>>> {
             let f = flags[i];
             frame.push(MobPoseRecord {
                 id: ids[i],
+                template_idx: template_idxs[i],
                 pos: [px[i], py[i], pz[i]],
                 yaw: yaw[i],
                 body_yaw: byaw[i],
@@ -850,9 +889,14 @@ fn decode_client_mobs_soa_raw(raw: &[u8]) -> Option<Vec<Vec<MobPoseRecord>>> {
                 villager_level: vill_lvl[i],
                 variant: variants[i],
                 variant2: variants2[i],
+                variant3: variants3[i],
                 age: age[i],
                 sitting: f & 4 != 0,
                 sitting_pose: f & 8 != 0,
+                charged: f & 16 != 0,
+                invisible: f & 32 != 0,
+                glowing: f & 64 != 0,
+                on_fire: f & 128 != 0,
             });
         }
         out.push(frame);

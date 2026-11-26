@@ -160,6 +160,7 @@ from tools.tests.test_scrubbing_advanced import (
     test_108_scrub_villager_profession_and_mass_tnt_continuity,
     test_109_scrub_commit_no_sprint_effect,
     test_110_scrub_commit_no_sound_channel_leak,
+    test_123_scrub_mass_tnt_disk_persistence_on_reopen,
 )
 
 HEAVY_WORLD_GROUPS = {"chunks", "dimensions", "portals"}
@@ -324,6 +325,7 @@ def build_test_catalog():
         (120, "Test 120: Scrub Furnace Cooking Progress Client Sync", "scrubbing", test_120_scrub_furnace_cooking_progress_client_sync),
         (121, "Test 121: Scrub Creative Survival HUD Mode and XP Transitions", "scrubbing", test_121_scrub_creative_survival_hud_mode_and_xp_transitions),
         (122, "Test 122: Scrub F3+F4 GameModeSwitcher Display", "scrubbing", test_122_scrub_f3_f4_gamemode_switcher_display),
+        (123, "Test 123: Scrub Mass TNT Disk Persistence on Reopen", "scrubbing", test_123_scrub_mass_tnt_disk_persistence_on_reopen),
     ]
 
 

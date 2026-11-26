@@ -879,5 +879,123 @@ def test_110_scrub_commit_no_sound_channel_leak(h):
             shutil.rmtree(player_dir, ignore_errors=True)
 
 
+def _query_gametime(h):
+    raw = str(h.command("time query gametime"))
+    m = re.search(r"(\d+)", raw)
+    assert m is not None, f"Failed to parse gametime from: {raw}"
+    return int(m.group(1))
+
+
+def test_123_scrub_mass_tnt_disk_persistence_on_reopen(h):
+    """Scrubbing back from mass TNT explosion & chest mutation must persist restored chunks to disk across world exit and reopen."""
+    orig_world = h.world
+    w_test = f"rreturn_e2e_tnt_persist_{int(time.time())}"
+
+    try:
+        h.open_world(w_test, seed=12345, mode="creative")
+        h.rreturn("dev on")
+        h.rreturn("scrub on")
+        h.command("gamerule send_command_feedback true")
+
+        # Prepare thick stone base spanning 4 chunks around (0, 0) and clear sky above
+        h.command("fill -10 62 -10 20 64 20 minecraft:stone")
+        h.command("fill -10 65 -10 20 90 20 minecraft:air")
+        h.command("tp @s 0.5 78.0 -8.0")
+        h.wait(10)
+
+        # Step 2: Fill 11x11x11 TNT cube across all 4 quadrant chunks (-1,-1), (0,-1), (-1,0), (0,0)
+        h.command("fill -5 65 -5 5 75 5 minecraft:tnt")
+        # Also place a chest at (12, 65, 0) with 8 diamonds to cover BE-only dirty tracking
+        h.command("setblock 12 65 0 minecraft:chest{Items:[{Slot:0b,id:\"minecraft:diamond\",count:8}]}")
+        h.wait(25)
+
+        t_step2 = _query_gametime(h)
+        assert "tnt" in h.block(0, 70, 0).get("block", ""), f"Center TNT missing at step 2: {h.block(0, 70, 0)}"
+        assert "stone" in h.block(0, 64, 0).get("block", ""), f"Center floor missing at step 2: {h.block(0, 64, 0)}"
+
+        # Step 3: Empty chest (same block state, only BE changes) & ignite mass TNT cube
+        h.command("data remove block 12 65 0 Items")
+        h.command("setblock 0 76 0 minecraft:redstone_block")
+
+        # Step 4: Wait until chain explosion finishes (~80t initial fuse + chained waves)
+        h.wait(90)
+        for _ in range(15):
+            if not h.has_entity("@e[type=minecraft:tnt]"):
+                break
+            h.wait(10)
+        assert not h.has_entity("@e[type=minecraft:tnt]"), "Primed TNT did not finish exploding in time"
+        h.wait(6)
+
+        assert "tnt" not in h.block(0, 70, 0).get("block", ""), f"Center TNT did not explode: {h.block(0, 70, 0)}"
+        assert "stone" not in h.block(0, 64, 0).get("block", ""), (
+            f"Center stone floor survived TNT blast: {h.block(0, 64, 0)}"
+        )
+
+        # Flush cratered chunks & emptied chest to .mca on disk (same effect as save_chunks_eagerly / pause autosave)
+        h.save()
+        h.wait(6)
+
+        # Step 5: Scrub back to step 2 (before ignition & chest clear) and commit
+        res_s = h.rreturn("scrub start")
+        assert "started" in str(res_s).lower(), f"Failed to start scrub: {res_s}"
+        st_scrub = _parse_res(h.rreturn("scrub status"))
+        anchor_tick = int(st_scrub.get("anchor_tick", 0))
+        delta = t_step2 - anchor_tick
+        assert delta < 0, f"Invalid target delta {delta} (t_step2={t_step2}, anchor={anchor_tick})"
+
+        h.rreturn(f"scrub seek_ticks {delta}")
+        h.wait(2)
+        res_c = h.rreturn("scrub commit")
+        assert "committed" in str(res_c).lower(), f"Failed to commit scrub: {res_c}"
+        h.wait(10)
+
+        # Step 6: Verify immediate RAM state looks completely restored across center & corners
+        ram_checks = [
+            ((0, 70, 0), "minecraft:tnt"),
+            ((-5, 65, -5), "minecraft:tnt"),
+            ((5, 75, 5), "minecraft:tnt"),
+            ((-5, 65, 5), "minecraft:tnt"),
+            ((5, 65, -5), "minecraft:tnt"),
+            ((0, 76, 0), "minecraft:air"),
+            ((0, 64, 0), "minecraft:stone"),
+            ((-1, 64, -1), "minecraft:stone"),
+            ((-5, 64, -5), "minecraft:stone"),
+            ((5, 64, 5), "minecraft:stone"),
+        ]
+        for (bx, by, bz), want in ram_checks:
+            got = h.block(bx, by, bz).get("block", "")
+            assert want in got, f"RAM mismatch right after commit at {(bx, by, bz)}: expected {want}, got {got}"
+        chest_ram = str(h.data_get_block(12, 65, 0, "Items"))
+        assert "diamond" in chest_ram.lower(), f"Chest diamonds missing in RAM after commit: {chest_ram}"
+
+        # Step 7 & 8: Exit to title and reopen the exact same world from disk!
+        assert h.exit_to_title(timeout=30), "Failed to exit world to title"
+        h.open_world(w_test, seed=12345, mode="creative")
+        h.wait(6)
+
+        # Step 9: Verify every restored chunk & block entity persisted to disk across reopen!
+        for (bx, by, bz), want in ram_checks:
+            got = h.block(bx, by, bz).get("block", "")
+            assert want in got, f"Disk mismatch after reopen at {(bx, by, bz)}: expected {want}, got {got}"
+        chest_disk = str(h.data_get_block(12, 65, 0, "Items"))
+        assert "diamond" in chest_disk.lower(), f"Chest diamonds lost on disk after reopen: {chest_disk}"
+    finally:
+        try:
+            h.rreturn("scrub off")
+        except Exception:
+            pass
+        h.exit_to_title(timeout=30)
+        try:
+            h.raw_send(f"world-delete {w_test} --confirm")
+        except Exception:
+            pass
+        world_dir = default_saves_dir(h.instance) / w_test
+        if world_dir.is_dir():
+            shutil.rmtree(world_dir, ignore_errors=True)
+        if orig_world and orig_world != w_test:
+            h.open_world(orig_world, seed=12345)
+
+
+
 
 

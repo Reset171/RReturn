@@ -1,17 +1,22 @@
 use super::super::{Dim, Game};
 use super::benchmark::*;
 use super::policy::*;
+use super::scrub_server_diff::chunk_ticks_eq;
 use super::snapshots::*;
 use super::types::*;
 use horizon_client::{
     chunk::Chunk,
     containers::BlockEntity,
     fast_hash::FxHashMap,
+    save::block_entity_encode,
 };
-use horizon_core::position::ChunkPos;
+use horizon_core::{
+    nbt::Tag,
+    position::ChunkPos,
+};
 use horizon_world::registry::BlockStateId;
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     fs,
     sync::Arc,
 };
@@ -25,6 +30,34 @@ pub fn apply_level_snapshot_in_place(
     is_scrub: bool,
 ) -> (f64, f64, f64) {
     let old_chunks: FxHashMap<(i32, i32), Arc<Chunk>> = (&*game.world.chunks).clone();
+    let mut scrub_dirty_chunks: HashSet<(i32, i32)> = if is_scrub {
+        game.world.modified.iter().copied().collect()
+    } else {
+        HashSet::new()
+    };
+    let old_inhabited: FxHashMap<(i32, i32), i64> = if is_scrub {
+        game.world.inhabited.clone()
+    } else {
+        Default::default()
+    };
+    let old_be_encoded: HashMap<(i32, i32, i32), Tag> = if is_scrub && policy.block_entities {
+        let facts = game.res.facts();
+        game.world
+            .block_entities
+            .iter()
+            .map(|(&pos, be)| {
+                let block_name = &facts.get(game.world.block(pos.0, pos.1, pos.2)).name;
+                (pos, block_entity_encode::encode(pos, be, block_name.as_ref()))
+            })
+            .collect()
+    } else {
+        HashMap::new()
+    };
+    let old_block_names: FxHashMap<(i32, i32, i32), Tag> = if is_scrub && policy.block_entities {
+        game.world.block_names.clone()
+    } else {
+        Default::default()
+    };
 
     let t_blocks = std::time::Instant::now();
     if policy.blocks || policy.biomes {
@@ -153,13 +186,28 @@ pub fn apply_level_snapshot_in_place(
                 game.world.chunks.insert(k, v.clone());
             }
             game.world.inhabited = snap.inhabited.clone();
+            if is_scrub {
+                for (&k, live_chunk) in game.world.chunks.iter() {
+                    if old_chunks.get(&k).is_none_or(|old| !Arc::ptr_eq(old, live_chunk))
+                        || snap.inhabited.get(&k) != old_inhabited.get(&k)
+                    {
+                        scrub_dirty_chunks.insert(k);
+                    }
+                }
+            }
         } else {
             game.world.chunks = Default::default();
             for (&(cx, cz), snap_chunk) in &snap.chunks {
                 if let Some(live_chunk) = old_chunks.get(&(cx, cz)) {
+                    let mut chunk_changed = false;
                     let mut c = (**live_chunk).clone();
                     for (s_idx, snap_sec) in snap_chunk.sections.iter().enumerate() {
                         if let Some(sec_arc) = c.sections.get_mut(s_idx) {
+                            if (policy.blocks && sec_arc.blocks != snap_sec.blocks)
+                                || (policy.biomes && sec_arc.biomes != snap_sec.biomes)
+                            {
+                                chunk_changed = true;
+                            }
                             let sec = Arc::make_mut(sec_arc);
                             if policy.blocks {
                                 sec.blocks = snap_sec.blocks.clone();
@@ -169,9 +217,26 @@ pub fn apply_level_snapshot_in_place(
                             }
                         }
                     }
-                    game.world.chunks.insert((cx, cz), Arc::new(c));
+                    if chunk_changed {
+                        if is_scrub {
+                            scrub_dirty_chunks.insert((cx, cz));
+                        }
+                        game.world.chunks.insert((cx, cz), Arc::new(c));
+                    } else {
+                        game.world.chunks.insert((cx, cz), live_chunk.clone());
+                    }
                 } else {
+                    if is_scrub {
+                        scrub_dirty_chunks.insert((cx, cz));
+                    }
                     game.world.chunks.insert((cx, cz), snap_chunk.clone());
+                }
+            }
+            if is_scrub {
+                for &k in game.world.chunks.keys() {
+                    if snap.inhabited.get(&k) != old_inhabited.get(&k) {
+                        scrub_dirty_chunks.insert(k);
+                    }
                 }
             }
         }
@@ -212,6 +277,23 @@ pub fn apply_level_snapshot_in_place(
         }
         game.world.block_names = snap.block_names.clone();
         game.hoppers = snap.hoppers.clone();
+        if is_scrub {
+            let facts = game.res.facts();
+            for &pos in &be_positions {
+                let new_encoded = game.world.block_entities.get(&pos).map(|be| {
+                    let block_name = &facts.get(game.world.block(pos.0, pos.1, pos.2)).name;
+                    block_entity_encode::encode(pos, be, block_name.as_ref())
+                });
+                if old_be_encoded.get(&pos) != new_encoded.as_ref() {
+                    scrub_dirty_chunks.insert((pos.0 >> 4, pos.2 >> 4));
+                }
+            }
+            for pos in old_block_names.keys().chain(snap.block_names.keys()) {
+                if old_block_names.get(pos) != snap.block_names.get(pos) {
+                    scrub_dirty_chunks.insert((pos.0 >> 4, pos.2 >> 4));
+                }
+            }
+        }
         if let Some(log) = game.world.block_log.as_mut() {
             for pos in be_positions {
                 log.push(pos);
@@ -235,7 +317,7 @@ pub fn apply_level_snapshot_in_place(
 
     if policy.block_ticks || policy.fluid_ticks {
         let mut old_ticks = FxHashMap::default();
-        if !policy.block_ticks || !policy.fluid_ticks {
+        if !policy.block_ticks || !policy.fluid_ticks || is_scrub {
             for &(cx, cz) in old_chunks.keys() {
                 let (old_b, old_f) = game.block_ticks.remove_chunk(ChunkPos::new(cx, cz));
                 old_ticks.insert(
@@ -262,15 +344,21 @@ pub fn apply_level_snapshot_in_place(
                 b.unpack(snap_game_time);
                 b
             } else {
-                old_b
+                old_b.clone()
             };
             let f_to_add = if policy.fluid_ticks {
                 let mut f = snap_f;
                 f.unpack(snap_game_time);
                 f
             } else {
-                old_f
+                old_f.clone()
             };
+            if is_scrub
+                && (!chunk_ticks_eq(Some(&old_b), &b_to_add)
+                    || !chunk_ticks_eq(Some(&old_f), &f_to_add))
+            {
+                scrub_dirty_chunks.insert((cx, cz));
+            }
             let _ = game.block_ticks.add_chunk(cpos, b_to_add, f_to_add);
         }
         game.block_ticks.random_tick_value = snap.random_tick_value;
@@ -467,6 +555,15 @@ pub fn apply_level_snapshot_in_place(
     game.world.entities_pending.clear();
     game.world.loaded_chunks.clear();
     game.world.modified.clear();
+    if is_scrub {
+        // Disk .mca files may already hold future autosaved/eagerly-saved edits: re-mark every
+        // chunk that changed during scrub (or was already unsaved) so world exit persists them.
+        game.world.modified.extend(
+            scrub_dirty_chunks
+                .into_iter()
+                .filter(|k| game.world.chunks.contains_key(k)),
+        );
+    }
     if policy.blocks {
         game.world.immediate_sections.clear();
         game.world.watched_writes.clear();

@@ -8,7 +8,9 @@ use super::types::{
 use horizon_client::hud::{rgba, HudAtlas, HudBatch};
 use horizon_client::keybinds;
 use horizon_client::mod_list::ModList;
+use horizon_client::tab_list;
 use horizon_client::text::Text;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::time::Instant;
 
@@ -128,11 +130,61 @@ fn canvas_fill_quad(atlas: &HudAtlas, draw: &mut HudBatch, corners: [[f32; 2]; 4
     draw.fill_quad(atlas, corners, argb_to_abgr(argb));
 }
 
+thread_local! {
+    static PLAYER_HEAD_SKINS: RefCell<HashMap<u128, String>> = RefCell::new(HashMap::new());
+}
+
+pub fn set_player_head_skins(skins: HashMap<u128, String>) {
+    PLAYER_HEAD_SKINS.with(|cell| {
+        *cell.borrow_mut() = skins;
+    });
+}
+
+pub fn resolved_player_head_skin(uuid: u128) -> Option<String> {
+    PLAYER_HEAD_SKINS.with(|cell| cell.borrow().get(&uuid).cloned())
+}
+
+pub fn snapshot_player_head_skins() -> HashMap<String, String> {
+    PLAYER_HEAD_SKINS.with(|cell| {
+        cell.borrow()
+            .iter()
+            .map(|(u, s)| (format!("{:032x}", u), s.clone()))
+            .collect()
+    })
+}
+
+pub fn draw_player_head_from_atlas(
+    atlas: &HudAtlas,
+    draw: &mut HudBatch,
+    uuid: u128,
+    rect: [f32; 4],
+) {
+    let skin_name = resolved_player_head_skin(uuid)
+        .filter(|s| atlas.sprites.contains_key(s.as_str()))
+        .unwrap_or_else(|| tab_list::default_skin(uuid).to_owned());
+    let Some(tex_rect) = atlas.sprites.get(&skin_name).copied() else {
+        return;
+    };
+    let [x, y, w, h] = rect;
+    for u in [8.0f32, 40.0f32] {
+        let mut r = tex_rect;
+        let (du, dv) = (r.u1 - r.u0, r.v1 - r.v0);
+        let u0 = r.u0 + du * u / 64.0;
+        let v0 = r.v0 + dv * 8.0 / 64.0;
+        r.u1 = r.u0 + du * (u + 8.0) / 64.0;
+        r.v1 = r.v0 + dv * 16.0 / 64.0;
+        r.u0 = u0;
+        r.v0 = v0;
+        draw.rect_uv(x, y, w, h, r, u32::MAX);
+    }
+}
+
 pub trait UiCanvas {
     fn screen_size(&self, draw: &HudBatch) -> [f32; 2];
     fn fill(&self, draw: &mut HudBatch, rect: [f32; 4], argb: u32);
     fn fill_quad(&self, draw: &mut HudBatch, corners: [[f32; 2]; 4], argb: u32);
     fn picture(&self, draw: &mut HudBatch, name: &str, rect: [f32; 4], argb: u32) -> bool;
+    fn player_head(&self, draw: &mut HudBatch, uuid: u128, rect: [f32; 4]);
     fn text(&self, draw: &mut HudBatch, text: &str, at: [f32; 2], argb: u32, shadow: bool);
     fn text_width(&self, draw: &HudBatch, text: &str) -> f32;
     fn cursor(&self) -> [f32; 2];
@@ -154,6 +206,10 @@ impl UiCanvas for Game<'_> {
 
     fn picture(&self, draw: &mut HudBatch, name: &str, rect: [f32; 4], argb: u32) -> bool {
         canvas_picture(&self.gui.atlas, draw, name, rect, argb)
+    }
+
+    fn player_head(&self, draw: &mut HudBatch, uuid: u128, rect: [f32; 4]) {
+        draw_player_head_from_atlas(&self.gui.atlas, draw, uuid, rect);
     }
 
     fn text(&self, draw: &mut HudBatch, text: &str, at: [f32; 2], argb: u32, shadow: bool) {
@@ -197,6 +253,10 @@ impl UiCanvas for MenuUiCanvas<'_> {
 
     fn picture(&self, draw: &mut HudBatch, name: &str, rect: [f32; 4], argb: u32) -> bool {
         canvas_picture(self.atlas, draw, name, rect, argb)
+    }
+
+    fn player_head(&self, draw: &mut HudBatch, uuid: u128, rect: [f32; 4]) {
+        draw_player_head_from_atlas(self.atlas, draw, uuid, rect);
     }
 
     fn text(&self, draw: &mut HudBatch, text: &str, at: [f32; 2], argb: u32, shadow: bool) {
@@ -246,6 +306,7 @@ pub struct SettingsUiState {
     pub dragging_slider: Option<SliderDragState>,
     pub dragging_scroll: Option<(f32, f32, f32)>,
     pub window_bounds: [f32; 4],
+    pub header_sub: String,
     pub selected_player: Option<u128>,
     pub player_scope_scrub: bool,
     pub bound_hotkeys: HashMap<String, String>,
@@ -274,6 +335,7 @@ impl Default for SettingsUiState {
             dragging_slider: None,
             dragging_scroll: None,
             window_bounds: [0.0; 4],
+            header_sub: String::new(),
             selected_player: None,
             player_scope_scrub: false,
             bound_hotkeys: HashMap::new(),

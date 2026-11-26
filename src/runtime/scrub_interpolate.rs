@@ -25,6 +25,7 @@ thread_local! {
 pub fn reset_scrub_ui_preview_cache() {
     LAST_PREVIEW_UI.with(|c| *c.borrow_mut() = None);
     LAST_PREVIEW_BES.with(|c| *c.borrow_mut() = None);
+    reset_chat_restore_cache();
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -388,14 +389,18 @@ pub fn apply_interpolated_poses_to_game(game: &mut Game<'_>, target_time: f64) {
             true
         }
     });
-    if ui_changed && (scrub_policy.player_inventory || scrub_policy.player_recipe_book || scrub_policy.player_abilities) {
-        apply_client_ui_exact(
-            game,
-            &chosen_frame.ui,
-            scrub_policy.player_inventory,
-            scrub_policy.player_recipe_book,
-            true,
-        );
+    if ui_changed {
+        if scrub_policy.player_inventory || scrub_policy.player_recipe_book || scrub_policy.player_abilities {
+            apply_client_ui_exact(
+                game,
+                &chosen_frame.ui,
+                scrub_policy.player_inventory,
+                scrub_policy.player_recipe_book,
+                true,
+            );
+        } else {
+            apply_chat_history_from_snapshot(game, &chosen_frame.ui, false);
+        }
     } else if scrub_policy.player_inventory {
         game.carried = (*chosen_frame.carried).clone();
         if chosen_frame.ui.craft_table.is_none()

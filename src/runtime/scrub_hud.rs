@@ -18,6 +18,8 @@ struct ScrubHudState {
     track_rect: [f32; 4],
     apply_rect: [f32; 4],
     cancel_rect: [f32; 4],
+    last_layout: (f32, f32, bool),
+    locked_layout: Option<(f32, f32, bool)>,
     dragging_track: bool,
     pending_action: Option<ScrubHudAction>,
     suppress_next_release: bool,
@@ -61,6 +63,8 @@ pub fn scrub_hud_bounds_json() -> String {
             "apply_center": center(st.apply_rect),
             "cancel_center": center(st.cancel_rect),
             "track_center": center(st.track_rect),
+            "locked": st.locked_layout.is_some(),
+            "dragging": st.dragging_track,
         })
         .to_string()
     })
@@ -90,6 +94,7 @@ pub fn handle_scrub_hud_mouse_pressed(button: i32, mx: f32, my: f32) -> bool {
         SCRUB_HUD_STATE.with(|c| {
             let mut st = c.borrow_mut();
             st.dragging_track = false;
+            st.locked_layout = None;
             st.suppress_next_release = true;
             st.pending_action = Some(ScrubHudAction::Apply);
         });
@@ -99,6 +104,7 @@ pub fn handle_scrub_hud_mouse_pressed(button: i32, mx: f32, my: f32) -> bool {
         SCRUB_HUD_STATE.with(|c| {
             let mut st = c.borrow_mut();
             st.dragging_track = false;
+            st.locked_layout = None;
             st.suppress_next_release = true;
             st.pending_action = Some(ScrubHudAction::Cancel);
         });
@@ -111,22 +117,44 @@ pub fn handle_scrub_hud_mouse_pressed(button: i32, mx: f32, my: f32) -> bool {
         track_r[3] + 12.0,
     ];
     if track_r[2] > 1.0 && hit_in_rect(mx, my, track_hit) {
-        SCRUB_HUD_STATE.with(|c| c.borrow_mut().dragging_track = true);
+        SCRUB_HUD_STATE.with(|c| {
+            let mut st = c.borrow_mut();
+            st.dragging_track = true;
+            if st.locked_layout.is_none() && st.last_layout.1 > 0.0 {
+                st.locked_layout = Some(st.last_layout);
+            }
+        });
         hud_update_track_at(mx, true);
         return true;
     }
     hit_in_rect(mx, my, capsule_r)
 }
 
-pub fn handle_scrub_hud_mouse_released(button: i32) {
+pub fn handle_scrub_hud_mouse_released(button: i32, mx: Option<f32>) {
     if button == 0 {
-        SCRUB_HUD_STATE.with(|c| c.borrow_mut().dragging_track = false);
+        let was_dragging = SCRUB_HUD_STATE.with(|c| {
+            let mut st = c.borrow_mut();
+            let dragging = std::mem::replace(&mut st.dragging_track, false);
+            st.locked_layout = None;
+            dragging
+        });
+        if was_dragging && let Some(x) = mx {
+            hud_update_track_at(x, true);
+        }
     }
 }
 
 pub fn sync_scrub_hud_drag(game: &Game<'_>) {
     let dragging = SCRUB_HUD_STATE.with(|c| c.borrow().dragging_track);
     if !dragging {
+        return;
+    }
+    if !game.rreturn_left_button_held() {
+        SCRUB_HUD_STATE.with(|c| {
+            let mut st = c.borrow_mut();
+            st.dragging_track = false;
+            st.locked_layout = None;
+        });
         return;
     }
     let [mx, _] = game.cursor();
@@ -192,7 +220,17 @@ pub fn draw_scrub_hud(game: &Game<'_>, draw: &mut HudBatch) {
     let dragging = SCRUB_HUD_STATE.with(|c| c.borrow().dragging_track);
 
     let bar_w = (sw - 24.0).clamp(296.0, 520.0);
-    let (bar_y, bar_h, compact) = scrub_hud_layout(game, draw, sw, sh);
+    let computed_layout = scrub_hud_layout(game, draw, sw, sh);
+    let (bar_y, bar_h, compact) = SCRUB_HUD_STATE.with(|c| {
+        let mut st = c.borrow_mut();
+        st.last_layout = computed_layout;
+        if st.dragging_track {
+            *st.locked_layout.get_or_insert(computed_layout)
+        } else {
+            st.locked_layout = None;
+            computed_layout
+        }
+    });
     let bar_x = ((sw - bar_w) * 0.5).floor();
     let capsule = [bar_x, bar_y, bar_w, bar_h];
     let radius = if compact { 8.0 } else { 11.0 };

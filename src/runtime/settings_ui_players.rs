@@ -55,6 +55,13 @@ fn collect_listed_players(st: &RReturnState) -> Vec<ListedPlayer> {
     out
 }
 
+pub fn collect_listed_uuids(st: &RReturnState) -> Vec<u128> {
+    collect_listed_players(st)
+        .into_iter()
+        .map(|p| p.uuid)
+        .collect()
+}
+
 fn sw_anim(ui: &mut SettingsUiState, key: &str, val: bool) -> f32 {
     let target = if val { 1.0f32 } else { 0.0f32 };
     let e = ui.toggle_anim.entry(key.to_owned()).or_insert(target);
@@ -119,12 +126,11 @@ fn draw_anchor_bar<C: UiCanvas>(
 
         draw_rounded_rect(canvas, draw, dock, 6.0, UI_SEG_DOCK);
         let segs = [
-            (AnchorMode::Fixed, "rreturn.ui.seg.fixed"),
-            (AnchorMode::Multi, "rreturn.ui.seg.multi"),
+            (AnchorMode::Manual, "rreturn.ui.seg.manual"),
             (AnchorMode::Everyone, "rreturn.ui.seg.everyone"),
             (AnchorMode::Rotating, "rreturn.ui.seg.rotating"),
         ];
-        let seg_w = (dock[2] - 4.0) / 4.0;
+        let seg_w = (dock[2] - 4.0) / 3.0;
         for (i, &(m, key)) in segs.iter().enumerate() {
             let sr = [dock[0] + 2.0 + i as f32 * seg_w, dock[1] + 2.0, seg_w - 1.0, dock[3] - 4.0];
             let active = anchor_cfg.mode == m;
@@ -235,10 +241,15 @@ fn draw_players_column<C: UiCanvas>(
             let pin_rect = [x + w - 38.0, py + 6.0, 34.0, 24.0];
             draw_switch(canvas, draw, x + w - 35.0, py + 11.0, anim);
 
+            let head_rect = [x + 9.0, py + 9.0, 14.0, 14.0];
+            draw_rounded_rect(canvas, draw, [head_rect[0] - 1.0, head_rect[1] - 1.0, 16.0, 16.0], 2.5, 0x3300_0000);
+            canvas.player_head(draw, p.uuid, head_rect);
             let dot_col = if p.online { UI_GREEN } else { UI_TEXT_MUTED };
-            draw_rounded_rect(canvas, draw, [x + 11.0, py + 9.0, 5.0, 5.0], 2.5, dot_col);
+            draw_rounded_rect(canvas, draw, [head_rect[0] + 10.5, head_rect[1] + 10.5, 5.0, 5.0], 2.5, 0xFF15_171F);
+            draw_rounded_rect(canvas, draw, [head_rect[0] + 11.0, head_rect[1] + 11.0, 4.0, 4.0], 2.0, dot_col);
 
-            let mut name_x = x + 19.0;
+            let text_x = x + 28.0;
+            let mut name_x = text_x;
             if p.is_owner {
                 draw_ui_icon(canvas, draw, UiIcon::Crown, name_x, py + 5.5, UI_BLUE);
                 name_x += 14.0;
@@ -266,8 +277,8 @@ fn draw_players_column<C: UiCanvas>(
             };
             canvas.text(
                 draw,
-                &fit_text(canvas, draw, &status_str, (pin_rect[0] - x - 18.0 - badge_w).max(20.0)),
-                [x + 19.0, py + 19.5],
+                &fit_text(canvas, draw, &status_str, (pin_rect[0] - text_x - 4.0 - badge_w).max(20.0)),
+                [text_x, py + 19.5],
                 if is_pinned { UI_BLUE } else if is_active { UI_GREEN } else { UI_TEXT_MUTED },
                 false,
             );

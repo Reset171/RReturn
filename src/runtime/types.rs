@@ -198,8 +198,7 @@ pub fn has_level_4_permission(game: &Game<'_>, requester: Option<u128>) -> bool 
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AnchorMode {
-    Fixed,
-    Multi,
+    Manual,
     Everyone,
     Rotating,
 }
@@ -207,8 +206,7 @@ pub enum AnchorMode {
 impl AnchorMode {
     pub fn id(self) -> &'static str {
         match self {
-            Self::Fixed => "fixed",
-            Self::Multi => "multi",
+            Self::Manual => "manual",
             Self::Everyone => "everyone",
             Self::Rotating => "rotating",
         }
@@ -216,8 +214,7 @@ impl AnchorMode {
 
     pub fn lang_key(self) -> &'static str {
         match self {
-            Self::Fixed => "config.rreturn.anchorMode.fixed",
-            Self::Multi => "config.rreturn.anchorMode.multi",
+            Self::Manual => "config.rreturn.anchorMode.manual",
             Self::Everyone => "config.rreturn.anchorMode.everyone",
             Self::Rotating => "config.rreturn.anchorMode.rotating",
         }
@@ -225,19 +222,17 @@ impl AnchorMode {
 
     pub fn by_id(s: &str) -> Self {
         match s.trim().to_ascii_lowercase().as_str() {
-            "1" | "multi" => Self::Multi,
             "2" | "everyone" => Self::Everyone,
             "3" | "rotating" => Self::Rotating,
-            _ => Self::Fixed,
+            _ => Self::Manual,
         }
     }
 
     pub fn next(self) -> Self {
         match self {
-            Self::Fixed => Self::Multi,
-            Self::Multi => Self::Everyone,
+            Self::Manual => Self::Everyone,
             Self::Everyone => Self::Rotating,
-            Self::Rotating => Self::Fixed,
+            Self::Rotating => Self::Manual,
         }
     }
 }
@@ -253,7 +248,7 @@ pub struct AnchorSettings {
 impl Default for AnchorSettings {
     fn default() -> Self {
         Self {
-            mode: AnchorMode::Fixed,
+            mode: AnchorMode::Manual,
             rotation_seconds: 300,
             rollback_cooldown_seconds: 0,
             pinned: Vec::new(),
@@ -336,7 +331,7 @@ impl Default for RReturnState {
             min_save_gap_sec: 30,
             relax_time_sec: 5,
             post_combat_save_pct: 70,
-            save_on_boss_defeat: true,
+            save_on_boss_defeat: false,
             logs: false,
             scrub_enabled: false,
             policy: RollbackPolicy::default(),
@@ -479,22 +474,15 @@ pub fn resolve_anchors(
     requester: Option<u128>,
 ) -> Vec<u128> {
     match settings.mode {
-        AnchorMode::Fixed => {
-            if let Some(req) = requester {
-                vec![req]
-            } else if !settings.pinned.is_empty() {
+        AnchorMode::Manual => {
+            if !settings.pinned.is_empty() {
                 settings.pinned.clone()
+            } else if let Some(req) = requester {
+                vec![req]
             } else if let Some(&first) = online.first() {
                 vec![first]
             } else {
                 Vec::new()
-            }
-        }
-        AnchorMode::Multi => {
-            if !settings.pinned.is_empty() {
-                settings.pinned.clone()
-            } else {
-                online.to_vec()
             }
         }
         AnchorMode::Everyone => online.to_vec(),

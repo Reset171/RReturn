@@ -669,3 +669,212 @@ def test_122_scrub_f3_f4_gamemode_switcher_display(h):
         except Exception:
             pass
         h.open_world(orig_world, seed=12345)
+
+
+def test_125_chat_history_rollback_and_scrub(h):
+    """Rollback (F6/F7 + disk purge) and Scrubbing (U) both preserve prior chat history and rewind post-point messages."""
+    setup_clean_env(h)
+    h.rreturn("dev on")
+    h.rreturn("scrub on")
+    h.tp(0.5, 65.0, 0.5)
+    h.wait(5)
+
+    def chat_texts():
+        msgs = h.raw_send("messages 40").get("chat", [])
+        ui_log = _ui(h).get("chat_log", [])
+        return msgs, ui_log
+
+    try:
+        # 1. Establish initial chat messages before checkpoint
+        h.raw_send("chat alpha_before_cp")
+        h.command("say srv_before_cp")
+        h.wait(5)
+        msgs_pre, log_pre = chat_texts()
+        assert any("alpha_before_cp" in m for m in msgs_pre), f"Missing alpha_before_cp in messages: {msgs_pre}"
+        assert any("alpha_before_cp" in m for m in log_pre), f"Missing alpha_before_cp in chat_log: {log_pre}"
+        assert any("srv_before_cp" in m for m in msgs_pre), f"Missing srv_before_cp in messages: {msgs_pre}"
+        assert any("srv_before_cp" in m for m in log_pre), f"Missing srv_before_cp in chat_log: {log_pre}"
+
+        # 2. Save checkpoint (F6 / set) -> add post-checkpoint chat & command messages
+        h.rreturn("set")
+        h.wait(10)
+        h.raw_send("chat beta_after_cp")
+        h.command("say srv_after_cp")
+        h.wait(5)
+        msgs_post, log_post = chat_texts()
+        assert any("beta_after_cp" in m for m in msgs_post), msgs_post
+        assert any("srv_after_cp" in m for m in log_post), log_post
+        assert "beta_after_cp" in _ui(h).get("chat_recent", []), _ui(h)
+
+        # 3. Rollback after full purge_memory -> pre-CP chat preserved, post-CP chat rewound!
+        h.rreturn("purge_memory")
+        h.rreturn("load")
+        h.wait(5)
+        msgs_rb, log_rb = chat_texts()
+        recent_rb = _ui(h).get("chat_recent", [])
+        assert any("alpha_before_cp" in m for m in msgs_rb), f"Pre-CP chat lost from messages after F7: {msgs_rb}"
+        assert any("alpha_before_cp" in m for m in log_rb), f"Pre-CP chat lost from chat_log after F7: {log_rb}"
+        assert any("srv_before_cp" in m for m in msgs_rb), f"Pre-CP server chat lost after F7: {msgs_rb}"
+        assert not any("beta_after_cp" in m for m in msgs_rb), f"Post-CP chat leaked in messages after F7: {msgs_rb}"
+        assert not any("beta_after_cp" in m for m in log_rb), f"Post-CP chat leaked in chat_log after F7: {log_rb}"
+        assert not any("srv_after_cp" in m for m in msgs_rb), f"Post-CP server chat leaked after F7: {msgs_rb}"
+        assert "beta_after_cp" not in recent_rb, f"Post-CP sent history leaked after F7: {recent_rb}"
+
+        # 4. Live Scrubbing: preview rewinds chat, Esc cancels (restores future chat), Enter commits (rewinds chat)
+        h.wait(10)
+        h.raw_send("chat scrub_t1_msg")
+        h.wait(28)
+        h.raw_send("chat scrub_t2_msg")
+        h.wait(12)
+
+        msgs_before_u, log_before_u = chat_texts()
+        assert any("scrub_t2_msg" in m for m in msgs_before_u) and any("scrub_t2_msg" in m for m in log_before_u)
+
+        h.raw_send("key u tap")
+        h.wait(2)
+        h.rreturn("scrub seek_ticks -24")
+        h.wait(3)
+        msgs_prev, log_prev = chat_texts()
+        assert any("scrub_t1_msg" in m for m in log_prev), f"Expected scrub_t1_msg in scrub preview: {log_prev}"
+        assert not any("scrub_t2_msg" in m for m in log_prev), f"Expected scrub_t2_msg rolled back in preview: {log_prev}"
+        assert not any("scrub_t2_msg" in m for m in msgs_prev), f"Expected scrub_t2_msg rolled back in messages(): {msgs_prev}"
+
+        # Esc cancels -> future chat returns
+        h.raw_send("key esc tap")
+        h.wait(3)
+        msgs_esc, log_esc = chat_texts()
+        assert any("scrub_t2_msg" in m for m in msgs_esc) and any("scrub_t2_msg" in m for m in log_esc), (
+            f"Esc cancel did not restore future chat: msgs={msgs_esc} log={log_esc}"
+        )
+
+        # Seek again and Enter commits -> future chat permanently rolled back
+        h.raw_send("key u tap")
+        h.wait(2)
+        h.rreturn("scrub seek_ticks -24")
+        h.wait(3)
+        h.raw_send("key enter tap")
+        h.wait(3)
+        msgs_comm, log_comm = chat_texts()
+        assert any("scrub_t1_msg" in m for m in log_comm), f"Committed chat lost scrub_t1_msg: {log_comm}"
+        assert not any("scrub_t2_msg" in m for m in msgs_comm), f"Committed scrub kept future chat in messages: {msgs_comm}"
+        assert not any("scrub_t2_msg" in m for m in log_comm), f"Committed scrub kept future chat in log: {log_comm}"
+    finally:
+        if _ui(h).get("scrubbing"):
+            h.rreturn("scrub cancel")
+        h.rreturn("scrub off")
+        h.wait(2)
+
+
+def test_126_sign_edit_wheel_and_scrub_hud_drag_lock(h):
+    """Mouse wheel & scrub hotkeys keep scrubbing when a Sign Editor frame is active, and HUD stays locked during cursor drag."""
+    setup_clean_env(h)
+    h.rreturn("scrub on")
+    h.command("fill -2 64 -2 2 64 2 minecraft:stone")
+    h.command("fill -2 65 -2 2 67 2 minecraft:air")
+    h.command("setblock 0 65 2 minecraft:oak_sign")
+    h.tp(0.5, 65.0, 0.5)
+    h.wait(4)
+
+    try:
+        # ---- Part A: Sign Editor active during Scrub must NOT swallow scroll-at wheel or keys ----
+        h.interact(0, 65, 2)
+        h.wait(4)
+        ui_sign = _ui(h)
+        assert ui_sign.get("sign_edit") is not None, f"Sign editor failed to open: {ui_sign}"
+        h.raw_send("type ScrubSign")
+        h.wait(16)
+        assert _ui(h)["sign_edit"]["edit_value"] == "ScrubSign", _ui(h)
+
+        # Finish editing sign and record ticks after closing
+        h.raw_send("key esc tap")
+        h.wait(16)
+        assert _ui(h).get("sign_edit") is None, _ui(h)
+
+        # Start scrubbing and seek back into open sign_edit window
+        h.raw_send("key u tap")
+        h.wait(2)
+        h.rreturn("scrub seek_ticks -22")
+        h.wait(3)
+        ui_in_sign = _ui(h)
+        assert ui_in_sign["scrubbing"] is True and ui_in_sign.get("sign_edit") is not None, (
+            f"Expected sign_edit restored in scrub preview: {ui_in_sign}"
+        )
+        t_before_wheel = float(h.rreturn("scrub status")["current_time"])
+
+        # Send REAL window mouse wheel while sign editor is on screen!
+        h.raw_send("scroll-at 100 100 -2")
+        h.wait(2)
+        t_after_back = float(h.rreturn("scrub status")["current_time"])
+        assert t_after_back < t_before_wheel - 0.5, (
+            f"Mouse wheel failed to rewind while sign editor was active during scrub: "
+            f"before={t_before_wheel} after={t_after_back}"
+        )
+
+        h.raw_send("scroll-at 100 100 1")
+        h.wait(2)
+        t_after_fwd = float(h.rreturn("scrub status")["current_time"])
+        assert t_after_fwd > t_after_back + 0.5, (
+            f"Mouse wheel failed to advance while sign editor was active during scrub: "
+            f"back={t_after_back} fwd={t_after_fwd}"
+        )
+
+        # Normal character keystrokes while scrubbing on sign_edit frame must not edit the sign
+        h.raw_send("type X")
+        h.wait(2)
+        assert _ui(h)["sign_edit"]["edit_value"] == "ScrubSign", (
+            f"Typing during scrub modified sign text: {_ui(h)['sign_edit']}"
+        )
+        h.raw_send("key esc tap")
+        h.wait(3)
+        assert _ui(h)["scrubbing"] is False, "Esc failed to cancel scrub while sign_edit was shown"
+
+        # ---- Part B: Playing <-> Inventory layout transitions work on wheel/keys, lock during cursor track drag ----
+        h.rreturn("scrub off")
+        h.wait(2)
+        h.rreturn("scrub on")
+        h.wait(20)
+        h.raw_send("key e tap")
+        h.wait(20)
+        h.raw_send("key esc tap")
+        h.wait(18)
+
+        h.raw_send("key u tap")
+        h.wait(2)
+        hud_play = h.rreturn("ui scrub_hud")
+        assert hud_play["capsule"][3] > 30.0, f"Expected full 2-row Playing HUD initially: {hud_play}"
+
+        # Stepping with wheel into Inventory frame MUST move/compact the HUD (not locked!)
+        h.rreturn("scrub seek_ticks -25")
+        h.wait(2)
+        assert _ui(h)["screen"] == "inventory"
+        hud_inv_wheel = h.rreturn("ui scrub_hud")
+        assert hud_inv_wheel["capsule"][3] <= 24.0, (
+            f"Wheel/key scrub into Inventory must still switch to compact HUD: {hud_inv_wheel}"
+        )
+        h.rreturn("scrub cancel")
+        h.wait(2)
+
+        # Re-open scrub at Playing, check drag-at across track works cleanly without jumping
+        h.raw_send("key u tap")
+        h.wait(2)
+        hud_start = h.rreturn("ui scrub_hud")
+        tr = hud_start["track"]
+        tx0 = int(round(tr[0] + tr[2] * 0.92))
+        tx1 = int(round(tr[0] + tr[2] * 0.52))
+        ty = int(round(hud_start["track_center"][1]))
+        h.raw_send(f"drag-at {tx0} {ty} {tx1} {ty}")
+        h.wait(2)
+        hud_after_drag = h.rreturn("ui scrub_hud")
+        assert hud_after_drag.get("locked") is False, f"HUD remained locked after cursor release: {hud_after_drag}"
+        assert _ui(h)["screen"] == "inventory" and hud_after_drag["capsule"][3] <= 24.0, (
+            f"Expected release after drag into Inventory to settle into compact HUD: {hud_after_drag}"
+        )
+        h.raw_send("key esc tap")
+        h.wait(2)
+    finally:
+        if _ui(h).get("scrubbing"):
+            h.rreturn("scrub cancel")
+        h.rreturn("scrub off")
+        h.command("setblock 0 65 2 minecraft:air")
+        h.close_screen()
+        h.wait(2)

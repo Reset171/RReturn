@@ -8,10 +8,12 @@ use super::scrub::is_scrubbing;
 use super::storage::slot_dir;
 use super::types::*;
 use horizon_client::{
+    chat::{self, ChatSource},
     containers::BlockEntity,
     game_mode_switcher::GameModeSwitcher,
     items::ItemStack,
     save::{item_from_nbt, item_to_nbt},
+    text::Text,
 };
 use horizon_core::nbt::{self, Limits as NbtLimits};
 use horizon_protocol::packets::play::{self, Clientbound as C};
@@ -22,6 +24,14 @@ use std::{
     path::{Path, PathBuf},
     sync::atomic::{AtomicUsize, Ordering},
 };
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChatMessageSnapshot {
+    pub component: serde_json::Value,
+    pub source: u8,
+    pub has_indicator: bool,
+    pub added_tick: u64,
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ClientUiSnapshot {
@@ -40,6 +50,9 @@ pub struct ClientUiSnapshot {
     pub chat_draft: Option<(String, bool)>,
     pub chat_draft_shown: bool,
     pub in_bed_chat: bool,
+    pub has_chat_log: bool,
+    pub chat_log: Vec<ChatMessageSnapshot>,
+    pub chat_sent_recent: Vec<String>,
     pub carried: Option<ItemStack>,
     pub craft_grid: Vec<Option<ItemStack>>,
     pub craft_result: Option<ItemStack>,
@@ -59,9 +72,177 @@ pub struct ClientUiSnapshot {
     pub gamemode_switcher_selected: Option<i32>,
 }
 
+#[derive(Default)]
+struct ChatJournalState {
+    entries: Vec<ChatMessageSnapshot>,
+    last_received: u64,
+    last_applied: Option<(Vec<ChatMessageSnapshot>, Vec<String>)>,
+    ignored_hashes: Vec<u64>,
+}
+
+fn hash_chat_plain(text: &str) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for &b in text.as_bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    h
+}
+
+pub fn mark_telemetry_chat_text(text: &str) {
+    let h = hash_chat_plain(text);
+    CHAT_JOURNAL.with(|cell| {
+        let mut j = cell.borrow_mut();
+        if !j.ignored_hashes.contains(&h) {
+            if j.ignored_hashes.len() >= 256 {
+                j.ignored_hashes.remove(0);
+            }
+            j.ignored_hashes.push(h);
+        }
+    });
+}
+
 thread_local! {
     static CLIENT_UI_SLOTS: RefCell<HashMap<String, ClientUiSnapshot>> = RefCell::new(HashMap::new());
     static ACTIVE_WORLD_ROOT: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+    static CHAT_JOURNAL: RefCell<ChatJournalState> = RefCell::new(ChatJournalState::default());
+}
+
+fn infer_chat_source_and_indicator(component: &serde_json::Value) -> (u8, bool) {
+    let key = component.get("translate").and_then(|v| v.as_str());
+    match key {
+        Some(
+            "chat.type.text"
+            | "chat.type.announcement"
+            | "chat.type.emote"
+            | "commands.message.display.incoming",
+        ) => (0, false),
+        _ => (1, true),
+    }
+}
+
+pub fn clear_chat_journal() {
+    CHAT_JOURNAL.with(|cell| *cell.borrow_mut() = ChatJournalState::default());
+}
+
+pub fn reset_chat_restore_cache() {
+    CHAT_JOURNAL.with(|cell| cell.borrow_mut().last_applied = None);
+}
+
+pub fn sync_chat_journal(game: &Game<'_>) {
+    let received = game.ui.chat.received;
+    let empty_now = game.ui.chat.recent_components(1).is_empty();
+    let needs_sync = CHAT_JOURNAL.with(|cell| {
+        let j = cell.borrow();
+        received != j.last_received || (empty_now && !j.entries.is_empty())
+    });
+    if !needs_sync {
+        return;
+    }
+
+    let raw_live = game.ui.chat.recent_components(100);
+    let now_ticks = game.visual_ticks();
+    CHAT_JOURNAL.with(|cell| {
+        let mut j = cell.borrow_mut();
+        let live: Vec<serde_json::Value> = raw_live
+            .into_iter()
+            .rev()
+            .filter(|comp| {
+                let plain = Text::from(comp.clone()).plain();
+                let h = hash_chat_plain(&plain);
+                !j.ignored_hashes.contains(&h)
+            })
+            .collect();
+        if live.is_empty() {
+            j.entries.clear();
+            j.last_received = received;
+            return;
+        }
+        let mut matched_entries = Vec::with_capacity(live.len());
+        let old_len = j.entries.len();
+        let mut matched_len = 0usize;
+        for drop_old in 0..=old_len {
+            let keep = old_len - drop_old;
+            if keep <= live.len()
+                && j.entries[drop_old..]
+                    .iter()
+                    .enumerate()
+                    .all(|(i, prev)| prev.component == live[i])
+            {
+                matched_entries.extend(j.entries[drop_old..].iter().cloned());
+                matched_len = keep;
+                break;
+            }
+        }
+        for comp in &live[matched_len..] {
+            let (source, has_indicator) = infer_chat_source_and_indicator(comp);
+            matched_entries.push(ChatMessageSnapshot {
+                component: comp.clone(),
+                source,
+                has_indicator,
+                added_tick: now_ticks,
+            });
+        }
+        j.entries = matched_entries;
+        j.last_received = received;
+    });
+}
+
+pub fn apply_chat_history_from_snapshot(
+    game: &mut Game<'_>,
+    ui: &ClientUiSnapshot,
+    force: bool,
+) {
+    if !ui.has_chat_log {
+        return;
+    }
+    let same = if force {
+        false
+    } else {
+        CHAT_JOURNAL.with(|cell| {
+            let j = cell.borrow();
+            j.last_applied
+                .as_ref()
+                .is_some_and(|(l, r)| l == &ui.chat_log && r == &ui.chat_sent_recent)
+        })
+    };
+    if same {
+        return;
+    }
+
+    let prev_log = game.ui.chat.log;
+    game.ui.chat.log = false;
+    game.ui.chat.clear();
+    let mut plain_lines = Vec::with_capacity(ui.chat_log.len());
+    for entry in &ui.chat_log {
+        let source = match entry.source {
+            0 => ChatSource::Player,
+            2 => ChatSource::Client,
+            _ => ChatSource::Server,
+        };
+        let indicator = entry.has_indicator.then_some(chat::SYSTEM_INDICATOR);
+        let text = Text::from(entry.component.clone());
+        plain_lines.push(text.plain());
+        game.ui.chat.add(
+            &game.gui.atlas,
+            text,
+            indicator,
+            source,
+            entry.added_tick,
+            false,
+        );
+    }
+    game.ui.chat.log = prev_log;
+    game.ui.chat.recent = ui.chat_sent_recent.clone();
+    game.rreturn_set_remote_chat_lines(&plain_lines);
+
+    let received = game.ui.chat.received;
+    CHAT_JOURNAL.with(|cell| {
+        let mut j = cell.borrow_mut();
+        j.entries = ui.chat_log.clone();
+        j.last_received = received;
+        j.last_applied = Some((ui.chat_log.clone(), ui.chat_sent_recent.clone()));
+    });
 }
 
 pub fn set_active_ui_world_root(world_root: &Path) {
@@ -188,6 +369,9 @@ pub fn is_text_input_focused(game: &Game<'_>) -> bool {
 }
 
 pub fn capture_client_ui_snapshot(game: &Game<'_>) -> ClientUiSnapshot {
+    sync_chat_journal(game);
+    let chat_log = CHAT_JOURNAL.with(|cell| cell.borrow().entries.clone());
+    let chat_sent_recent = game.ui.chat.recent.clone();
     let creative_tab_id = game
         .creative_screen
         .tabs
@@ -214,6 +398,9 @@ pub fn capture_client_ui_snapshot(game: &Game<'_>) -> ClientUiSnapshot {
             .map(|d| (d.text.clone(), d.command)),
         chat_draft_shown: game.ui.chat_draft_shown,
         in_bed_chat: game.ui.in_bed_chat,
+        has_chat_log: true,
+        chat_log,
+        chat_sent_recent,
         carried: game.carried.clone(),
         craft_grid: game.craft_grid.clone(),
         craft_result: game.rreturn_craft_result(),
@@ -468,6 +655,18 @@ fn ui_snapshot_to_json(s: &ClientUiSnapshot) -> serde_json::Value {
             "auto": c.auto,
         })
     });
+    let chat_log: Vec<serde_json::Value> = s
+        .chat_log
+        .iter()
+        .map(|e| {
+            serde_json::json!({
+                "component": e.component,
+                "source": e.source,
+                "has_indicator": e.has_indicator,
+                "added_tick": e.added_tick,
+            })
+        })
+        .collect();
     serde_json::json!({
         "screen": s.screen,
         "creative_tab_id": s.creative_tab_id,
@@ -484,6 +683,9 @@ fn ui_snapshot_to_json(s: &ClientUiSnapshot) -> serde_json::Value {
         "chat_draft": draft,
         "chat_draft_shown": s.chat_draft_shown,
         "in_bed_chat": s.in_bed_chat,
+        "has_chat_log": s.has_chat_log,
+        "chat_log": chat_log,
+        "chat_sent_recent": s.chat_sent_recent,
         "carried": ui_encode_item(&s.carried),
         "craft_grid": ui_encode_items(&s.craft_grid),
         "craft_result": ui_encode_item(&s.craft_result),
@@ -633,6 +835,34 @@ fn ui_snapshot_from_json(v: &serde_json::Value) -> Option<ClientUiSnapshot> {
                 auto: c["auto"].as_bool().unwrap_or(false),
             })
         });
+    let has_chat_log = v["has_chat_log"].as_bool().unwrap_or_else(|| v["chat_log"].is_array());
+    let chat_log = v["chat_log"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|item| {
+                    let comp = item.get("component")?.clone();
+                    if comp.is_null() {
+                        return None;
+                    }
+                    Some(ChatMessageSnapshot {
+                        component: comp,
+                        source: item["source"].as_u64().unwrap_or(1) as u8,
+                        has_indicator: item["has_indicator"].as_bool().unwrap_or(false),
+                        added_tick: item["added_tick"].as_u64().unwrap_or(0),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let chat_sent_recent = v["chat_sent_recent"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|x| x.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
     Some(ClientUiSnapshot {
         screen,
         creative_tab_id: v["creative_tab_id"].as_str().map(str::to_owned),
@@ -649,6 +879,9 @@ fn ui_snapshot_from_json(v: &serde_json::Value) -> Option<ClientUiSnapshot> {
         chat_draft,
         chat_draft_shown: v["chat_draft_shown"].as_bool().unwrap_or(false),
         in_bed_chat: v["in_bed_chat"].as_bool().unwrap_or(false),
+        has_chat_log,
+        chat_log,
+        chat_sent_recent,
         carried: ui_decode_item(&v["carried"]),
         craft_grid: ui_decode_items(&v["craft_grid"]),
         craft_result: ui_decode_item(&v["craft_result"]),
@@ -843,6 +1076,7 @@ pub fn apply_client_ui_exact(
     restore_recipe_book: bool,
     is_scrub_preview: bool,
 ) {
+    apply_chat_history_from_snapshot(game, ui, !is_scrub_preview);
     game.ui.chat_draft = ui.chat_draft.as_ref().map(|(text, command)| ChatDraft {
         text: text.clone(),
         command: *command,
@@ -1155,6 +1389,8 @@ pub fn ui_state_json(game: &Game<'_>) -> serde_json::Value {
         "chat_input": s.chat_input,
         "chat_cursor": s.chat_cursor,
         "chat_draft": s.chat_draft.as_ref().map(|(t, c)| serde_json::json!([t, c])),
+        "chat_log": s.chat_log.iter().map(|e| Text::from(e.component.clone()).plain()).collect::<Vec<_>>(),
+        "chat_recent": s.chat_sent_recent,
         "carried": s.carried.as_ref().map(|st| st.item.to_string()),
         "carried_count": s.carried.as_ref().map(|st| st.count).unwrap_or(0),
         "craft_size": s.craft_size,

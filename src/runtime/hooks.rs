@@ -16,7 +16,9 @@ use super::scrub_hud::{
 use super::settings_ui::{
     close_global_settings_modal, flush_settings_ui_actions, handle_screen_char_typed,
     is_global_modal_open, is_settings_ui_open, request_open_settings_ui, reset_settings_ui_state,
+    sync_settings_player_heads,
 };
+use super::settings_ui_draw::set_player_head_skins;
 use super::snapshots::*;
 use super::storage::has_disk_checkpoint;
 use super::types::*;
@@ -218,7 +220,7 @@ pub fn handle_play_mouse_button(game: &mut Game<'_>, button: i32, pressed: bool)
         let [mx, my] = game.cursor();
         let _ = handle_scrub_hud_mouse_pressed(button, mx, my);
     } else {
-        handle_scrub_hud_mouse_released(button);
+        handle_scrub_hud_mouse_released(button, Some(game.cursor()[0]));
     }
     true
 }
@@ -419,6 +421,8 @@ pub fn handle_server_started(game: &mut Game<'_>) {
     clear_session_entity_ids();
     observe_session_entity_ids(game);
     clear_client_snapshots();
+    clear_chat_journal();
+    set_player_head_skins(Default::default());
     with_scrub_ring_mut(|r| r.clear());
     clear_server_scrub();
     clear_reverse_audio_cache();
@@ -471,6 +475,8 @@ pub fn handle_lifecycle(game: &mut Game<'_>, phase: WorldPhase) {
         | WorldPhase::WorldOpenFailed => {
             clear_active_ui_world_root();
             reset_settings_ui_state();
+            set_player_head_skins(Default::default());
+            clear_chat_journal();
             clear_all_slots();
             clear_session_entity_ids();
             clear_client_snapshots();
@@ -491,6 +497,7 @@ pub fn handle_tick(game: &mut Game<'_>) {
     tick_ui_mode_guard();
     flush_pending_screen_hotkey(game);
     flush_settings_ui_actions(game);
+    sync_chat_journal(game);
     let scrub_en = with_state(|st| st.scrub_enabled);
     if scrub_en {
         if game.audio.capture.is_none() {
@@ -726,6 +733,7 @@ pub fn handle_frame_render_pre(
     }
     flush_pending_screen_hotkey(game);
     flush_settings_ui_actions(game);
+    sync_settings_player_heads(game);
     if is_settings_ui_open(game) {
         let _ = game.apply_screen_blur();
     }
@@ -733,6 +741,63 @@ pub fn handle_frame_render_pre(
         return;
     }
     on_frame_render_pre(game, world_partial, partial);
+}
+
+pub fn should_override_wheel_for_scrub(game: &Game<'_>) -> bool {
+    is_scrubbing()
+        && with_state(|st| st.scrub_enabled)
+        && game.screen == super::super::Screen::Playing
+        && game.player.is_some()
+}
+
+pub fn handle_overlay_key_during_scrub(
+    game: &mut Game<'_>,
+    key_name: Option<&str>,
+    pressed: bool,
+    released: bool,
+    repeat: bool,
+) -> bool {
+    if !is_scrubbing() {
+        return false;
+    }
+    if (pressed || released)
+        && let Some(key) = key_name
+    {
+        let action = if released {
+            mod_api::KeyAction::Release
+        } else if repeat {
+            mod_api::KeyAction::Repeat
+        } else {
+            mod_api::KeyAction::Press
+        };
+        handle_key(game, key, action);
+    }
+    true
+}
+
+pub fn handle_overlay_click_during_scrub(game: &mut Game<'_>) -> bool {
+    if !is_scrubbing() {
+        return false;
+    }
+    let _ = handle_play_mouse_button(game, 0, true);
+    true
+}
+
+pub fn should_block_text_input_during_scrub(game: &Game<'_>) -> bool {
+    with_state(|st| st.scrub_enabled) && is_scrubbing() && game.player.is_some()
+}
+
+pub fn handle_draw_overlay_hud_post(
+    game: &Game<'_>,
+    draw: &mut horizon_client::hud::HudBatch,
+) {
+    if with_state(|st| st.scrub_enabled)
+        && is_scrubbing()
+        && game.screen == super::super::Screen::Playing
+        && (game.sign_edit.is_some() || game.book.is_some())
+    {
+        draw_scrub_hud(game, draw);
+    }
 }
 
 pub fn handle_render_gui_post(

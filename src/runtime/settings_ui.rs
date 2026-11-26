@@ -11,7 +11,7 @@ use super::settings_catalog::{
 };
 use super::settings_ui_draw::*;
 use super::settings_ui_icons::{draw_ui_icon, draw_ui_icon_sized, UiIcon};
-use super::settings_ui_players::draw_players_tab;
+use super::settings_ui_players::{collect_listed_uuids, draw_players_tab};
 use super::settings_ui_tabs::{draw_grouped_tab, draw_search_tab, draw_system_tab};
 use super::types::*;
 use super::ui::{load_global_settings, save_current_settings, save_global_settings, sync_scrub_runtime};
@@ -34,6 +34,19 @@ pub fn is_global_modal_open() -> bool {
 
 pub fn is_settings_ui_open(game: &Game<'_>) -> bool {
     is_world_settings_ui_open(game) || (game.screen == Screen::Options && is_global_modal_open())
+}
+
+pub fn sync_settings_player_heads(game: &mut Game<'_>) {
+    if !is_world_settings_ui_open(game) {
+        return;
+    }
+    let active_players = UI_STATE.with(|cell| cell.borrow().active_tab == UiTab::Players);
+    if !active_players {
+        return;
+    }
+    let uuids = with_state(collect_listed_uuids);
+    let skins = game.rreturn_sync_player_heads(&uuids);
+    set_player_head_skins(skins);
 }
 
 pub fn open_global_settings_modal() {
@@ -140,11 +153,13 @@ pub fn settings_ui_bounds_json() -> String {
             "global_open": ui.global_modal_open,
             "window": ui.window_bounds,
             "active_tab": tab_name,
+            "header_sub": ui.header_sub,
             "scroll_y": ui.scroll_y,
             "target_scroll_y": ui.target_scroll_y,
             "max_scroll_y": ui.max_scroll_y,
             "selected_player": ui.selected_player.map(|u| format!("{:032x}", u)),
             "player_scope_scrub": ui.player_scope_scrub,
+            "player_heads": snapshot_player_head_skins(),
             "hotkeys": ui.bound_hotkeys,
             "controls": controls,
         })
@@ -448,21 +463,10 @@ fn render_settings_canvas<C: UiCanvas>(canvas: &C, draw: &mut HudBatch, game_tim
     } else {
         tr(active_tab.subtitle_key())
     };
-    let badge_lbl = (mode == SettingsUiMode::Global).then(|| tr("rreturn.ui.global.badge"));
-    let badge_reserve = badge_lbl
-        .as_ref()
-        .map_or(0.0, |b| canvas.text_width(draw, b) + 18.0);
-    let hdr_text_max = (right_w - 28.0 - badge_reserve).max(30.0);
+    let hdr_text_max = (right_w - 28.0).max(30.0);
     let fit_hdr = fit_text(canvas, draw, &hdr_title, hdr_text_max);
     canvas.text(draw, &fit_hdr, [right_x, win_y + 10.0], UI_TEXT_PRI, false);
-    if let Some(badge) = badge_lbl {
-        let bw = canvas.text_width(draw, &badge) + 10.0;
-        let bx = right_x + canvas.text_width(draw, &fit_hdr) + 8.0;
-        if bx + bw <= close_rect[0] - 6.0 {
-            draw_pill(canvas, draw, [bx, win_y + 8.0, bw, 12.0], &badge, UI_BLUE_SOFT, UI_BLUE);
-        }
-    }
-    canvas.text(draw, &fit_text(canvas, draw, &hdr_sub, (right_w - 28.0).max(30.0)), [right_x, win_y + 22.0], UI_TEXT_MUTED, false);
+    canvas.text(draw, &fit_text(canvas, draw, &hdr_sub, hdr_text_max), [right_x, win_y + 22.0], UI_TEXT_MUTED, false);
 
     // Quick-Jump Icon Bar only on multi-section Rollback / Scrub tabs
     let mut list_top_off = 38.0;
@@ -542,6 +546,7 @@ fn render_settings_canvas<C: UiCanvas>(canvas: &C, draw: &mut HudBatch, game_tim
         ui.target_scroll_y = ui.target_scroll_y.min(max_scroll);
         ui.scroll_y = ui.scroll_y.min(max_scroll);
         ui.window_bounds = [win_x, win_y, win_w, win_h];
+        ui.header_sub = hdr_sub;
         ui.hit_regions = regions;
     });
 
@@ -910,7 +915,7 @@ pub fn handle_settings_mouse_pressed_core(button: i32, mx: f32, my: f32) {
                 } else {
                     st.anchor.pinned.push(uuid);
                     if st.anchor.mode == AnchorMode::Everyone || st.anchor.mode == AnchorMode::Rotating {
-                        st.anchor.mode = AnchorMode::Multi;
+                        st.anchor.mode = AnchorMode::Manual;
                     }
                 }
             });
@@ -1102,7 +1107,7 @@ pub fn handle_screen_mouse_pressed(game: &Game<'_>, button: i32, mx: f32, my: f3
 
 pub fn handle_screen_mouse_released(game: &Game<'_>, button: i32, canceled: &mut bool) {
     if is_scrubbing() {
-        handle_scrub_hud_mouse_released(button);
+        handle_scrub_hud_mouse_released(button, Some(game.cursor()[0]));
         *canceled = true;
         return;
     }

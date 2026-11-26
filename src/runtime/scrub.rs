@@ -958,7 +958,10 @@ pub fn cancel_scrub(game: &mut Game<'_>) {
 }
 
 pub fn render_hud(game: &Game<'_>, draw: &mut horizon_client::hud::HudBatch) {
-    if game.screen == super::super::Screen::Playing {
+    if game.screen == super::super::Screen::Playing
+        && game.sign_edit.is_none()
+        && game.book.is_none()
+    {
         draw_scrub_hud(game, draw);
     }
 }

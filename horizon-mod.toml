@@ -469,3 +469,107 @@ bindings = [
   { name = "event", ty = "&WindowEvent", value = "&event" },
 ]
 
+[[native.mixin]]
+id = "hotbar-takes-wheel"
+target = "horizon_client::game::play_input::Game<'_>::hotbar_takes_wheel"
+kind = "HEAD"
+cancellable = true
+helper = "src/hooks/hook_hotbar_takes_wheel.rs"
+bindings = [
+  { name = "game", ty = "&Game<'_>", value = "&*self" },
+]
+
+[[native.mixin]]
+id = "sign-edit-key-pre"
+target = "horizon_client::game::sign_edit::Game<'_>::sign_edit_key"
+kind = "HEAD"
+cancellable = true
+helper = "src/hooks/hook_sign_edit_key.rs"
+bindings = [
+  { name = "game", ty = "&mut Game<'_>", value = "&mut *self" },
+  { name = "event", ty = "&winit::event::KeyEvent", value = "event" },
+]
+
+[[native.mixin]]
+id = "sign-edit-click-pre"
+target = "horizon_client::game::sign_edit::Game<'_>::sign_edit_click"
+kind = "HEAD"
+cancellable = true
+helper = "src/hooks/hook_sign_edit_click.rs"
+bindings = [
+  { name = "game", ty = "&mut Game<'_>", value = "&mut *self" },
+  { name = "size", ty = "[u32; 2]", value = "size" },
+]
+
+[[native.mixin]]
+id = "book-key-pre"
+target = "horizon_client::game::books::Game<'_>::book_key"
+kind = "HEAD"
+cancellable = true
+helper = "src/hooks/hook_book_key.rs"
+bindings = [
+  { name = "game", ty = "&mut Game<'_>", value = "&mut *self" },
+  { name = "event", ty = "&winit::event::KeyEvent", value = "event" },
+]
+
+[[native.mixin]]
+id = "book-click-pre"
+target = "horizon_client::game::books::Game<'_>::book_click"
+kind = "HEAD"
+cancellable = true
+helper = "src/hooks/hook_book_click.rs"
+bindings = [
+  { name = "game", ty = "&mut Game<'_>", value = "&mut *self" },
+  { name = "size", ty = "[u32; 2]", value = "size" },
+]
+
+[[native.mixin]]
+id = "ime-type-pre"
+target = "horizon_client::game::ime::Game<'_>::ime_type"
+kind = "HEAD"
+cancellable = true
+helper = "src/hooks/hook_ime_type.rs"
+bindings = [
+  { name = "game", ty = "&Game<'_>", value = "&*self" },
+]
+
+[[native.mixin]]
+id = "sign-input-pre"
+target = "horizon_client::game::sign_edit::Game<'_>::sign_input"
+kind = "HEAD"
+cancellable = true
+helper = "src/hooks/hook_sign_input.rs"
+bindings = [
+  { name = "game", ty = "&Game<'_>", value = "&*self" },
+]
+
+[[native.mixin]]
+id = "book-input-pre"
+target = "horizon_client::game::books::Game<'_>::book_input"
+kind = "HEAD"
+cancellable = true
+helper = "src/hooks/hook_book_input.rs"
+bindings = [
+  { name = "game", ty = "&Game<'_>", value = "&*self" },
+]
+
+[[native.mixin]]
+id = "book-type-pre"
+target = "horizon_client::game::books::Game<'_>::book_type"
+kind = "HEAD"
+cancellable = true
+helper = "src/hooks/hook_book_type.rs"
+bindings = [
+  { name = "game", ty = "&Game<'_>", value = "&*self" },
+]
+
+[[native.mixin]]
+id = "draw-studio-bars-hud"
+target = "horizon_client::game::studio::Game<'_>::draw_studio_bars"
+kind = "HEAD"
+helper = "src/hooks/hook_draw_studio_bars.rs"
+bindings = [
+  { name = "game", ty = "&Game<'_>", value = "&*self" },
+  { name = "draw", ty = "&mut horizon_client::hud::HudBatch", value = "&mut *batch" },
+]
+

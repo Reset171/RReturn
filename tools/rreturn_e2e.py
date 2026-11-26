@@ -57,6 +57,7 @@ from tools.tests.test_world_settings import (
     test_111_settings_ui_toggles_search_and_persistence,
     test_115_rreturn_menu_icons_and_per_player_overrides,
     test_118_mods_global_vs_world_settings,
+    test_127_ui_polish_boss_default_players_heads_and_modes,
 )
 from tools.tests.test_ui_rollback_scrub import (
     test_112_scrub_blocks_chat_and_hud_controls,
@@ -66,6 +67,8 @@ from tools.tests.test_ui_rollback_scrub import (
     test_120_scrub_furnace_cooking_progress_client_sync,
     test_121_scrub_creative_survival_hud_mode_and_xp_transitions,
     test_122_scrub_f3_f4_gamemode_switcher_display,
+    test_125_chat_history_rollback_and_scrub,
+    test_126_sign_edit_wheel_and_scrub_hud_drag_lock,
 )
 from tools.tests.test_portals import (
     test_24_nether_portal_cold_chunk,
@@ -328,6 +331,9 @@ def build_test_catalog():
         (122, "Test 122: Scrub F3+F4 GameModeSwitcher Display", "scrubbing", test_122_scrub_f3_f4_gamemode_switcher_display),
         (123, "Test 123: Scrub Mass TNT Disk Persistence on Reopen", "scrubbing", test_123_scrub_mass_tnt_disk_persistence_on_reopen),
         (124, "Test 124: Disk Checkpoint Reopen Entity Type Client Sync", "slots", test_124_disk_checkpoint_reopen_entity_type_client_sync),
+        (125, "Test 125: Chat History Rollback and Scrub", "ui_state", test_125_chat_history_rollback_and_scrub),
+        (126, "Test 126: Sign Editor Wheel and Scrub HUD Drag Lock", "scrubbing", test_126_sign_edit_wheel_and_scrub_hud_drag_lock),
+        (127, "Test 127: UI Polish Boss Default Players Heads and Modes", "world_settings", test_127_ui_polish_boss_default_players_heads_and_modes),
     ]
 
 

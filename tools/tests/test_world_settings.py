@@ -665,6 +665,7 @@ def test_118_mods_global_vs_world_settings(h):
     global_cfg_path = _global_settings_path(h)
     world_a_cfg_path = _world_settings_path(h)
     backup_global = global_cfg_path.read_text(encoding="utf-8") if global_cfg_path.is_file() else None
+    global_cfg_path.unlink(missing_ok=True)
 
     scratch_dir = Path(tempfile.gettempdir()) / "rreturn_e2e_screenshots"
     scratch_dir.mkdir(parents=True, exist_ok=True)
@@ -763,6 +764,9 @@ def test_118_mods_global_vs_world_settings(h):
         rb_x, rb_y = ui_pt("tab.rollback")
         h.raw_send(f"click-at {rb_x} {rb_y}")
         time.sleep(0.15)
+        g_ax, g_ay = ui_pt("opt.auto_save")
+        h.raw_send(f"click-at {g_ax} {g_ay}")
+        time.sleep(0.15)
         dx, dy = ui_pt("opt.death_rollback")
         h.raw_send(f"click-at {dx} {dy}")
         time.sleep(0.15)
@@ -848,6 +852,9 @@ def test_118_mods_global_vs_world_settings(h):
         bx, by = rb_pts["opt.blocks"]
         h.raw_send(f"click-at {bx} {by}")
         time.sleep(0.15)
+        g_ax, g_ay = rb_pts["opt.auto_save"]
+        h.raw_send(f"click-at {g_ax} {g_ay}")
+        time.sleep(0.15)
         sx, sy = rb_pts["tab.scrub"]
         h.raw_send(f"click-at {sx} {sy}")
         time.sleep(0.15)
@@ -856,6 +863,7 @@ def test_118_mods_global_vs_world_settings(h):
         time.sleep(0.2)
         g_reset = json.loads(global_cfg_path.read_text(encoding="utf-8"))
         assert g_reset["death_rollback"] is True and g_reset["scrub"]["enabled"] is False, g_reset
+        assert g_reset["autosave"]["auto_save"] is True, g_reset
         assert g_reset["checkpointPolicy"]["rollback"]["blocks"] is True, g_reset
 
         cx, cy = rb_pts["close"]
@@ -905,6 +913,135 @@ def test_118_mods_global_vs_world_settings(h):
         h.rreturn("policy reset")
         h.rreturn("scrub policy reset")
         h.wait(2)
+
+
+def test_127_ui_polish_boss_default_players_heads_and_modes(h):
+    """Fresh defaults turn boss autosave off; Global omits badge; Scrub omits prefix; Players shows 3 modes + head icons."""
+    orig_world = h.world
+    global_cfg_path = _global_settings_path(h)
+    backup_global = global_cfg_path.read_text(encoding="utf-8") if global_cfg_path.is_file() else None
+    global_cfg_path.unlink(missing_ok=True)
+    fresh_world = f"{orig_world}_polish_{h.current_test_id}"
+    h.open_world(fresh_world, seed=12345)
+
+    def ui_bounds():
+        res = h.rreturn("ui bounds")
+        assert isinstance(res, dict) and "controls" in res, f"Expected ui bounds dict: {res}"
+        return res
+
+    def ui_pt(tag):
+        controls = ui_bounds()["controls"]
+        assert tag in controls, f"Missing UI hit control '{tag}' in {sorted(controls.keys())}"
+        return controls[tag]
+
+    try:
+        # 1. save_on_boss_defeat defaults to False in a fresh world
+        st_json = h.rreturn("json")
+        assert st_json.get("save_on_boss_defeat") is False, (
+            f"Expected save_on_boss_defeat to default to False: {st_json}"
+        )
+
+        # 2. Check localization polish in both lang files
+        root = Path(__file__).resolve().parents[2]
+        for lang_name in ("ru_ru.json", "en_us.json"):
+            lang_data = json.loads((root / "assets/rreturn/lang" / lang_name).read_text(encoding="utf-8"))
+            assert "rreturn.ui.global.badge" not in lang_data, f"Stale global.badge key in {lang_name}"
+            for k in (
+                "rreturn.ui.group.scrub_world",
+                "rreturn.ui.group.scrub_entities",
+                "rreturn.ui.group.scrub_player",
+                "rreturn.ui.group.scrub_rules",
+            ):
+                val = lang_data[k]
+                assert not val.upper().startswith(("СКРАБ:", "SCRUB:")), f"Prefix left in {lang_name} {k}={val}"
+            ec_desc = lang_data["rreturn.ui.opt.player_ender_chest.desc"]
+            assert "27" not in ec_desc and len(ec_desc) <= 32, (
+                f"Expected concise ender chest desc without '27' in {lang_name}: {ec_desc}"
+            )
+
+        # 3. Players tab in K menu exposes 3 modes (Manual/Everyone/Rotating) & resolved player head icons
+        h.raw_send("key k tap")
+        h.wait(2)
+        px, py = ui_pt("tab.players")
+        h.raw_send(f"click-at {px} {py}")
+        h.wait(4)
+        b_pl = ui_bounds()
+        ctrls = b_pl["controls"]
+        for expected in ("anchor.mode.manual", "anchor.mode.everyone", "anchor.mode.rotating"):
+            assert expected in ctrls, f"Missing 3-mode anchor button {expected}: {sorted(ctrls.keys())}"
+        for removed in ("anchor.mode.fixed", "anchor.mode.multi"):
+            assert removed not in ctrls, f"Removed anchor button {removed} still present: {sorted(ctrls.keys())}"
+
+        heads = b_pl.get("player_heads", {})
+        sel_uuid = b_pl.get("selected_player")
+        assert sel_uuid and sel_uuid in heads and heads[sel_uuid], (
+            f"Missing resolved head sprite for selected player {sel_uuid}: {heads}"
+        )
+
+        # Clicking each of the 3 mode buttons switches cleanly
+        for seg, expected_mode in (
+            ("anchor.mode.everyone", "everyone"),
+            ("anchor.mode.rotating", "rotating"),
+            ("anchor.mode.manual", "manual"),
+        ):
+            sx, sy = ui_pt(seg)
+            h.raw_send(f"click-at {sx} {sy}")
+            h.wait(2)
+            assert h.rreturn("json").get("anchor_mode") == expected_mode, (
+                f"Clicking {seg} did not set {expected_mode}: {h.rreturn('json')}"
+            )
+
+        # Legacy CLI aliases fixed/multi map cleanly to manual
+        h.rreturn("anchor mode fixed")
+        assert h.rreturn("json").get("anchor_mode") == "manual"
+        h.rreturn("anchor mode multi")
+        assert h.rreturn("json").get("anchor_mode") == "manual"
+        h.raw_send("key esc tap")
+        h.wait(2)
+
+        # 4. Global modal has no global_badge and renders concise gray subtitle for new worlds
+        h.raw_send("options mods")
+        h.wait(2)
+        btns = h.screen().get("buttons", [])
+        open_btn = next((b for b in btns if b.get("label") in ("Open Mods Folder", "Открыть папку модов")), None)
+        back_btn = next((b for b in btns if b.get("label") in ("Back", "Назад")), None)
+        gui_w = int(round(open_btn["x"] + back_btn["x"] + back_btn["w"])) if open_btn and back_btn else 427
+        left = (gui_w - min(gui_w, 404)) // 2
+        for row_idx in (2, 0, 1, 3, 4, 5):
+            h.raw_send(f"click-at {left + 40} {34 + row_idx * 28 + 14}")
+            time.sleep(0.15)
+            cand = next((b for b in h.screen().get("buttons", []) if b.get("label") in ("Config", "Настройки")), None)
+            if cand and cand.get("enabled"):
+                h.raw_send(f"click-at {int(round(cand['x'] + cand['w'] * 0.5))} {int(round(cand['y'] + cand['h'] * 0.5))}")
+                time.sleep(0.2)
+                break
+        bg = ui_bounds()
+        assert bg.get("mode") == "global" and bg.get("global_open") is True, bg
+        assert bg.get("global_badge") is None, f"Global badge must be removed: {bg}"
+        sub = bg.get("header_sub", "").lower()
+        assert "нов" in sub or "new" in sub, f"Expected new-worlds subtitle in Global header: {bg}"
+        h.raw_send("key esc tap")
+        time.sleep(0.2)
+    finally:
+        for _ in range(3):
+            try:
+                scr = h.screen().get("screen")
+                if scr in ("mod", "options"):
+                    h.raw_send("key esc tap")
+                    time.sleep(0.2)
+                elif scr == "paused":
+                    h.raw_send("resume")
+                    time.sleep(0.2)
+                else:
+                    break
+            except Exception:
+                break
+        if backup_global is not None:
+            global_cfg_path.parent.mkdir(parents=True, exist_ok=True)
+            global_cfg_path.write_text(backup_global, encoding="utf-8")
+        else:
+            global_cfg_path.unlink(missing_ok=True)
+        h.open_world(orig_world, seed=12345)
 
 
 

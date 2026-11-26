@@ -2,6 +2,8 @@ use super::*;
 use horizon_client::items::ItemStack;
 use horizon_protocol::packets::play::OpenScreen;
 use std::cell::RefCell;
+use std::collections::HashMap;
+use std::time::Instant;
 
 thread_local! {
     static REMOTE_CRAFT_TABLE_POS: RefCell<Option<(i32, [i32; 3])>> = const { RefCell::new(None) };
@@ -26,6 +28,8 @@ pub trait GameRemoteContainerExt {
     fn rreturn_craft_table_pos(&self) -> Option<[i32; 3]>;
     fn rreturn_craft_result(&self) -> Option<ItemStack>;
     fn rreturn_set_craft_result(&mut self, item: Option<ItemStack>);
+    fn rreturn_sync_player_heads(&mut self, uuids: &[u128]) -> HashMap<u128, String>;
+    fn rreturn_set_remote_chat_lines(&mut self, lines: &[String]);
 }
 
 impl GameRemoteContainerExt for super::Game<'_> {
@@ -84,6 +88,55 @@ impl GameRemoteContainerExt for super::Game<'_> {
     fn rreturn_set_craft_result(&mut self, item: Option<ItemStack>) {
         if let Some(r) = self.remote.as_mut() {
             r.craft_result = item;
+        }
+    }
+
+    fn rreturn_sync_player_heads(&mut self, uuids: &[u128]) -> HashMap<u128, String> {
+        self.flush_skin_slots();
+        let tab_skins: HashMap<u128, String> = self
+            .remote_tab_players()
+            .map(|(players, _, _)| players.into_iter().map(|p| (p.uuid, p.skin)).collect())
+            .unwrap_or_default();
+        let local_uuid = self.level.player_uuid.map_or(0, |u| {
+            u.iter()
+                .fold(0u128, |a, &w| (a << 32) | u128::from(w as u32))
+        });
+
+        let mut out = HashMap::with_capacity(uuids.len());
+        for &uuid in uuids {
+            let mut skin = if let Some(raw) = tab_skins.get(&uuid) {
+                self.face_skin(uuid, raw)
+            } else if uuid == local_uuid {
+                if let Some((rgba, _)) = horizon_client::skins::offline_skin() {
+                    const OFFLINE: &str = "horizon/offline_skin";
+                    if !self.skin_slots.contains(OFFLINE)
+                        || !self.gui.atlas.sprites.contains_key(OFFLINE)
+                    {
+                        self.store_skin(OFFLINE.into(), rgba.clone());
+                    }
+                    if self.gui.atlas.sprites.contains_key(OFFLINE) {
+                        OFFLINE.to_owned()
+                    } else {
+                        horizon_client::tab_list::default_skin(uuid).to_owned()
+                    }
+                } else {
+                    horizon_client::tab_list::default_skin(uuid).to_owned()
+                }
+            } else {
+                horizon_client::tab_list::default_skin(uuid).to_owned()
+            };
+            if !self.gui.atlas.sprites.contains_key(&skin) {
+                skin = horizon_client::tab_list::default_skin(uuid).to_owned();
+            }
+            out.insert(uuid, skin);
+        }
+        out
+    }
+
+    fn rreturn_set_remote_chat_lines(&mut self, lines: &[String]) {
+        if let Some(r) = self.remote.as_mut() {
+            let now = Instant::now();
+            r.chat = lines.iter().map(|s| (s.clone(), now)).collect();
         }
     }
 }

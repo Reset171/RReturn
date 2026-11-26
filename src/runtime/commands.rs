@@ -444,11 +444,11 @@ pub fn handle_anchor_subcommand(
             "[RReturn] Cleared all pinned key players.".to_owned()
         }
         "mode" => {
-            let mode_str = args.get(1).copied().unwrap_or("fixed");
+            let mode_str = args.get(1).copied().unwrap_or("manual");
             let mode = AnchorMode::by_id(mode_str);
             with_state_mut(|st| {
                 st.anchor.mode = mode;
-                if mode == AnchorMode::Fixed
+                if mode == AnchorMode::Manual
                     && st.anchor.pinned.is_empty()
                     && let Some(req) = requester
                 {
@@ -776,15 +776,18 @@ pub fn handle_client_command(game: &mut Game<'_>, command: &str, ran: &mut bool)
         match trimmed.split_whitespace().nth(2) {
             Some("bounds") => {
                 let bounds = settings_ui_bounds_json();
+                mark_telemetry_chat_text(&bounds);
                 game.native_chat(&bounds);
             }
             Some("state") => {
                 let json = serde_json::to_string(&ui_state_json(game))
                     .unwrap_or_else(|_| "{}".to_owned());
+                mark_telemetry_chat_text(&json);
                 game.native_chat(&json);
             }
             Some("scrub_hud") | Some("hud") => {
                 let json = scrub_hud_bounds_json();
+                mark_telemetry_chat_text(&json);
                 game.native_chat(&json);
             }
             Some("rollback") => {

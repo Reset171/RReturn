@@ -223,8 +223,7 @@ impl mod_api::Hooks for Mod {
                 "anchor_mode",
                 "rreturn.setting.anchor_mode",
                 [
-                    "config.rreturn.anchorMode.fixed",
-                    "config.rreturn.anchorMode.multi",
+                    "config.rreturn.anchorMode.manual",
                     "config.rreturn.anchorMode.everyone",
                     "config.rreturn.anchorMode.rotating",
                 ],
@@ -247,7 +246,7 @@ impl mod_api::Hooks for Mod {
             SettingSpec::toggle(
                 "save_on_boss_defeat",
                 "rreturn.setting.save_on_boss_defeat",
-                true,
+                false,
             )
             .tooltip("rreturn.setting.save_on_boss_defeat.tooltip"),
         );

@@ -148,6 +148,35 @@ fn hud_context_label(screen_id: &str, has_container: bool, has_station: bool) ->
     Some(tr(key))
 }
 
+fn scrub_hud_layout(game: &Game<'_>, draw: &HudBatch, _sw: f32, sh: f32) -> (f32, f32, bool) {
+    if game.screen == super::super::Screen::Playing {
+        let bar_h = 56.0;
+        let bar_y = (sh - bar_h - 64.0).max(12.0).floor();
+        return (bar_y, bar_h, false);
+    }
+    let bar_h = 22.0;
+    let margin = if matches!(game.screen, super::super::Screen::Creative) && sh <= 250.0 {
+        2.0
+    } else {
+        4.0
+    };
+    let bottom_y = (sh - bar_h - margin).max(4.0).floor();
+    let bar_y = if game.screen == super::super::Screen::Chat {
+        4.0
+    } else if game.screen == super::super::Screen::Inventory {
+        let (_, oy) = game.inventory_origin(draw);
+        let gui_bottom = oy + game.screen_height();
+        if bottom_y < gui_bottom && oy >= bar_h + 6.0 {
+            4.0
+        } else {
+            bottom_y
+        }
+    } else {
+        bottom_y
+    };
+    (bar_y, bar_h, true)
+}
+
 pub fn draw_scrub_hud(game: &Game<'_>, draw: &mut HudBatch) {
     if !with_state(|st| st.scrub_enabled) || !scrub_show_hud_enabled() {
         return;
@@ -162,20 +191,15 @@ pub fn draw_scrub_hud(game: &Game<'_>, draw: &mut HudBatch) {
     let [mx, my] = game.cursor();
     let dragging = SCRUB_HUD_STATE.with(|c| c.borrow().dragging_track);
 
-    let bar_w = (sw - 32.0).clamp(296.0, 520.0);
-    let bar_h = 56.0f32;
+    let bar_w = (sw - 24.0).clamp(296.0, 520.0);
+    let (bar_y, bar_h, compact) = scrub_hud_layout(game, draw, sw, sh);
     let bar_x = ((sw - bar_w) * 0.5).floor();
-    let bottom_margin = if game.screen == super::super::Screen::Playing {
-        64.0
-    } else {
-        10.0
-    };
-    let bar_y = (sh - bar_h - bottom_margin).max(12.0).floor();
     let capsule = [bar_x, bar_y, bar_w, bar_h];
+    let radius = if compact { 8.0 } else { 11.0 };
 
-    draw_soft_shadow(game, draw, capsule, 11.0, 4);
-    draw_rounded_rect(game, draw, capsule, 11.0, 0xF710_131C);
-    draw_rounded_border(game, draw, capsule, 11.0, 0x24FF_FFFF);
+    draw_soft_shadow(game, draw, capsule, radius, 4);
+    draw_rounded_rect(game, draw, capsule, radius, 0xF710_131C);
+    draw_rounded_border(game, draw, capsule, radius, 0x24FF_FFFF);
 
     let is_live = (max_t as f64 - curr).abs() < 0.25;
     let badge_label = if is_live {
@@ -184,9 +208,9 @@ pub fn draw_scrub_hud(game: &Game<'_>, draw: &mut HudBatch) {
         tr("rreturn.scrub_hud.badge_rewind")
     };
     let badge_bg = if is_live { 0xFF1E_8E5A } else { UI_BLUE };
-    let badge_w = (game.native_text_width(draw, &badge_label) + 14.0).clamp(48.0, 100.0);
-    let top_y = bar_y + 7.0;
-    let badge_rect = [bar_x + 12.0, top_y, badge_w, 15.0];
+    let badge_w = (game.native_text_width(draw, &badge_label) + 12.0).clamp(44.0, 96.0);
+    let top_y = bar_y + if compact { 3.5 } else { 7.0 };
+    let badge_rect = [bar_x + 10.0, top_y, badge_w, 15.0];
     draw_pill(game, draw, badge_rect, &badge_label, badge_bg, 0xFFFF_FFFF);
 
     let sec = ((curr - max_t as f64) / 20.0).min(0.0);
@@ -196,36 +220,40 @@ pub fn draw_scrub_hud(game: &Game<'_>, draw: &mut HudBatch) {
     } else {
         format!("{:.1} {}", sec, sec_unit)
     };
-    let mut cursor_x = badge_rect[0] + badge_rect[2] + 8.0;
+    let mut cursor_x = badge_rect[0] + badge_rect[2] + 7.0;
     game.native_text(draw, &offset_text, [cursor_x, top_y + 3.5], UI_TEXT_PRI, false);
     cursor_x += game.native_text_width(draw, &offset_text) + 8.0;
 
     let cancel_label = tr("rreturn.scrub_hud.cancel");
     let apply_label = tr("rreturn.scrub_hud.apply");
-    let cancel_w = (game.native_text_width(draw, &cancel_label) + 14.0).clamp(50.0, 96.0);
-    let apply_w = (game.native_text_width(draw, &apply_label) + 14.0).clamp(54.0, 108.0);
-    let apply_rect = [bar_x + bar_w - 12.0 - apply_w, top_y, apply_w, 15.0];
-    let cancel_rect = [apply_rect[0] - 6.0 - cancel_w, top_y, cancel_w, 15.0];
+    let cancel_w = (game.native_text_width(draw, &cancel_label) + 12.0).clamp(46.0, 92.0);
+    let apply_w = (game.native_text_width(draw, &apply_label) + 12.0).clamp(50.0, 104.0);
+    let apply_rect = [bar_x + bar_w - 10.0 - apply_w, top_y, apply_w, 15.0];
+    let cancel_rect = [apply_rect[0] - 5.0 - cancel_w, top_y, cancel_w, 15.0];
 
-    let target_tick = curr.round() as i64;
-    let frame_ctx = with_scrub_ring(|ring| {
-        ring.frames
-            .iter()
-            .min_by_key(|f| (f.game_time - target_tick).abs())
-            .and_then(|f| {
-                hud_context_label(
-                    &f.ui.screen,
-                    f.ui.container.is_some() || f.ui.ender_open.is_some() || f.ui.craft_table.is_some(),
-                    f.ui.station.is_some(),
-                )
-            })
-    });
-    if let Some(ctx_label) = frame_ctx {
-        let avail = (cancel_rect[0] - 8.0) - cursor_x;
-        if avail >= 36.0 {
-            let fit = fit_text(game, draw, &ctx_label, avail - 12.0);
-            let ctx_w = game.native_text_width(draw, &fit) + 12.0;
-            draw_pill(game, draw, [cursor_x, top_y, ctx_w, 15.0], &fit, UI_PILL_BG, UI_TEXT_SEC);
+    if !compact {
+        let target_tick = curr.round() as i64;
+        let frame_ctx = with_scrub_ring(|ring| {
+            ring.frames
+                .iter()
+                .min_by_key(|f| (f.game_time - target_tick).abs())
+                .and_then(|f| {
+                    hud_context_label(
+                        &f.ui.screen,
+                        f.ui.container.is_some()
+                            || f.ui.ender_open.is_some()
+                            || f.ui.craft_table.is_some(),
+                        f.ui.station.is_some(),
+                    )
+                })
+        });
+        if let Some(ctx_label) = frame_ctx {
+            let avail = (cancel_rect[0] - 8.0) - cursor_x;
+            if avail >= 36.0 {
+                let fit = fit_text(game, draw, &ctx_label, avail - 12.0);
+                let ctx_w = game.native_text_width(draw, &fit) + 12.0;
+                draw_pill(game, draw, [cursor_x, top_y, ctx_w, 15.0], &fit, UI_PILL_BG, UI_TEXT_SEC);
+            }
         }
     }
 
@@ -248,9 +276,13 @@ pub fn draw_scrub_hud(game: &Game<'_>, draw: &mut HudBatch) {
         0xFFFF_FFFF,
     );
 
-    let track_x = bar_x + 14.0;
-    let track_y = bar_y + 29.0;
-    let track_w = bar_w - 28.0;
+    let (track_x, track_y, track_w) = if compact {
+        let tx = (cursor_x + 4.0).floor();
+        let tw = ((cancel_rect[0] - 10.0) - tx).max(40.0);
+        (tx, bar_y + 8.0, tw)
+    } else {
+        (bar_x + 14.0, bar_y + 29.0, bar_w - 28.0)
+    };
     let track_h = 6.0f32;
     let track_rect = [track_x, track_y, track_w, track_h];
     draw_rounded_rect(game, draw, track_rect, 3.0, UI_TRACK_BG);
@@ -312,16 +344,18 @@ pub fn draw_scrub_hud(game: &Game<'_>, draw: &mut HudBatch) {
         draw_rounded_border(game, draw, thumb_rect, thumb_r, UI_BLUE);
     }
 
-    let (scrub_lbl, scrub_bound) = format_mod_binding(game, "scrub", "key.keyboard.u");
-    let apply_keys = if scrub_bound {
-        format!("Enter / {}", scrub_lbl)
-    } else {
-        "Enter".to_owned()
-    };
-    let hint = fit_text(game, draw, &tr_args("rreturn.scrub_hud.hint", &[&apply_keys]), bar_w - 24.0);
-    let hint_w = game.native_text_width(draw, &hint);
-    let hint_x = (bar_x + (bar_w - hint_w) * 0.5).floor();
-    game.native_text(draw, &hint, [hint_x, bar_y + 41.0], UI_TEXT_MUTED, false);
+    if !compact {
+        let (scrub_lbl, scrub_bound) = format_mod_binding(game, "scrub", "key.keyboard.u");
+        let apply_keys = if scrub_bound {
+            format!("Enter / {}", scrub_lbl)
+        } else {
+            "Enter".to_owned()
+        };
+        let hint = fit_text(game, draw, &tr_args("rreturn.scrub_hud.hint", &[&apply_keys]), bar_w - 24.0);
+        let hint_w = game.native_text_width(draw, &hint);
+        let hint_x = (bar_x + (bar_w - hint_w) * 0.5).floor();
+        game.native_text(draw, &hint, [hint_x, bar_y + 41.0], UI_TEXT_MUTED, false);
+    }
 
     SCRUB_HUD_STATE.with(|c| {
         let mut st = c.borrow_mut();

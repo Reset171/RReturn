@@ -376,6 +376,10 @@ def test_119_crafting_table_scrub_and_post_rollback_interaction(h):
         assert ui_prev["craft_table"] == [0, 65, 2], ui_prev
         scr_prev = h.screen()
         assert scr_prev.get("craft_size") == 3, scr_prev
+        hud_craft = h.rreturn("ui scrub_hud")
+        assert isinstance(hud_craft, dict) and hud_craft["capsule"][3] <= 24.0, (
+            f"Expected compact 1-row scrub HUD when Inventory/Crafting is open: {hud_craft}"
+        )
 
         # Scrub forward onto Playing while still scrubbing — pointer must stay uncaptured!
         h.rreturn("scrub seek_ticks 12")

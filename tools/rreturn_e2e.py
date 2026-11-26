@@ -55,6 +55,7 @@ from tools.tests.test_world_settings import (
     test_106_logs_directory_structure,
     test_111_settings_ui_toggles_search_and_persistence,
     test_115_rreturn_menu_icons_and_per_player_overrides,
+    test_118_mods_global_vs_world_settings,
 )
 from tools.tests.test_ui_rollback_scrub import (
     test_112_scrub_blocks_chat_and_hud_controls,
@@ -314,6 +315,7 @@ def build_test_catalog():
         (115, "Test 115: RReturn Menu Icons and Per-Player Overrides", "world_settings", test_115_rreturn_menu_icons_and_per_player_overrides),
         (116, "Test 116: Death Rollback Toggle On Off", "death", test_116_death_rollback_toggle),
         (117, "Test 117: Post-Rollback Teleport Movement Sync", "investigation", test_117_post_rollback_teleport_movement_sync),
+        (118, "Test 118: Mods Global vs World K Settings Menu Isolation", "world_settings", test_118_mods_global_vs_world_settings),
     ]
 
 

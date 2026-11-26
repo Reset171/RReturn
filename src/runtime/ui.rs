@@ -1,13 +1,12 @@
 use super::super::Game;
+use super::policy::{PlayerPolicyOverrides, PlayerProfileOverrides, RollbackPolicy};
 use super::scrub_audio::clear_reverse_audio_cache;
 use super::scrub_server::clear_server_scrub;
 use super::scrub_timeline::with_scrub_ring_mut;
-use super::policy::RollbackPolicy;
+use super::storage::{global_settings_path, world_settings_path};
 use super::types::*;
-use std::{
-    fs,
-    path::Path,
-};
+use super::ui_snapshot::resolve_ui_world_root;
+use std::{fs, path::Path};
 
 pub fn sync_scrub_runtime(game: &mut Game<'_>, enabled: bool) {
     if !enabled {
@@ -93,180 +92,294 @@ fn apply_nested_policy_json(rb: &serde_json::Value, p: &mut RollbackPolicy) {
     }
 }
 
-pub fn load_saved_settings(game: &Game<'_>) {
-    let parse_num = |s: &str| -> Option<i32> {
-        s.parse::<f64>().ok().map(|v| v as i32).or_else(|| s.parse::<i32>().ok())
+fn write_json_atomic(path: &Path, json: &serde_json::Value) -> bool {
+    let Some(parent) = path.parent() else {
+        return false;
     };
-    let death_rollback = game
-        .setting(MOD_ID, "death_rollback")
-        .map(|v| v != "false");
-    let auto_save = game
-        .setting(MOD_ID, "auto_save")
-        .map(|v| v != "false");
-    let adaptive = game
-        .setting(MOD_ID, "adaptive_mode")
-        .map(|v| v != "false");
-    let interval = game
-        .setting(MOD_ID, "fixed_interval_sec")
-        .and_then(|v| parse_num(&v));
-    let mode = game
-        .setting(MOD_ID, "anchor_mode")
-        .map(|v| AnchorMode::by_id(&v));
-    let cooldown = game
-        .setting(MOD_ID, "rollback_cooldown_sec")
-        .and_then(|v| parse_num(&v));
-    let boss_save = game
-        .setting(MOD_ID, "save_on_boss_defeat")
-        .map(|v| v != "false");
-    let logs = game.setting(MOD_ID, "logs").map(|v| v == "true");
-    let f3_hitboxes = game
-        .setting(MOD_ID, "f3_loop_hitboxes")
-        .map(|v| v != "false");
-    let dev_mode = game
-        .setting(MOD_ID, "dev_mode")
-        .map(|v| v == "true");
-    let scrub_enabled = game
-        .setting(MOD_ID, "scrub_enabled")
-        .map(|v| v == "true" || v == "1");
+    let _ = fs::create_dir_all(parent);
+    let Ok(bytes) = serde_json::to_vec_pretty(json) else {
+        return false;
+    };
+    let tmp_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map_or_else(|| ".settings.json.tmp".to_owned(), |n| format!(".{n}.tmp"));
+    let tmp = parent.join(tmp_name);
+    if fs::write(&tmp, &bytes).is_ok() {
+        return fs::rename(&tmp, path).is_ok();
+    }
+    false
+}
 
-    let json_cfg = fs::read_to_string(Path::new("config").join("rreturn.json"))
-        .ok()
-        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
+pub fn copy_configurable_settings(
+    dst: &mut RReturnState,
+    src: &RReturnState,
+    include_world_player_state: bool,
+) {
+    dst.death_rollback = src.death_rollback;
+    dst.auto_save = src.auto_save;
+    dst.adaptive_mode = src.adaptive_mode;
+    dst.use_random_interval = src.use_random_interval;
+    dst.fixed_interval_sec = src.fixed_interval_sec;
+    dst.current_interval_ticks = i64::from(dst.fixed_interval_sec.max(5)) * 20;
+    dst.random_min_sec = src.random_min_sec;
+    dst.random_max_sec = src.random_max_sec;
+    dst.adaptive_interval_sec = src.adaptive_interval_sec;
+    dst.min_save_gap_sec = src.min_save_gap_sec;
+    dst.relax_time_sec = src.relax_time_sec;
+    dst.post_combat_save_pct = src.post_combat_save_pct;
+    dst.save_on_boss_defeat = src.save_on_boss_defeat;
+    dst.logs = src.logs;
+    dst.f3_loop_hitboxes = src.f3_loop_hitboxes;
+    dst.dev_mode = src.dev_mode;
+    dst.scrub_enabled = src.scrub_enabled;
+    dst.scrub_history_seconds = src.scrub_history_seconds;
+    dst.scrub_wheel_sensitivity = src.scrub_wheel_sensitivity;
+    dst.scrub_reverse_audio = src.scrub_reverse_audio;
+    dst.scrub_show_hud = src.scrub_show_hud;
+    dst.policy = src.policy;
+    dst.scrub_policy = src.scrub_policy;
+    dst.anchor.mode = src.anchor.mode;
+    dst.anchor.rotation_seconds = src.anchor.rotation_seconds;
+    dst.anchor.rollback_cooldown_seconds = src.anchor.rollback_cooldown_seconds;
+    if include_world_player_state {
+        dst.anchor.pinned = src.anchor.pinned.clone();
+        dst.player_overrides = src.player_overrides.clone();
+    } else {
+        dst.anchor.pinned.clear();
+        dst.player_overrides.clear();
+    }
+}
 
-    with_state_mut(|st| {
-        if let Some(v) = &json_cfg {
-            let b = |val: &serde_json::Value, d: bool| val.as_bool().unwrap_or(d);
-            st.death_rollback = b(&v["death_rollback"], st.death_rollback);
-            apply_nested_policy_json(&v["checkpointPolicy"]["rollback"], &mut st.policy);
-            let av = &v["autosave"];
-            if av.is_object() {
-                st.auto_save = b(&av["auto_save"], st.auto_save);
-                st.adaptive_mode = b(&av["adaptive_mode"], st.adaptive_mode);
-                st.use_random_interval = b(&av["use_random_interval"], st.use_random_interval);
-                if let Some(s) = av["fixed_interval_sec"].as_i64() {
-                    st.fixed_interval_sec = (s as i32).max(5);
-                    st.current_interval_ticks = i64::from(st.fixed_interval_sec) * 20;
-                }
-                if let Some(s) = av["random_min_sec"].as_i64() {
-                    st.random_min_sec = (s as i32).max(5);
-                }
-                if let Some(s) = av["random_max_sec"].as_i64() {
-                    st.random_max_sec = (s as i32).max(st.random_min_sec + 1);
-                }
-                if let Some(s) = av["adaptive_interval_sec"].as_i64() {
-                    st.adaptive_interval_sec = (s as i32).max(60);
-                }
-            }
-            let ad = &v["adaptive"];
-            if ad.is_object() {
-                if let Some(gap) = ad["min_save_gap_seconds"].as_i64() {
-                    st.min_save_gap_sec = (gap as i32).max(5);
-                }
-                if let Some(rel) = ad["relax_time_seconds"].as_i64() {
-                    st.relax_time_sec = (rel as i32).max(1);
-                }
-                if let Some(pct) = ad["post_combat_save_percent"].as_i64() {
-                    st.post_combat_save_pct = (pct as i32).clamp(0, 100);
-                }
-                st.save_on_boss_defeat = b(&ad["save_on_boss_defeat"], st.save_on_boss_defeat);
-            }
-            let anc = &v["anchor"];
-            if anc.is_object() {
-                if let Some(m) = anc["mode"].as_str() {
-                    st.anchor.mode = AnchorMode::by_id(m);
-                }
-                if let Some(rot) = anc["rotation_seconds"].as_i64() {
-                    st.anchor.rotation_seconds = (rot as i32).max(10);
-                }
-                if let Some(cd) = anc["rollback_cooldown_seconds"].as_i64() {
-                    st.anchor.rollback_cooldown_seconds = (cd as i32).max(0);
-                }
-                if let Some(pins) = anc["pinned"].as_array() {
-                    st.anchor.pinned = pins
-                        .iter()
-                        .filter_map(|x| x.as_str())
-                        .filter_map(|s| u128::from_str_radix(s.trim(), 16).ok())
-                        .collect();
-                }
-            }
-            let sc = &v["scrub"];
-            if sc.is_object() {
-                if let Some(en) = sc["enabled"].as_bool() {
-                    st.scrub_enabled = en;
-                }
-                if let Some(hist) = sc["history_seconds"].as_i64() {
-                    st.scrub_history_seconds = (hist as i32).clamp(30, 1200);
-                }
-                if let Some(sens) = sc["wheel_sensitivity"].as_i64() {
-                    st.scrub_wheel_sensitivity = (sens as i32).clamp(5, 40);
-                }
-                st.scrub_reverse_audio = b(&sc["reverse_audio"], st.scrub_reverse_audio);
-                st.scrub_show_hud = b(&sc["show_hud"], st.scrub_show_hud);
-                apply_nested_policy_json(&sc["policy"], &mut st.scrub_policy);
-            } else if let Some(en) = v["scrub_enabled"].as_bool() {
-                st.scrub_enabled = en;
-            }
-            let dbg = &v["debug"];
-            if dbg.is_object() {
-                st.f3_loop_hitboxes = b(&dbg["f3_loop_hitboxes"], st.f3_loop_hitboxes);
-                st.logs = b(&dbg["logs"], st.logs);
-                st.dev_mode = b(&dbg["dev_mode"], st.dev_mode);
-            }
-            if let Some(po) = v["playerOverrides"].as_object() {
-                st.player_overrides.clear();
-                for (uuid_str, entry) in po {
-                    let clean_hex = uuid_str.trim().replace('-', "");
-                    let Ok(uuid) = u128::from_str_radix(&clean_hex, 16) else {
-                        continue;
-                    };
-                    let name = entry["name"].as_str().unwrap_or("").to_owned();
-                    let rollback = PlayerPolicyOverrides::from_json(&entry["rollback"]);
-                    let scrub = PlayerPolicyOverrides::from_json(&entry["scrub"]);
-                    let profile = PlayerProfileOverrides { name, rollback, scrub };
-                    if !profile.is_empty() {
-                        st.player_overrides.insert(uuid, profile);
-                    }
-                }
-            }
-        }
-        if let Some(v) = death_rollback {
-            st.death_rollback = v;
-        }
-        if let Some(v) = auto_save {
-            st.auto_save = v;
-        }
-        if let Some(v) = adaptive {
-            st.adaptive_mode = v;
-        }
-        if let Some(v) = interval {
-            st.fixed_interval_sec = v.max(5);
+fn apply_settings_json(
+    v: &serde_json::Value,
+    st: &mut RReturnState,
+    include_world_player_state: bool,
+) {
+    let b = |val: &serde_json::Value, d: bool| val.as_bool().unwrap_or(d);
+    st.death_rollback = b(&v["death_rollback"], st.death_rollback);
+    apply_nested_policy_json(&v["checkpointPolicy"]["rollback"], &mut st.policy);
+    let av = &v["autosave"];
+    if av.is_object() {
+        st.auto_save = b(&av["auto_save"], st.auto_save);
+        st.adaptive_mode = b(&av["adaptive_mode"], st.adaptive_mode);
+        st.use_random_interval = b(&av["use_random_interval"], st.use_random_interval);
+        if let Some(s) = av["fixed_interval_sec"].as_i64() {
+            st.fixed_interval_sec = (s as i32).max(5);
             st.current_interval_ticks = i64::from(st.fixed_interval_sec) * 20;
         }
-        if let Some(v) = mode {
-            st.anchor.mode = v;
+        if let Some(s) = av["random_min_sec"].as_i64() {
+            st.random_min_sec = (s as i32).max(5);
         }
-        if let Some(v) = cooldown {
-            st.anchor.rollback_cooldown_seconds = v.max(0);
+        if let Some(s) = av["random_max_sec"].as_i64() {
+            st.random_max_sec = (s as i32).max(st.random_min_sec + 1);
         }
-        if let Some(v) = boss_save {
-            st.save_on_boss_defeat = v;
+        if let Some(s) = av["adaptive_interval_sec"].as_i64() {
+            st.adaptive_interval_sec = (s as i32).max(60);
         }
-        if let Some(v) = logs {
-            st.logs = v;
+    }
+    let ad = &v["adaptive"];
+    if ad.is_object() {
+        if let Some(gap) = ad["min_save_gap_seconds"].as_i64() {
+            st.min_save_gap_sec = (gap as i32).max(5);
         }
-        if let Some(v) = f3_hitboxes {
-            st.f3_loop_hitboxes = v;
+        if let Some(rel) = ad["relax_time_seconds"].as_i64() {
+            st.relax_time_sec = (rel as i32).max(1);
         }
-        if let Some(v) = dev_mode {
-            st.dev_mode = v;
-        } else if std::env::var_os("RRETURN_DEV").is_some_and(|v| v == "1" || v == "true") {
-            st.dev_mode = true;
+        if let Some(pct) = ad["post_combat_save_percent"].as_i64() {
+            st.post_combat_save_pct = (pct as i32).clamp(0, 100);
         }
-        if let Some(v) = scrub_enabled {
-            st.scrub_enabled = v;
+        st.save_on_boss_defeat = b(&ad["save_on_boss_defeat"], st.save_on_boss_defeat);
+    }
+    let anc = &v["anchor"];
+    if anc.is_object() {
+        if let Some(m) = anc["mode"].as_str() {
+            st.anchor.mode = AnchorMode::by_id(m);
         }
-        sync_scrub_atomics_from_state(st);
+        if let Some(rot) = anc["rotation_seconds"].as_i64() {
+            st.anchor.rotation_seconds = (rot as i32).max(10);
+        }
+        if let Some(cd) = anc["rollback_cooldown_seconds"].as_i64() {
+            st.anchor.rollback_cooldown_seconds = (cd as i32).max(0);
+        }
+        if include_world_player_state && let Some(pins) = anc["pinned"].as_array() {
+            st.anchor.pinned = pins
+                .iter()
+                .filter_map(|x| x.as_str())
+                .filter_map(|s| u128::from_str_radix(s.trim(), 16).ok())
+                .collect();
+        }
+    }
+    let sc = &v["scrub"];
+    if sc.is_object() {
+        if let Some(en) = sc["enabled"].as_bool() {
+            st.scrub_enabled = en;
+        }
+        if let Some(hist) = sc["history_seconds"].as_i64() {
+            st.scrub_history_seconds = (hist as i32).clamp(30, 1200);
+        }
+        if let Some(sens) = sc["wheel_sensitivity"].as_i64() {
+            st.scrub_wheel_sensitivity = (sens as i32).clamp(5, 40);
+        }
+        st.scrub_reverse_audio = b(&sc["reverse_audio"], st.scrub_reverse_audio);
+        st.scrub_show_hud = b(&sc["show_hud"], st.scrub_show_hud);
+        apply_nested_policy_json(&sc["policy"], &mut st.scrub_policy);
+    } else if let Some(en) = v["scrub_enabled"].as_bool() {
+        st.scrub_enabled = en;
+    }
+    let dbg = &v["debug"];
+    if dbg.is_object() {
+        st.f3_loop_hitboxes = b(&dbg["f3_loop_hitboxes"], st.f3_loop_hitboxes);
+        st.logs = b(&dbg["logs"], st.logs);
+        st.dev_mode = b(&dbg["dev_mode"], st.dev_mode);
+    }
+    if include_world_player_state && let Some(po) = v["playerOverrides"].as_object() {
+        st.player_overrides.clear();
+        for (uuid_str, entry) in po {
+            let clean_hex = uuid_str.trim().replace('-', "");
+            let Ok(uuid) = u128::from_str_radix(&clean_hex, 16) else {
+                continue;
+            };
+            let name = entry["name"].as_str().unwrap_or("").to_owned();
+            let rollback = PlayerPolicyOverrides::from_json(&entry["rollback"]);
+            let scrub = PlayerPolicyOverrides::from_json(&entry["scrub"]);
+            let profile = PlayerProfileOverrides {
+                name,
+                rollback,
+                scrub,
+            };
+            if !profile.is_empty() {
+                st.player_overrides.insert(uuid, profile);
+            }
+        }
+    }
+}
+
+fn state_to_settings_json(st: &RReturnState, include_world_player_state: bool) -> serde_json::Value {
+    let mut root = serde_json::json!({
+        "death_rollback": st.death_rollback,
+        "checkpointPolicy": {
+            "rollback": policy_to_nested_json(&st.policy),
+        },
+        "autosave": {
+            "auto_save": st.auto_save,
+            "adaptive_mode": st.adaptive_mode,
+            "use_random_interval": st.use_random_interval,
+            "fixed_interval_sec": st.fixed_interval_sec,
+            "random_min_sec": st.random_min_sec,
+            "random_max_sec": st.random_max_sec,
+            "adaptive_interval_sec": st.adaptive_interval_sec,
+        },
+        "adaptive": {
+            "min_save_gap_seconds": st.min_save_gap_sec,
+            "relax_time_seconds": st.relax_time_sec,
+            "post_combat_save_percent": st.post_combat_save_pct,
+            "save_on_boss_defeat": st.save_on_boss_defeat,
+        },
+        "anchor": {
+            "mode": st.anchor.mode.id(),
+            "rotation_seconds": st.anchor.rotation_seconds,
+            "rollback_cooldown_seconds": st.anchor.rollback_cooldown_seconds,
+        },
+        "scrub": {
+            "enabled": st.scrub_enabled,
+            "history_seconds": st.scrub_history_seconds,
+            "wheel_sensitivity": st.scrub_wheel_sensitivity,
+            "reverse_audio": st.scrub_reverse_audio,
+            "show_hud": st.scrub_show_hud,
+            "policy": policy_to_nested_json(&st.scrub_policy),
+        },
+        "debug": {
+            "f3_loop_hitboxes": st.f3_loop_hitboxes,
+            "logs": st.logs,
+            "dev_mode": st.dev_mode,
+        },
     });
+    if include_world_player_state {
+        let pinned_hex: Vec<String> = st
+            .anchor
+            .pinned
+            .iter()
+            .map(|u| format!("{:032x}", u))
+            .collect();
+        root["anchor"]["pinned"] = serde_json::Value::Array(
+            pinned_hex
+                .into_iter()
+                .map(serde_json::Value::String)
+                .collect(),
+        );
+        let mut overrides_map = serde_json::Map::new();
+        for (&uuid, prof) in &st.player_overrides {
+            if prof.is_empty() {
+                continue;
+            }
+            overrides_map.insert(
+                format!("{:032x}", uuid),
+                serde_json::json!({
+                    "name": prof.name,
+                    "rollback": prof.rollback.to_sparse_json(),
+                    "scrub": prof.scrub.to_sparse_json(),
+                }),
+            );
+        }
+        root["playerOverrides"] = serde_json::Value::Object(overrides_map);
+    }
+    root
+}
+
+fn read_settings_file_into_state(path: &Path, include_world_player_state: bool) -> Option<RReturnState> {
+    let text = fs::read_to_string(path).ok()?;
+    let json = serde_json::from_str::<serde_json::Value>(&text).ok()?;
+    let mut loaded = RReturnState::default();
+    apply_settings_json(&json, &mut loaded, include_world_player_state);
+    if std::env::var_os("RRETURN_DEV").is_some_and(|v| v == "1" || v == "true") {
+        loaded.dev_mode = true;
+    }
+    Some(loaded)
+}
+
+pub fn load_global_settings() {
+    let loaded = read_settings_file_into_state(&global_settings_path(), false)
+        .unwrap_or_default();
+    with_global_state_mut(|g| {
+        copy_configurable_settings(g, &loaded, false);
+    });
+}
+
+pub fn save_global_settings() {
+    let json = with_global_state(|g| state_to_settings_json(g, false));
+    let _ = write_json_atomic(&global_settings_path(), &json);
+}
+
+pub fn load_saved_settings(game: &Game<'_>) {
+    let global_defaults = read_settings_file_into_state(&global_settings_path(), false)
+        .unwrap_or_default();
+    with_global_state_mut(|g| {
+        copy_configurable_settings(g, &global_defaults, false);
+    });
+
+    let world_root = resolve_ui_world_root(&game.world_root);
+    if !world_root.as_os_str().is_empty() {
+        let wpath = world_settings_path(&world_root);
+        if let Some(world_loaded) = read_settings_file_into_state(&wpath, true) {
+            with_state_mut(|st| {
+                copy_configurable_settings(st, &world_loaded, true);
+                sync_scrub_atomics_from_state(st);
+            });
+        } else {
+            let initial_json = with_state_mut(|st| {
+                copy_configurable_settings(st, &global_defaults, false);
+                sync_scrub_atomics_from_state(st);
+                state_to_settings_json(st, true)
+            });
+            let _ = write_json_atomic(&wpath, &initial_json);
+        }
+    } else {
+        with_state_mut(|st| {
+            copy_configurable_settings(st, &global_defaults, false);
+            sync_scrub_atomics_from_state(st);
+        });
+    }
 
     if !with_state(|st| st.scrub_enabled) {
         with_scrub_ring_mut(|r| r.clear());
@@ -324,139 +437,15 @@ fn policy_to_nested_json(p: &RollbackPolicy) -> serde_json::Value {
 }
 
 pub fn save_current_settings(game: &Game<'_>) {
-    let snapshot = with_state(|st| {
+    let json = with_state(|st| {
         sync_scrub_atomics_from_state(st);
-        let pinned_hex: Vec<String> = st.anchor.pinned.iter().map(|u| format!("{:032x}", u)).collect();
-        let mut overrides_map = serde_json::Map::new();
-        for (&uuid, prof) in &st.player_overrides {
-            if prof.is_empty() {
-                continue;
-            }
-            overrides_map.insert(
-                format!("{:032x}", uuid),
-                serde_json::json!({
-                    "name": prof.name,
-                    "rollback": prof.rollback.to_sparse_json(),
-                    "scrub": prof.scrub.to_sparse_json(),
-                }),
-            );
-        }
-        let json = serde_json::json!({
-            "death_rollback": st.death_rollback,
-            "checkpointPolicy": {
-                "rollback": policy_to_nested_json(&st.policy),
-            },
-            "autosave": {
-                "auto_save": st.auto_save,
-                "adaptive_mode": st.adaptive_mode,
-                "use_random_interval": st.use_random_interval,
-                "fixed_interval_sec": st.fixed_interval_sec,
-                "random_min_sec": st.random_min_sec,
-                "random_max_sec": st.random_max_sec,
-                "adaptive_interval_sec": st.adaptive_interval_sec,
-            },
-            "adaptive": {
-                "min_save_gap_seconds": st.min_save_gap_sec,
-                "relax_time_seconds": st.relax_time_sec,
-                "post_combat_save_percent": st.post_combat_save_pct,
-                "save_on_boss_defeat": st.save_on_boss_defeat,
-            },
-            "anchor": {
-                "mode": st.anchor.mode.id(),
-                "rotation_seconds": st.anchor.rotation_seconds,
-                "rollback_cooldown_seconds": st.anchor.rollback_cooldown_seconds,
-                "pinned": pinned_hex,
-            },
-            "scrub": {
-                "enabled": st.scrub_enabled,
-                "history_seconds": st.scrub_history_seconds,
-                "wheel_sensitivity": st.scrub_wheel_sensitivity,
-                "reverse_audio": st.scrub_reverse_audio,
-                "show_hud": st.scrub_show_hud,
-                "policy": policy_to_nested_json(&st.scrub_policy),
-            },
-            "debug": {
-                "f3_loop_hitboxes": st.f3_loop_hitboxes,
-                "logs": st.logs,
-                "dev_mode": st.dev_mode,
-            },
-            "playerOverrides": serde_json::Value::Object(overrides_map),
-        });
-        (
-            st.death_rollback,
-            st.auto_save,
-            st.adaptive_mode,
-            st.fixed_interval_sec,
-            st.anchor.mode,
-            st.anchor.rollback_cooldown_seconds,
-            st.save_on_boss_defeat,
-            st.logs,
-            st.f3_loop_hitboxes,
-            st.dev_mode,
-            st.scrub_enabled,
-            json,
-        )
+        state_to_settings_json(st, true)
     });
 
-    let (
-        death_rollback,
-        auto_save,
-        adaptive_mode,
-        fixed_interval_sec,
-        anchor_mode,
-        cooldown,
-        boss_defeat,
-        logs,
-        f3_hitboxes,
-        dev_mode,
-        scrub_enabled,
-        json,
-    ) = snapshot;
-
-    let cfg_dir = Path::new("config");
-    let _ = fs::create_dir_all(cfg_dir);
-    if let Ok(bytes) = serde_json::to_vec_pretty(&json) {
-        let tmp = cfg_dir.join(".rreturn.json.tmp");
-        if fs::write(&tmp, &bytes).is_ok() {
-            let _ = fs::rename(&tmp, cfg_dir.join("rreturn.json"));
-        }
+    let world_root = resolve_ui_world_root(&game.world_root);
+    if !world_root.as_os_str().is_empty() {
+        let _ = write_json_atomic(&world_settings_path(&world_root), &json);
+    } else {
+        let _ = write_json_atomic(&global_settings_path(), &json);
     }
-
-    game.set_setting(
-        MOD_ID,
-        "death_rollback",
-        if death_rollback { "true" } else { "false" },
-    );
-    game.set_setting(MOD_ID, "auto_save", if auto_save { "true" } else { "false" });
-    game.set_setting(
-        MOD_ID,
-        "adaptive_mode",
-        if adaptive_mode { "true" } else { "false" },
-    );
-    game.set_setting(MOD_ID, "fixed_interval_sec", &fixed_interval_sec.to_string());
-    let mode_idx = match anchor_mode {
-        AnchorMode::Fixed => "0",
-        AnchorMode::Multi => "1",
-        AnchorMode::Everyone => "2",
-        AnchorMode::Rotating => "3",
-    };
-    game.set_setting(MOD_ID, "anchor_mode", mode_idx);
-    game.set_setting(MOD_ID, "rollback_cooldown_sec", &cooldown.to_string());
-    game.set_setting(
-        MOD_ID,
-        "save_on_boss_defeat",
-        if boss_defeat { "true" } else { "false" },
-    );
-    game.set_setting(MOD_ID, "logs", if logs { "true" } else { "false" });
-    game.set_setting(
-        MOD_ID,
-        "f3_loop_hitboxes",
-        if f3_hitboxes { "true" } else { "false" },
-    );
-    game.set_setting(MOD_ID, "dev_mode", if dev_mode { "true" } else { "false" });
-    game.set_setting(
-        MOD_ID,
-        "scrub_enabled",
-        if scrub_enabled { "true" } else { "false" },
-    );
 }

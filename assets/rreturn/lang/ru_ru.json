@@ -70,6 +70,8 @@
 
   "rreturn.ui.search_placeholder": "Поиск...",
   "rreturn.ui.search_results": "Результаты поиска",
+  "rreturn.ui.global.badge": "НОВЫЕ МИРЫ",
+  "rreturn.ui.global.sub": "Глобальные настройки по умолчанию для новых миров",
   "rreturn.ui.no_results": "Ничего не найдено",
   "rreturn.ui.enable_all": "Вкл все",
   "rreturn.ui.disable_all": "Выкл все",

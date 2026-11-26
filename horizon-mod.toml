@@ -91,6 +91,12 @@ file = "crates/horizon-client/src/game/interface/mount_menu.rs"
 name = "rreturn_mount_menu"
 source = "src/ext/mount_menu_ext.rs"
 
+[[native.module]]
+id = "startup_menu_ext"
+file = "crates/horizon-client/src/game/interface/startup_menu.rs"
+name = "rreturn_startup_menu"
+source = "src/ext/startup_menu_ext.rs"
+
 [[native.mixin]]
 id = "native-key"
 target = "horizon_client::game::native_hooks::input_key::Game<'_>::native_input_key"
@@ -406,5 +412,38 @@ bindings = [
   { name = "c", ty = "char", value = "c" },
   { name = "modifiers", ty = "u32", value = "modifiers" },
   { name = "canceled", ty = "&mut bool", value = "&mut *canceled" },
+]
+
+[[native.mixin]]
+id = "native-settings-refresh"
+target = "horizon_client::game::native_hooks::Game<'_>::native_settings_refresh"
+kind = "HEAD"
+cancellable = true
+helper = "src/hooks/hook_native_settings_refresh.rs"
+bindings = [
+  { name = "game", ty = "&mut Game<'_>", value = "&mut *self" },
+  { name = "i", ty = "usize", value = "i" },
+]
+
+[[native.mixin]]
+id = "loading-draw"
+target = "horizon_client::game::loading_screen::Loading::draw"
+kind = "HEAD"
+cancellable = true
+helper = "src/hooks/hook_loading_draw_head.rs"
+bindings = [
+  { name = "loading", ty = "&mut Loading", value = "&mut *self" },
+]
+
+[[native.mixin]]
+id = "loading-window-event"
+target = "horizon_client::game::loading_screen::Loading::window_event"
+kind = "HEAD"
+cancellable = true
+helper = "src/hooks/hook_loading_menu_event.rs"
+bindings = [
+  { name = "loading", ty = "&mut Loading", value = "&mut *self" },
+  { name = "id", ty = "WindowId", value = "id" },
+  { name = "event", ty = "&WindowEvent", value = "&event" },
 ]
 

@@ -1,4 +1,3 @@
-use super::super::Game;
 use super::policy::*;
 use super::settings_catalog::{policy_field, SliderUnit, PLAYER_OVERRIDE_SPECS};
 use super::settings_ui_draw::*;
@@ -66,8 +65,8 @@ fn sw_anim(ui: &mut SettingsUiState, key: &str, val: bool) -> f32 {
     *e
 }
 
-fn draw_anchor_bar(
-    game: &Game<'_>,
+fn draw_anchor_bar<C: UiCanvas>(
+    canvas: &C,
     draw: &mut HudBatch,
     anchor_cfg: &AnchorSettings,
     x: f32,
@@ -86,16 +85,16 @@ fn draw_anchor_bar(
         let mut right_w = 0.0f32;
         if !anchor_cfg.pinned.is_empty() {
             let clr_lbl = tr("rreturn.ui.clear_pins");
-            let cw = game.native_text_width(draw, &clr_lbl) + 6.0;
+            let cw = canvas.text_width(draw, &clr_lbl) + 6.0;
             right_w = cw + 8.0;
             let crect = [x + w - cw - 4.0, y, cw, 13.0];
             let chov = in_list && hit_in_rect(mx, my, crect);
-            game.native_text(draw, &clr_lbl, [crect[0] + 3.0, y + 2.0], if chov { UI_RED } else { UI_BLUE }, false);
+            canvas.text(draw, &clr_lbl, [crect[0] + 3.0, y + 2.0], if chov { UI_RED } else { UI_BLUE }, false);
             push_clipped_region(regions, list_bounds, HitRegion { tag: "anchor.clear_pins".to_owned(), rect: crect, action: HitAction::ClearPins });
         }
-        game.native_text(
+        canvas.text(
             draw,
-            &fit_text(game, draw, &tr("rreturn.ui.group.anchor_mode"), (w - right_w - 10.0).max(20.0)),
+            &fit_text(canvas, draw, &tr("rreturn.ui.group.anchor_mode"), (w - right_w - 10.0).max(20.0)),
             [x + 6.0, y + 2.0],
             UI_TEXT_SEC,
             false,
@@ -110,15 +109,15 @@ fn draw_anchor_bar(
     let card_h = mode_row_h + slider_h;
 
     if y + card_h >= ly - 4.0 && y <= ly + lh + 4.0 {
-        draw_rounded_rect(game, draw, [x, y, w, card_h], 8.0, UI_CARD_BG);
+        draw_rounded_rect(canvas, draw, [x, y, w, card_h], 8.0, UI_CARD_BG);
 
         // Row 1: Anchor mode label + segmented dock on right
         let dock_w = if w < 330.0 { 146.0 } else { (w * 0.48).clamp(160.0, 224.0) };
         let dock = [x + w - dock_w - 10.0, y + 5.0, dock_w, 18.0];
         let tmax = (dock[0] - x - 18.0).max(30.0);
-        game.native_text(draw, &fit_text(game, draw, &tr("rreturn.ui.opt.anchor_mode"), tmax), [x + 12.0, y + 10.0], UI_TEXT_PRI, false);
+        canvas.text(draw, &fit_text(canvas, draw, &tr("rreturn.ui.opt.anchor_mode"), tmax), [x + 12.0, y + 10.0], UI_TEXT_PRI, false);
 
-        draw_rounded_rect(game, draw, dock, 6.0, UI_SEG_DOCK);
+        draw_rounded_rect(canvas, draw, dock, 6.0, UI_SEG_DOCK);
         let segs = [
             (AnchorMode::Fixed, "rreturn.ui.seg.fixed"),
             (AnchorMode::Multi, "rreturn.ui.seg.multi"),
@@ -131,13 +130,13 @@ fn draw_anchor_bar(
             let active = anchor_cfg.mode == m;
             let hov = in_list && hit_in_rect(mx, my, sr);
             let bg = if active { UI_BLUE } else if hov { UI_PILL_BG } else { 0 };
-            draw_pill(game, draw, sr, &fit_text(game, draw, &tr(key), sr[2] - 4.0), bg, if active { UI_TEXT_PRI } else { UI_TEXT_SEC });
+            draw_pill(canvas, draw, sr, &fit_text(canvas, draw, &tr(key), sr[2] - 4.0), bg, if active { UI_TEXT_PRI } else { UI_TEXT_SEC });
             push_clipped_region(regions, list_bounds, HitRegion { tag: format!("anchor.mode.{}", m.id()), rect: sr, action: HitAction::SetAnchorMode(m) });
         }
 
         // Row 2: Death rollback cooldown + optional rotation interval
         let ry = y + mode_row_h;
-        game.native_fill(draw, [x + 12.0, ry, w - 24.0, 1.0], UI_DIVIDER);
+        canvas.fill(draw, [x + 12.0, ry, w - 24.0, 1.0], UI_DIVIDER);
         let cd_spec = SliderSpec {
             id: "rollback_cooldown_sec",
             label_key: "rreturn.ui.opt.rollback_cooldown_sec",
@@ -158,14 +157,14 @@ fn draw_anchor_bar(
         };
         if two_cols {
             let half = (w * 0.5).floor();
-            draw_compact_slider_cell(game, draw, cd_spec, [x, ry, half, 36.0], list_bounds, mouse, regions);
-            game.native_fill(draw, [x + half, ry + 6.0, 1.0, 24.0], UI_DIVIDER);
-            draw_compact_slider_cell(game, draw, rot_spec, [x + half, ry, w - half, 36.0], list_bounds, mouse, regions);
+            draw_compact_slider_cell(canvas, draw, SettingsUiMode::World, cd_spec, [x, ry, half, 36.0], list_bounds, mouse, regions);
+            canvas.fill(draw, [x + half, ry + 6.0, 1.0, 24.0], UI_DIVIDER);
+            draw_compact_slider_cell(canvas, draw, SettingsUiMode::World, rot_spec, [x + half, ry, w - half, 36.0], list_bounds, mouse, regions);
         } else {
-            draw_compact_slider_row(game, draw, cd_spec, [x, ry, w, 30.0], list_bounds, mouse, regions);
+            draw_compact_slider_row(canvas, draw, SettingsUiMode::World, cd_spec, [x, ry, w, 30.0], list_bounds, mouse, regions);
             if rotating {
-                game.native_fill(draw, [x + 12.0, ry + 30.0, w - 24.0, 1.0], UI_DIVIDER);
-                draw_compact_slider_row(game, draw, rot_spec, [x, ry + 30.0, w, 30.0], list_bounds, mouse, regions);
+                canvas.fill(draw, [x + 12.0, ry + 30.0, w - 24.0, 1.0], UI_DIVIDER);
+                draw_compact_slider_row(canvas, draw, SettingsUiMode::World, rot_spec, [x, ry + 30.0, w, 30.0], list_bounds, mouse, regions);
             }
         }
     }
@@ -173,8 +172,8 @@ fn draw_anchor_bar(
     y - start_y
 }
 
-fn draw_players_column(
-    game: &Game<'_>,
+fn draw_players_column<C: UiCanvas>(
+    canvas: &C,
     draw: &mut HudBatch,
     ui: &mut SettingsUiState,
     players: &[ListedPlayer],
@@ -194,15 +193,15 @@ fn draw_players_column(
 
     if y + 14.0 >= ly - 2.0 && y <= ly + lh + 2.0 {
         let hdr = format!("{} ({})", tr("rreturn.ui.group.anchor_players"), players.len());
-        game.native_text(draw, &fit_text(game, draw, &hdr, w - 12.0), [x + 6.0, y + 2.0], UI_TEXT_SEC, false);
+        canvas.text(draw, &fit_text(canvas, draw, &hdr, w - 12.0), [x + 6.0, y + 2.0], UI_TEXT_SEC, false);
     }
     y += 14.0;
 
     if players.is_empty() {
         let eh = 34.0;
         if y + eh >= ly - 4.0 && y <= ly + lh + 4.0 {
-            draw_rounded_rect(game, draw, [x, y, w, eh], 8.0, UI_CARD_BG);
-            game.native_text(draw, &fit_text(game, draw, &tr("rreturn.ui.no_players"), w - 20.0), [x + 10.0, y + 13.0], UI_TEXT_MUTED, false);
+            draw_rounded_rect(canvas, draw, [x, y, w, eh], 8.0, UI_CARD_BG);
+            canvas.text(draw, &fit_text(canvas, draw, &tr("rreturn.ui.no_players"), w - 20.0), [x + 10.0, y + 13.0], UI_TEXT_MUTED, false);
         }
         return (y + eh) - start_y;
     }
@@ -210,7 +209,7 @@ fn draw_players_column(
     let row_h = 32.0;
     let total_h = players.len() as f32 * row_h;
     if y + total_h >= ly - 4.0 && y <= ly + lh + 4.0 {
-        draw_rounded_rect(game, draw, [x, y, w, total_h], 8.0, UI_CARD_BG);
+        draw_rounded_rect(canvas, draw, [x, y, w, total_h], 8.0, UI_CARD_BG);
     }
 
     for (i, p) in players.iter().enumerate() {
@@ -220,13 +219,13 @@ fn draw_players_column(
             let selected = ui.selected_player == Some(p.uuid);
             let hov = in_list && hit_in_rect(mx, my, pr);
             if selected {
-                draw_rounded_rect(game, draw, [x + 4.0, py + 2.0, w - 8.0, row_h - 4.0], 5.0, UI_BLUE_SOFT);
-                draw_rounded_rect(game, draw, [x + 4.0, py + 7.0, 2.5, row_h - 14.0], 1.0, UI_BLUE);
+                draw_rounded_rect(canvas, draw, [x + 4.0, py + 2.0, w - 8.0, row_h - 4.0], 5.0, UI_BLUE_SOFT);
+                draw_rounded_rect(canvas, draw, [x + 4.0, py + 7.0, 2.5, row_h - 14.0], 1.0, UI_BLUE);
             } else if hov {
-                draw_rounded_rect(game, draw, [x + 4.0, py + 2.0, w - 8.0, row_h - 4.0], 5.0, UI_ROW_HOV);
+                draw_rounded_rect(canvas, draw, [x + 4.0, py + 2.0, w - 8.0, row_h - 4.0], 5.0, UI_ROW_HOV);
             }
             if i > 0 {
-                game.native_fill(draw, [x + 10.0, py, w - 20.0, 1.0], UI_DIVIDER);
+                canvas.fill(draw, [x + 10.0, py, w - 20.0, 1.0], UI_DIVIDER);
             }
 
             let is_pinned = anchor_cfg.pinned.contains(&p.uuid);
@@ -234,27 +233,27 @@ fn draw_players_column(
             let key = format!("pin.{:032x}", p.uuid);
             let anim = sw_anim(ui, &key, is_pinned);
             let pin_rect = [x + w - 38.0, py + 6.0, 34.0, 24.0];
-            draw_switch(game, draw, x + w - 35.0, py + 11.0, anim);
+            draw_switch(canvas, draw, x + w - 35.0, py + 11.0, anim);
 
             let dot_col = if p.online { UI_GREEN } else { UI_TEXT_MUTED };
-            draw_rounded_rect(game, draw, [x + 11.0, py + 9.0, 5.0, 5.0], 2.5, dot_col);
+            draw_rounded_rect(canvas, draw, [x + 11.0, py + 9.0, 5.0, 5.0], 2.5, dot_col);
 
             let mut name_x = x + 19.0;
             if p.is_owner {
-                draw_ui_icon(game, draw, UiIcon::Crown, name_x, py + 6.5, UI_BLUE);
+                draw_ui_icon(canvas, draw, UiIcon::Crown, name_x, py + 6.5, UI_BLUE);
                 name_x += 13.0;
             }
             let custom_total = p.rb_custom + p.sc_custom;
             let mut badge_w = 0.0f32;
             if custom_total > 0 && w >= 155.0 {
                 let b_str = format!("{}", custom_total);
-                let bw = (game.native_text_width(draw, &b_str) + 10.0).max(16.0);
-                draw_pill(game, draw, [pin_rect[0] - bw - 3.0, py + 11.0, bw, 13.0], &b_str, UI_BLUE_SOFT, UI_BLUE);
+                let bw = (canvas.text_width(draw, &b_str) + 10.0).max(16.0);
+                draw_pill(canvas, draw, [pin_rect[0] - bw - 3.0, py + 11.0, bw, 13.0], &b_str, UI_BLUE_SOFT, UI_BLUE);
                 badge_w = bw + 6.0;
             }
 
             let tmax = (pin_rect[0] - name_x - 4.0 - badge_w).max(20.0);
-            game.native_text(draw, &fit_text(game, draw, &p.name, tmax), [name_x, py + 7.5], UI_TEXT_PRI, false);
+            canvas.text(draw, &fit_text(canvas, draw, &p.name, tmax), [name_x, py + 7.5], UI_TEXT_PRI, false);
 
             let status_str = if is_pinned {
                 tr("rreturn.ui.player.pinned")
@@ -265,9 +264,9 @@ fn draw_players_column(
             } else {
                 tr("rreturn.ui.player.observer")
             };
-            game.native_text(
+            canvas.text(
                 draw,
-                &fit_text(game, draw, &status_str, (pin_rect[0] - x - 18.0 - badge_w).max(20.0)),
+                &fit_text(canvas, draw, &status_str, (pin_rect[0] - x - 18.0 - badge_w).max(20.0)),
                 [x + 19.0, py + 19.5],
                 if is_pinned { UI_BLUE } else if is_active { UI_GREEN } else { UI_TEXT_MUTED },
                 false,
@@ -289,8 +288,8 @@ fn draw_players_column(
     y - start_y
 }
 
-fn draw_player_rules_column(
-    game: &Game<'_>,
+fn draw_player_rules_column<C: UiCanvas>(
+    canvas: &C,
     draw: &mut HudBatch,
     sel_player: &ListedPlayer,
     profile_map: &std::collections::HashMap<u128, PlayerProfileOverrides>,
@@ -322,11 +321,11 @@ fn draw_player_rules_column(
         let mut right_used = 0.0f32;
         if !cur_ov.is_empty() {
             let rst_lbl = tr("rreturn.ui.player.reset_rules");
-            let rw = game.native_text_width(draw, &rst_lbl) + 6.0;
+            let rw = canvas.text_width(draw, &rst_lbl) + 6.0;
             right_used = rw + 8.0;
             let rrect = [x + w - rw - 4.0, y, rw, 13.0];
             let rhov = in_list && hit_in_rect(mx, my, rrect);
-            game.native_text(draw, &rst_lbl, [rrect[0] + 3.0, y + 2.0], if rhov { UI_RED } else { UI_BLUE }, false);
+            canvas.text(draw, &rst_lbl, [rrect[0] + 3.0, y + 2.0], if rhov { UI_RED } else { UI_BLUE }, false);
             push_clipped_region(regions, list_bounds, HitRegion {
                 tag: "player.reset_rules".to_owned(),
                 rect: rrect,
@@ -334,7 +333,7 @@ fn draw_player_rules_column(
             });
         }
         let hdr_lbl = tr_args("rreturn.ui.group.player_rules", &[&sel_name]);
-        game.native_text(draw, &fit_text(game, draw, &hdr_lbl, (w - right_used - 10.0).max(20.0)), [x + 6.0, y + 2.0], UI_TEXT_SEC, false);
+        canvas.text(draw, &fit_text(canvas, draw, &hdr_lbl, (w - right_used - 10.0).max(20.0)), [x + 6.0, y + 2.0], UI_TEXT_SEC, false);
     }
     y += 14.0;
 
@@ -342,21 +341,21 @@ fn draw_player_rules_column(
     let row_h = 30.0;
     let total_h = hdr_card_h + (PLAYER_OVERRIDE_SPECS.len() as f32) * row_h;
     if y + total_h >= ly - 4.0 && y <= ly + lh + 4.0 {
-        draw_rounded_rect(game, draw, [x, y, w, total_h], 8.0, UI_CARD_BG);
+        draw_rounded_rect(canvas, draw, [x, y, w, total_h], 8.0, UI_CARD_BG);
     }
 
     // Compact Scope switcher + batch pills on single header bar
     if y + hdr_card_h >= ly - 2.0 && y <= ly + lh + 2.0 {
         let deny_lbl = tr("rreturn.ui.disable_all");
         let allow_lbl = tr("rreturn.ui.enable_all");
-        let dw = game.native_text_width(draw, &deny_lbl) + 8.0;
-        let aw = game.native_text_width(draw, &allow_lbl) + 8.0;
+        let dw = canvas.text_width(draw, &deny_lbl) + 8.0;
+        let aw = canvas.text_width(draw, &allow_lbl) + 8.0;
         let deny_r = [x + w - dw - 8.0, y + 6.0, dw, 14.0];
         let allow_r = [deny_r[0] - aw - 4.0, y + 6.0, aw, 14.0];
         let show_batch = allow_r[0] > x + 150.0;
         let dock_max_w = if show_batch { (allow_r[0] - x - 14.0).max(120.0) } else { (w - 16.0).max(120.0) };
         let dock = [x + 8.0, y + 4.0, dock_max_w.min(220.0), 18.0];
-        draw_rounded_rect(game, draw, dock, 6.0, UI_SEG_DOCK);
+        draw_rounded_rect(canvas, draw, dock, 6.0, UI_SEG_DOCK);
         let sw = (dock[2] - 4.0) * 0.5;
         let rb_cnt = prof_opt.map_or(0, |pr| pr.rollback.count_custom());
         let sc_cnt = prof_opt.map_or(0, |pr| pr.scrub.count_custom());
@@ -364,16 +363,16 @@ fn draw_player_rules_column(
         let sc_lbl = if sc_cnt > 0 { format!("{} ({})", tr("rreturn.ui.player.scope_scrub"), sc_cnt) } else { tr("rreturn.ui.player.scope_scrub") };
         let rb_r = [dock[0] + 2.0, dock[1] + 2.0, sw - 1.0, dock[3] - 4.0];
         let sc_r = [dock[0] + 2.0 + sw, dock[1] + 2.0, sw - 1.0, dock[3] - 4.0];
-        draw_pill(game, draw, rb_r, &fit_text(game, draw, &rb_lbl, rb_r[2] - 4.0), if !scrub_scope { UI_BLUE } else if in_list && hit_in_rect(mx, my, rb_r) { UI_PILL_BG } else { 0 }, if !scrub_scope { UI_TEXT_PRI } else { UI_TEXT_SEC });
-        draw_pill(game, draw, sc_r, &fit_text(game, draw, &sc_lbl, sc_r[2] - 4.0), if scrub_scope { UI_BLUE } else if in_list && hit_in_rect(mx, my, sc_r) { UI_PILL_BG } else { 0 }, if scrub_scope { UI_TEXT_PRI } else { UI_TEXT_SEC });
+        draw_pill(canvas, draw, rb_r, &fit_text(canvas, draw, &rb_lbl, rb_r[2] - 4.0), if !scrub_scope { UI_BLUE } else if in_list && hit_in_rect(mx, my, rb_r) { UI_PILL_BG } else { 0 }, if !scrub_scope { UI_TEXT_PRI } else { UI_TEXT_SEC });
+        draw_pill(canvas, draw, sc_r, &fit_text(canvas, draw, &sc_lbl, sc_r[2] - 4.0), if scrub_scope { UI_BLUE } else if in_list && hit_in_rect(mx, my, sc_r) { UI_PILL_BG } else { 0 }, if scrub_scope { UI_TEXT_PRI } else { UI_TEXT_SEC });
         push_clipped_region(regions, list_bounds, HitRegion { tag: "p_scope.rollback".to_owned(), rect: rb_r, action: HitAction::SetPlayerScope(false) });
         push_clipped_region(regions, list_bounds, HitRegion { tag: "p_scope.scrub".to_owned(), rect: sc_r, action: HitAction::SetPlayerScope(true) });
 
         if show_batch {
             let ahov = in_list && hit_in_rect(mx, my, allow_r);
             let dhov = in_list && hit_in_rect(mx, my, deny_r);
-            draw_pill(game, draw, allow_r, &allow_lbl, if ahov { UI_BLUE } else { UI_BLUE_SOFT }, if ahov { UI_TEXT_PRI } else { UI_BLUE });
-            draw_pill(game, draw, deny_r, &deny_lbl, if dhov { UI_RED } else { UI_PILL_BG }, if dhov { UI_TEXT_PRI } else { UI_TEXT_SEC });
+            draw_pill(canvas, draw, allow_r, &allow_lbl, if ahov { UI_BLUE } else { UI_BLUE_SOFT }, if ahov { UI_TEXT_PRI } else { UI_BLUE });
+            draw_pill(canvas, draw, deny_r, &deny_lbl, if dhov { UI_RED } else { UI_PILL_BG }, if dhov { UI_TEXT_PRI } else { UI_TEXT_SEC });
             push_clipped_region(regions, list_bounds, HitRegion {
                 tag: "player.batch_allow".to_owned(),
                 rect: allow_r,
@@ -392,12 +391,12 @@ fn draw_player_rules_column(
     for &(field, label_key, desc_key) in PLAYER_OVERRIDE_SPECS {
         if y + row_h >= ly - 2.0 && y <= ly + lh + 2.0 {
             if in_list && hit_in_rect(mx, my, [x, y, w, row_h]) {
-                draw_rounded_rect(game, draw, [x + 4.0, y + 2.0, w - 8.0, row_h - 4.0], 5.0, UI_ROW_HOV);
+                draw_rounded_rect(canvas, draw, [x + 4.0, y + 2.0, w - 8.0, row_h - 4.0], 5.0, UI_ROW_HOV);
             }
-            game.native_fill(draw, [x + 12.0, y, w - 24.0, 1.0], UI_DIVIDER);
+            canvas.fill(draw, [x + 12.0, y, w - 24.0, 1.0], UI_DIVIDER);
 
             let dock = [x + w - dock_w - 10.0, y + 6.0, dock_w, 18.0];
-            draw_rounded_rect(game, draw, dock, 6.0, UI_SEG_DOCK);
+            draw_rounded_rect(canvas, draw, dock, 6.0, UI_SEG_DOCK);
 
             let ov_val = cur_ov.get(field);
             let global_val = policy_field(base_pol, field);
@@ -418,15 +417,15 @@ fn draw_player_rules_column(
                 let hov = in_list && hit_in_rect(mx, my, rect);
                 let bg = if active { active_bg } else if hov { UI_PILL_BG } else { 0 };
                 let fg = if active { active_fg } else { inactive_fg };
-                draw_pill(game, draw, rect, &fit_text(game, draw, txt, rect[2] - 4.0), bg, fg);
+                draw_pill(canvas, draw, rect, &fit_text(canvas, draw, txt, rect[2] - 4.0), bg, fg);
             };
             draw_seg(rg, &glob_lbl, ov_val == OverrideValue::Global, UI_PILL_HOV, if global_val { UI_BLUE } else { UI_TEXT_PRI }, UI_TEXT_MUTED);
             draw_seg(ry, &yes_lbl, ov_val == OverrideValue::Allow, UI_GREEN, 0xFF0A140D, UI_TEXT_SEC);
             draw_seg(rn, &no_lbl, ov_val == OverrideValue::Deny, UI_RED, UI_TEXT_PRI, UI_TEXT_SEC);
 
             let tmax = (dock[0] - x - 18.0).max(20.0);
-            game.native_text(draw, &fit_text(game, draw, &tr(label_key), tmax), [x + 12.0, y + 5.0], UI_TEXT_PRI, false);
-            game.native_text(draw, &fit_text(game, draw, &tr(desc_key), tmax), [x + 12.0, y + 17.0], UI_TEXT_MUTED, false);
+            canvas.text(draw, &fit_text(canvas, draw, &tr(label_key), tmax), [x + 12.0, y + 5.0], UI_TEXT_PRI, false);
+            canvas.text(draw, &fit_text(canvas, draw, &tr(desc_key), tmax), [x + 12.0, y + 17.0], UI_TEXT_MUTED, false);
 
             push_clipped_region(regions, list_bounds, HitRegion {
                 tag: format!("p_rule.{}.global", field),
@@ -450,10 +449,11 @@ fn draw_player_rules_column(
     y - start_y
 }
 
-pub fn draw_players_tab(
-    game: &Game<'_>,
+pub fn draw_players_tab<C: UiCanvas>(
+    canvas: &C,
     draw: &mut HudBatch,
     ui: &mut SettingsUiState,
+    game_time: i64,
     list_bounds: [f32; 4],
     scroll_y: f32,
     mouse: [f32; 2],
@@ -463,11 +463,10 @@ pub fn draw_players_tab(
     let mut y = ly - scroll_y;
     let start_y = y;
 
-    let (anchor_cfg, players, game_time, global_rb, global_sc, profile_map) = with_state(|st| {
+    let (anchor_cfg, players, global_rb, global_sc, profile_map) = with_state(|st| {
         (
             st.anchor.clone(),
             collect_listed_players(st),
-            game.world.game_time,
             st.policy,
             st.scrub_policy,
             st.player_overrides.clone(),
@@ -486,7 +485,7 @@ pub fn draw_players_tab(
     }
 
     ui.section_offsets.insert("players_anchor".to_owned(), 0.0);
-    y += draw_anchor_bar(game, draw, &anchor_cfg, x, y, w, list_bounds, mouse, regions);
+    y += draw_anchor_bar(canvas, draw, &anchor_cfg, x, y, w, list_bounds, mouse, regions);
 
     let online_uuids: Vec<u128> = players.iter().filter(|p| p.online).map(|p| p.uuid).collect();
     let active_anchors = resolve_anchors(&anchor_cfg, &online_uuids, game_time, None);
@@ -507,7 +506,7 @@ pub fn draw_players_tab(
         let right_w = (w - left_w - gap).max(160.0);
 
         let right_h = draw_player_rules_column(
-            game,
+            canvas,
             draw,
             sel_player.unwrap(),
             &profile_map,
@@ -526,7 +525,7 @@ pub fn draw_players_tab(
         let max_sticky = y + (right_h - left_est_h).max(0.0);
         let sticky_y = y.max(ly).min(max_sticky);
         let left_h = draw_players_column(
-            game,
+            canvas,
             draw,
             ui,
             &players,
@@ -543,7 +542,7 @@ pub fn draw_players_tab(
     }
 
     let left_h = draw_players_column(
-        game,
+        canvas,
         draw,
         ui,
         &players,
@@ -562,7 +561,7 @@ pub fn draw_players_tab(
         ui.section_offsets
             .insert("players_rules".to_owned(), (y - start_y).max(0.0));
         y += draw_player_rules_column(
-            game,
+            canvas,
             draw,
             sp,
             &profile_map,

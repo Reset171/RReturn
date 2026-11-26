@@ -2,9 +2,19 @@
 
 import json
 import tempfile
+import time
 from pathlib import Path
 from tools.rreturn_harness import default_saves_dir
 from . import setup_clean_env
+
+
+def _global_settings_path(h):
+    instance_dir = (default_saves_dir(h.instance) / h.world).parent.parent
+    return instance_dir / "config" / "rreturn.json"
+
+
+def _world_settings_path(h):
+    return default_saves_dir(h.instance) / h.world / "rreturn" / "settings.json"
 
 
 def test_19_tick_rate_and_freeze_rollback(h):
@@ -220,6 +230,8 @@ def test_106_logs_directory_structure(h):
 
 def test_111_settings_ui_toggles_search_and_persistence(h):
     setup_clean_env(h)
+    global_cfg_path = _global_settings_path(h)
+    global_before = global_cfg_path.read_text(encoding="utf-8") if global_cfg_path.is_file() else None
     h.rreturn("policy reset")
     h.rreturn("scrub policy reset")
     h.rreturn("player reset @s")
@@ -295,16 +307,18 @@ def test_111_settings_ui_toggles_search_and_persistence(h):
             h.wait(2)
     assert h.screen().get("screen") == "playing"
 
-    # 4. Verify config/rreturn.json persisted independent rollback, scrub policies, and pinned player
-    instance_dir = (default_saves_dir(h.instance) / h.world).parent.parent
-    cfg_path = instance_dir / "config" / "rreturn.json"
-    assert cfg_path.is_file(), f"Expected persistent config at {cfg_path}"
+    # 4. Verify per-world settings.json persisted independent rollback, scrub policies, and pinned player
+    #    without overwriting global config/rreturn.json
+    cfg_path = _world_settings_path(h)
+    assert cfg_path.is_file(), f"Expected persistent world settings at {cfg_path}"
     saved_cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
     assert saved_cfg["checkpointPolicy"]["rollback"]["world"]["weather"] is False
     assert saved_cfg["checkpointPolicy"]["rollback"]["players"]["position"] is False
     assert saved_cfg["scrub"]["policy"]["world"]["weather"] is True
     assert saved_cfg["scrub"]["policy"]["players"]["position"] is False
     assert len(saved_cfg["anchor"]["pinned"]) >= 1, f"Expected pinned player in config: {saved_cfg['anchor']}"
+    global_after = global_cfg_path.read_text(encoding="utf-8") if global_cfg_path.is_file() else None
+    assert global_after == global_before, "In-world K menu edits must not overwrite global config/rreturn.json"
 
     # 5. Functional verification: blocks rewind, while weather and player position stay untouched on F6/F7 rollback
     h.tp(0.5, 65.0, 0.5)
@@ -357,6 +371,8 @@ def test_111_settings_ui_toggles_search_and_persistence(h):
 def test_115_rreturn_menu_icons_and_per_player_overrides(h):
     """RReturn Menu quick-jump icon buttons, Players tab, and 3-state (Global/Yes/No) per-player rollback & scrub overrides."""
     setup_clean_env(h)
+    global_cfg_path = _global_settings_path(h)
+    global_before = global_cfg_path.read_text(encoding="utf-8") if global_cfg_path.is_file() else None
     h.rreturn("policy reset")
     h.rreturn("scrub policy reset")
     h.rreturn("player reset all both")
@@ -526,15 +542,16 @@ def test_115_rreturn_menu_icons_and_per_player_overrides(h):
         h.wait(2)
         assert h.screen().get("screen") == "playing"
 
-        # 3. Verify persistence in config/rreturn.json
-        instance_dir = (default_saves_dir(h.instance) / h.world).parent.parent
-        cfg_path = instance_dir / "config" / "rreturn.json"
+        # 3. Verify persistence in <world>/rreturn/settings.json without touching config/rreturn.json
+        cfg_path = _world_settings_path(h)
         cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
         po = cfg.get("playerOverrides", {})
-        assert len(po) == 1, f"Expected 1 player override profile in config: {cfg}"
+        assert len(po) == 1, f"Expected 1 player override profile in world settings: {cfg}"
         only_prof = next(iter(po.values()))
         assert only_prof["rollback"].get("player_position") is False
         assert only_prof["scrub"].get("player_position") is False
+        global_after = global_cfg_path.read_text(encoding="utf-8") if global_cfg_path.is_file() else None
+        assert global_after == global_before, "Per-player world edits must not mutate config/rreturn.json"
 
         # 4. Functional Rollback test: Global player_position=true, @s=Deny -> blocks & inventory rewind, @s stays at new pos!
         h.tp(0.5, 65.0, 0.5)
@@ -631,6 +648,264 @@ def test_115_rreturn_menu_icons_and_per_player_overrides(h):
         h.command("clear @s")
         h.tp(0.5, 65.0, 0.5)
         h.wait(2)
+
+
+def test_118_mods_global_vs_world_settings(h):
+    """Mods -> Config opens custom dark Global UI for new worlds, isolated from current-world K menu settings."""
+    setup_clean_env(h)
+    h.rreturn("death on")
+    h.rreturn("scrub off")
+    h.rreturn("policy reset")
+    h.rreturn("scrub policy reset")
+    h.rreturn("autosave adaptive")
+    h.rreturn("autosave off")
+    h.wait(2)
+
+    orig_world = h.world
+    global_cfg_path = _global_settings_path(h)
+    world_a_cfg_path = _world_settings_path(h)
+    backup_global = global_cfg_path.read_text(encoding="utf-8") if global_cfg_path.is_file() else None
+
+    scratch_dir = Path(tempfile.gettempdir()) / "rreturn_e2e_screenshots"
+    scratch_dir.mkdir(parents=True, exist_ok=True)
+
+    def ui_bounds():
+        res = h.rreturn("ui bounds")
+        assert isinstance(res, dict) and "controls" in res, f"Expected ui bounds dict: {res}"
+        return res
+
+    def ui_pt(tag):
+        controls = ui_bounds()["controls"]
+        assert tag in controls, f"Missing UI hit control '{tag}' in {sorted(controls.keys())}"
+        return controls[tag]
+
+    def open_rreturn_from_mods_page():
+        btns = h.screen().get("buttons", [])
+        open_btn = next((b for b in btns if b.get("label") in ("Open Mods Folder", "Открыть папку модов")), None)
+        back_btn = next((b for b in btns if b.get("label") in ("Back", "Назад")), None)
+        if open_btn and back_btn:
+            gui_w = int(round(open_btn["x"] + back_btn["x"] + back_btn["w"]))
+        else:
+            gui_w = int(round(ui_bounds()["window"][2]))
+        cols_w = min(gui_w, 404)
+        left = (gui_w - cols_w) // 2
+        list_top = 32
+
+        cfg_btn = None
+        for row_idx in (2, 0, 1, 3, 4, 5):
+            ry = list_top + 2 + row_idx * 28 + 14
+            h.raw_send(f"click-at {left + 40} {ry}")
+            time.sleep(0.15)
+            btns_after = h.screen().get("buttons", [])
+            cand = next((b for b in btns_after if b.get("label") in ("Config", "Настройки")), None)
+            if cand is None and len(btns_after) >= 3:
+                cand = btns_after[-3]
+            if cand is not None and cand.get("enabled") is True:
+                cfg_btn = cand
+                break
+        assert cfg_btn is not None, f"Could not select RReturn mod row with enabled Config: {h.screen().get('buttons', [])}"
+        cx = int(round(cfg_btn["x"] + cfg_btn["w"] / 2.0))
+        cy = int(round(cfg_btn["y"] + cfg_btn["h"] / 2.0))
+        h.raw_send(f"click-at {cx} {cy}")
+        time.sleep(0.2)
+
+    try:
+        # Prepare custom per-world setting in World A via K menu: enable auto_save only in World A
+        h.raw_send("key k tap")
+        time.sleep(0.2)
+        assert h.screen().get("screen") == "mod", f"Expected mod screen after K, got: {h.screen()}"
+        b_world = ui_bounds()
+        assert b_world.get("mode") == "world", b_world
+        assert "tab.players" in b_world["controls"], f"Expected Players tab in World menu: {b_world['controls'].keys()}"
+        if b_world.get("active_tab") != "rollback":
+            rx, ry = ui_pt("tab.rollback")
+            h.raw_send(f"click-at {rx} {ry}")
+            time.sleep(0.15)
+        ax, ay = ui_pt("opt.auto_save")
+        h.raw_send(f"click-at {ax} {ay}")
+        time.sleep(0.2)
+        h.raw_send(f"screenshot {scratch_dir / 'world_k_menu.png'}")
+        time.sleep(0.15)
+        h.raw_send("key esc tap")
+        time.sleep(0.2)
+        assert h.screen().get("screen") == "playing", f"Expected playing after closing K menu, got: {h.screen()}"
+        assert world_a_cfg_path.is_file(), f"Missing per-world settings at {world_a_cfg_path}"
+        world_a_before = json.loads(world_a_cfg_path.read_text(encoding="utf-8"))
+        assert world_a_before["autosave"]["auto_save"] is True, world_a_before
+
+        # 1. Pause/Options -> Mods -> Config opens custom dark RReturn Global menu (NOT vanilla Page::NativeMod)
+        h.raw_send("options mods")
+        time.sleep(0.2)
+        assert h.screen().get("screen") == "options", f"Expected options screen, got: {h.screen()}"
+        open_rreturn_from_mods_page()
+
+        assert h.screen().get("screen") == "options", f"Expected Global modal overlay on options screen, got: {h.screen()}"
+        bg = ui_bounds()
+        assert bg.get("mode") == "global", f"Expected Global mode via Mods->Config: {bg}"
+        assert bg.get("global_open") is True, bg
+        assert bg.get("active_tab") == "rollback", bg
+        for forbidden in ("tab.players", "jump.open_players"):
+            assert forbidden not in bg["controls"], f"Players link '{forbidden}' must be hidden in Global mode"
+        assert not any(k.startswith("jump.per_player.") for k in bg["controls"]), bg["controls"].keys()
+
+        # Verify Scrub tab in Global mode also hides per-player links
+        sx, sy = ui_pt("tab.scrub")
+        h.raw_send(f"click-at {sx} {sy}")
+        time.sleep(0.15)
+        bg_scrub = ui_bounds()
+        assert bg_scrub.get("active_tab") == "scrub", bg_scrub
+        assert "jump.open_players" not in bg_scrub["controls"], bg_scrub["controls"].keys()
+        assert "tab.players" not in bg_scrub["controls"], bg_scrub["controls"].keys()
+        sc_x, sc_y = ui_pt("opt.scrub_enabled")
+        h.raw_send(f"click-at {sc_x} {sc_y}")
+        time.sleep(0.15)
+
+        rb_x, rb_y = ui_pt("tab.rollback")
+        h.raw_send(f"click-at {rb_x} {rb_y}")
+        time.sleep(0.15)
+        dx, dy = ui_pt("opt.death_rollback")
+        h.raw_send(f"click-at {dx} {dy}")
+        time.sleep(0.15)
+        bx, by = ui_pt("opt.blocks")
+        h.raw_send(f"click-at {bx} {by}")
+        time.sleep(0.2)
+        rb_pts = dict(ui_bounds()["controls"])
+        h.raw_send(f"screenshot {scratch_dir / 'global_mods_menu.png'}")
+        time.sleep(0.15)
+
+        # Global changes must persist to config/rreturn.json and leave active World A completely untouched
+        assert global_cfg_path.is_file(), f"Expected global settings at {global_cfg_path}"
+        g_cfg = json.loads(global_cfg_path.read_text(encoding="utf-8"))
+        assert g_cfg["death_rollback"] is False, g_cfg
+        assert g_cfg["checkpointPolicy"]["rollback"]["blocks"] is False, g_cfg
+        assert g_cfg["scrub"]["enabled"] is True, g_cfg
+        assert g_cfg["autosave"]["auto_save"] is False, g_cfg
+
+        live_a = h.rreturn("json")
+        assert live_a.get("death_rollback") is True, f"Global edit leaked into live world: {live_a}"
+        assert live_a.get("scrub_enabled") is False, f"Global edit leaked into live world: {live_a}"
+        assert live_a.get("auto_save") is True, f"Global edit leaked into live world: {live_a}"
+        assert h.rreturn("policy get").get("blocks") is True, "Global edit leaked blocks policy into live world"
+        assert json.loads(world_a_cfg_path.read_text(encoding="utf-8")) == world_a_before
+
+        # Esc closes Global modal back to Mods screen, then Esc steps out via Main Options -> Paused -> Playing
+        h.raw_send("key esc tap")
+        time.sleep(0.2)
+        bg_closed = ui_bounds()
+        assert bg_closed.get("global_open") is False, bg_closed
+        assert h.screen().get("screen") == "options", f"Expected options after closing modal, got: {h.screen()}"
+        for _ in range(3):
+            scr = h.screen().get("screen")
+            if scr == "options":
+                h.raw_send("key esc tap")
+                time.sleep(0.2)
+            elif scr == "paused":
+                h.raw_send("resume")
+                time.sleep(0.2)
+            else:
+                break
+        assert h.screen().get("screen") == "playing", f"Expected playing after exiting Mods, got: {h.screen()}"
+
+        # 2. Brand-new World B must inherit Global defaults on first load
+        world_b = f"rreturn_e2e_cfg_b_{int(time.time())}"
+        h.open_world(world_b, seed=54321)
+        live_b = h.rreturn("json")
+        assert live_b.get("death_rollback") is False, f"New world did not inherit death_rollback=false: {live_b}"
+        assert live_b.get("scrub_enabled") is True, f"New world did not inherit scrub_enabled=true: {live_b}"
+        assert live_b.get("auto_save") is False, f"New world inherited World A's auto_save=true: {live_b}"
+        assert h.rreturn("policy get").get("blocks") is False, "New world did not inherit blocks=false"
+        world_b_cfg_path = _world_settings_path(h)
+        assert world_b_cfg_path.is_file(), f"Expected frozen world settings at {world_b_cfg_path}"
+
+        # 3. Existing World A retains its own per-world settings when reopened
+        h.open_world(orig_world, seed=12345)
+        live_a2 = h.rreturn("json")
+        assert live_a2.get("death_rollback") is True, f"Existing World A mutated by Global/World B: {live_a2}"
+        assert live_a2.get("scrub_enabled") is False, f"Existing World A mutated by Global/World B: {live_a2}"
+        assert live_a2.get("auto_save") is True, f"Existing World A lost its auto_save=true: {live_a2}"
+        assert h.rreturn("policy get").get("blocks") is True, "Existing World A lost blocks=true"
+
+        # 4. Title Screen -> Mods -> Config opens Global menu and closes cleanly via Close button
+        assert h.exit_to_title(), "Failed to exit to title screen"
+        title_btns = h.screen().get("buttons", [])
+        mods_btn = next((b for b in title_btns if b.get("label") in ("Mods", "Mods...", "Моды")), None)
+        assert mods_btn is not None, f"Missing Mods button on title screen: {title_btns}"
+        h.raw_send(f"click-button {mods_btn['label']}")
+        time.sleep(0.2)
+        mods_btns = h.screen().get("buttons", [])
+        assert any(b.get("label") in ("Config", "Настройки") for b in mods_btns), (
+            f"Expected Mods screen after clicking Mods on title, got: {mods_btns}"
+        )
+        open_rreturn_from_mods_page()
+        time.sleep(0.15)
+        h.raw_send(f"screenshot {scratch_dir / 'global_title_mods_menu.png'}")
+        time.sleep(0.15)
+
+        # Reset toggled global flags back to defaults inside Global UI on Title screen using cached hit coords
+        dx, dy = rb_pts["opt.death_rollback"]
+        h.raw_send(f"click-at {dx} {dy}")
+        time.sleep(0.15)
+        bx, by = rb_pts["opt.blocks"]
+        h.raw_send(f"click-at {bx} {by}")
+        time.sleep(0.15)
+        sx, sy = rb_pts["tab.scrub"]
+        h.raw_send(f"click-at {sx} {sy}")
+        time.sleep(0.15)
+        sc_x, sc_y = bg_scrub["controls"]["opt.scrub_enabled"]
+        h.raw_send(f"click-at {sc_x} {sc_y}")
+        time.sleep(0.2)
+        g_reset = json.loads(global_cfg_path.read_text(encoding="utf-8"))
+        assert g_reset["death_rollback"] is True and g_reset["scrub"]["enabled"] is False, g_reset
+        assert g_reset["checkpointPolicy"]["rollback"]["blocks"] is True, g_reset
+
+        cx, cy = rb_pts["close"]
+        h.raw_send(f"click-at {cx} {cy}")
+        time.sleep(0.2)
+        after_close_btns = h.screen().get("buttons", [])
+        assert any(b.get("label") in ("Config", "Настройки") for b in after_close_btns), (
+            f"Expected return to Mods screen after X close, got: {after_close_btns}"
+        )
+        for _ in range(3):
+            btns_now = h.screen().get("buttons", [])
+            back_btn = next((b for b in btns_now if b.get("label") in ("Back", "Назад", "Done", "Готово")), None)
+            if back_btn is not None:
+                h.raw_send(f"click-button {back_btn['label']}")
+                time.sleep(0.2)
+            else:
+                break
+        final_title_btns = h.screen().get("buttons", [])
+        assert any(b.get("label") in ("Mods", "Mods...", "Моды", "Singleplayer", "Одиночная игра") for b in final_title_btns), (
+            f"Expected return to main title menu after Esc from Mods, got: {final_title_btns}"
+        )
+    finally:
+        for _ in range(3):
+            try:
+                scr = h.screen().get("screen")
+                if scr in ("mod", "options"):
+                    h.raw_send("key esc tap")
+                    time.sleep(0.2)
+                elif scr == "paused":
+                    h.raw_send("resume")
+                    time.sleep(0.2)
+                else:
+                    break
+            except Exception:
+                break
+        if backup_global is not None:
+            global_cfg_path.parent.mkdir(parents=True, exist_ok=True)
+            global_cfg_path.write_text(backup_global, encoding="utf-8")
+        else:
+            global_cfg_path.unlink(missing_ok=True)
+        if h.world != orig_world or h.screen().get("screen") != "playing":
+            h.open_world(orig_world, seed=12345)
+        h.rreturn("death on")
+        h.rreturn("scrub off")
+        h.rreturn("autosave adaptive")
+        h.rreturn("autosave off")
+        h.rreturn("policy reset")
+        h.rreturn("scrub policy reset")
+        h.wait(2)
+
 
 
 

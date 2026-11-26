@@ -1,10 +1,14 @@
 use super::super::Game;
 use super::policy::OverrideValue;
 use super::settings_catalog::{UiGroup, UiTab};
-use super::types::AnchorMode;
-use super::types::MOD_ID;
-use horizon_client::hud::HudBatch;
+use super::types::{
+    tr, with_global_state, with_global_state_mut, with_state, with_state_mut, AnchorMode,
+    RReturnState, MOD_ID,
+};
+use horizon_client::hud::{rgba, HudAtlas, HudBatch};
 use horizon_client::keybinds;
+use horizon_client::mod_list::ModList;
+use horizon_client::text::Text;
 use std::collections::HashMap;
 use std::time::Instant;
 
@@ -80,7 +84,118 @@ pub struct SliderDragState {
     pub step: i32,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+pub enum SettingsUiMode {
+    #[default]
+    World,
+    Global,
+}
+
+pub fn with_mode_state<R>(mode: SettingsUiMode, f: impl FnOnce(&RReturnState) -> R) -> R {
+    if mode == SettingsUiMode::Global {
+        with_global_state(f)
+    } else {
+        with_state(f)
+    }
+}
+
+pub fn with_mode_state_mut<R>(mode: SettingsUiMode, f: impl FnOnce(&mut RReturnState) -> R) -> R {
+    if mode == SettingsUiMode::Global {
+        with_global_state_mut(f)
+    } else {
+        with_state_mut(f)
+    }
+}
+
+pub trait UiCanvas {
+    fn screen_size(&self, draw: &HudBatch) -> [f32; 2];
+    fn fill(&self, draw: &mut HudBatch, rect: [f32; 4], argb: u32);
+    fn text(&self, draw: &mut HudBatch, text: &str, at: [f32; 2], argb: u32, shadow: bool);
+    fn text_width(&self, draw: &HudBatch, text: &str) -> f32;
+    fn cursor(&self) -> [f32; 2];
+    fn mod_binding(&self, id: &str, default_key: &str) -> (String, u32);
+}
+
+impl UiCanvas for Game<'_> {
+    fn screen_size(&self, draw: &HudBatch) -> [f32; 2] {
+        self.native_size(draw)
+    }
+
+    fn fill(&self, draw: &mut HudBatch, rect: [f32; 4], argb: u32) {
+        self.native_fill(draw, rect, argb);
+    }
+
+    fn text(&self, draw: &mut HudBatch, text: &str, at: [f32; 2], argb: u32, shadow: bool) {
+        self.native_text(draw, text, at, argb, shadow);
+    }
+
+    fn text_width(&self, draw: &HudBatch, text: &str) -> f32 {
+        self.native_text_width(draw, text)
+    }
+
+    fn cursor(&self) -> [f32; 2] {
+        Game::cursor(self)
+    }
+
+    fn mod_binding(&self, id: &str, default_key: &str) -> (String, u32) {
+        self.mod_key(MOD_ID, id)
+            .map(|(k, m)| (k, m.bits))
+            .unwrap_or_else(|| (default_key.to_owned(), 0))
+    }
+}
+
+pub struct MenuUiCanvas<'a> {
+    pub atlas: &'a HudAtlas,
+    pub cursor_pos: [f32; 2],
+    pub mods: &'a ModList,
+}
+
+impl UiCanvas for MenuUiCanvas<'_> {
+    fn screen_size(&self, draw: &HudBatch) -> [f32; 2] {
+        [draw.width, draw.height]
+    }
+
+    fn fill(&self, draw: &mut HudBatch, rect: [f32; 4], argb: u32) {
+        let [x, y, w, h] = rect;
+        let [a, r, g, b] = argb.to_be_bytes();
+        draw.fill(self.atlas, x, y, w, h, rgba(r, g, b, a));
+    }
+
+    fn text(&self, draw: &mut HudBatch, text: &str, at: [f32; 2], argb: u32, shadow: bool) {
+        let [a, r, g, b] = argb.to_be_bytes();
+        if a == 0 {
+            return;
+        }
+        draw.text_styled(
+            self.atlas,
+            &Text::literal(text),
+            at[0],
+            at[1],
+            rgba(r, g, b, a),
+            shadow,
+        );
+    }
+
+    fn text_width(&self, _draw: &HudBatch, text: &str) -> f32 {
+        HudBatch::text_width(self.atlas, text)
+    }
+
+    fn cursor(&self) -> [f32; 2] {
+        self.cursor_pos
+    }
+
+    fn mod_binding(&self, id: &str, default_key: &str) -> (String, u32) {
+        let def = mod_api::__private::key_mappings()
+            .iter()
+            .find(|(owner, mapping)| *owner == MOD_ID && mapping.id == id)
+            .map_or((default_key, 0u32), |(_, m)| (m.key.as_str(), m.modifiers.bits));
+        self.mods.binding(MOD_ID, id, def)
+    }
+}
+
 pub struct SettingsUiState {
+    pub mode: SettingsUiMode,
+    pub global_modal_open: bool,
     pub active_tab: UiTab,
     pub search_query: String,
     pub search_focused: bool,
@@ -107,6 +222,8 @@ pub struct SettingsUiState {
 impl Default for SettingsUiState {
     fn default() -> Self {
         Self {
+            mode: SettingsUiMode::World,
+            global_modal_open: false,
             active_tab: UiTab::Rollback,
             search_query: String::new(),
             search_focused: false,
@@ -177,11 +294,8 @@ pub fn format_binding_parts(key: &str, mods: u32) -> (String, bool) {
     (parts.join(" + "), true)
 }
 
-pub fn format_mod_binding(game: &Game<'_>, id: &str, default_key: &str) -> (String, bool) {
-    let (key, mods) = game
-        .mod_key(MOD_ID, id)
-        .map(|(k, m)| (k, m.bits))
-        .unwrap_or_else(|| (default_key.to_owned(), 0));
+pub fn format_mod_binding<C: UiCanvas>(canvas: &C, id: &str, default_key: &str) -> (String, bool) {
+    let (key, mods) = canvas.mod_binding(id, default_key);
     format_binding_parts(&key, mods)
 }
 
@@ -205,7 +319,7 @@ pub fn lerp_argb(c0: u32, c1: u32, t: f32) -> u32 {
     ])
 }
 
-pub fn draw_rounded_rect(game: &Game<'_>, draw: &mut HudBatch, [x, y, w, h]: [f32; 4], radius: f32, argb: u32) {
+pub fn draw_rounded_rect<C: UiCanvas>(canvas: &C, draw: &mut HudBatch, [x, y, w, h]: [f32; 4], radius: f32, argb: u32) {
     if w <= 0.0 || h <= 0.0 || (argb >> 24) == 0 {
         return;
     }
@@ -220,12 +334,12 @@ pub fn draw_rounded_rect(game: &Game<'_>, draw: &mut HudBatch, [x, y, w, h]: [f3
     }
     let ri = (radius.clamp(0.0, (rw * 0.5).min(rh * 0.5)).floor() as i32).max(0);
     if ri <= 0 {
-        game.native_fill(draw, [x0, y0, rw, rh], argb);
+        canvas.fill(draw, [x0, y0, rw, rh], argb);
         return;
     }
     let rf = ri as f32;
     if rh > rf * 2.0 {
-        game.native_fill(draw, [x0, y0 + rf, rw, rh - rf * 2.0], argb);
+        canvas.fill(draw, [x0, y0 + rf, rw, rh - rf * 2.0], argb);
     }
     for row in 0..ri {
         let dy = (rf - 0.5) - row as f32;
@@ -233,13 +347,13 @@ pub fn draw_rounded_rect(game: &Game<'_>, draw: &mut HudBatch, [x, y, w, h]: [f3
         let inset = (rf - dx).round().max(0.0);
         let row_w = (rw - inset * 2.0).max(0.0);
         if row_w > 0.0 {
-            game.native_fill(draw, [x0 + inset, y0 + row as f32, row_w, 1.0], argb);
-            game.native_fill(draw, [x0 + inset, y1 - 1.0 - row as f32, row_w, 1.0], argb);
+            canvas.fill(draw, [x0 + inset, y0 + row as f32, row_w, 1.0], argb);
+            canvas.fill(draw, [x0 + inset, y1 - 1.0 - row as f32, row_w, 1.0], argb);
         }
     }
 }
 
-pub fn draw_rounded_left_rect(game: &Game<'_>, draw: &mut HudBatch, [x, y, w, h]: [f32; 4], radius: f32, argb: u32) {
+pub fn draw_rounded_left_rect<C: UiCanvas>(canvas: &C, draw: &mut HudBatch, [x, y, w, h]: [f32; 4], radius: f32, argb: u32) {
     if w <= 0.0 || h <= 0.0 || (argb >> 24) == 0 {
         return;
     }
@@ -251,12 +365,12 @@ pub fn draw_rounded_left_rect(game: &Game<'_>, draw: &mut HudBatch, [x, y, w, h]
     let rh = (y1 - y0).max(0.0);
     let ri = (radius.clamp(0.0, rw.min(rh * 0.5)).floor() as i32).max(0);
     if ri <= 0 {
-        game.native_fill(draw, [x0, y0, rw, rh], argb);
+        canvas.fill(draw, [x0, y0, rw, rh], argb);
         return;
     }
     let rf = ri as f32;
     if rh > rf * 2.0 {
-        game.native_fill(draw, [x0, y0 + rf, rw, rh - rf * 2.0], argb);
+        canvas.fill(draw, [x0, y0 + rf, rw, rh - rf * 2.0], argb);
     }
     for row in 0..ri {
         let dy = (rf - 0.5) - row as f32;
@@ -264,20 +378,20 @@ pub fn draw_rounded_left_rect(game: &Game<'_>, draw: &mut HudBatch, [x, y, w, h]
         let inset = (rf - dx).round().max(0.0);
         let row_w = (rw - inset).max(0.0);
         if row_w > 0.0 {
-            game.native_fill(draw, [x0 + inset, y0 + row as f32, row_w, 1.0], argb);
-            game.native_fill(draw, [x0 + inset, y1 - 1.0 - row as f32, row_w, 1.0], argb);
+            canvas.fill(draw, [x0 + inset, y0 + row as f32, row_w, 1.0], argb);
+            canvas.fill(draw, [x0 + inset, y1 - 1.0 - row as f32, row_w, 1.0], argb);
         }
     }
 }
 
-pub fn draw_soft_shadow(game: &Game<'_>, draw: &mut HudBatch, [x, y, w, h]: [f32; 4], radius: f32, layers: usize) {
+pub fn draw_soft_shadow<C: UiCanvas>(canvas: &C, draw: &mut HudBatch, [x, y, w, h]: [f32; 4], radius: f32, layers: usize) {
     let alphas: &[u32] = &[0x1800_0000, 0x1100_0000, 0x0B00_0000, 0x0600_0000];
     let n = layers.min(alphas.len());
     for i in (0..n).rev() {
         let pad = (i + 1) as f32;
         let sr = if radius > 0.5 { radius + pad } else { 0.0 };
         draw_rounded_rect(
-            game,
+            canvas,
             draw,
             [x - pad, y - pad + 1.0, w + pad * 2.0, h + pad * 2.0],
             sr,
@@ -286,7 +400,7 @@ pub fn draw_soft_shadow(game: &Game<'_>, draw: &mut HudBatch, [x, y, w, h]: [f32
     }
 }
 
-pub fn draw_rounded_border(game: &Game<'_>, draw: &mut HudBatch, [x, y, w, h]: [f32; 4], radius: f32, argb: u32) {
+pub fn draw_rounded_border<C: UiCanvas>(canvas: &C, draw: &mut HudBatch, [x, y, w, h]: [f32; 4], radius: f32, argb: u32) {
     let x0 = x.round();
     let y0 = y.round();
     let rw = ((x + w).round() - x0).max(0.0);
@@ -296,80 +410,80 @@ pub fn draw_rounded_border(game: &Game<'_>, draw: &mut HudBatch, [x, y, w, h]: [
     }
     let ri = (radius.clamp(0.0, (rw * 0.5).min(rh * 0.5)).floor() as i32).max(0);
     if ri <= 0 {
-        game.native_fill(draw, [x0, y0, rw, 1.0], argb);
-        game.native_fill(draw, [x0, y0 + rh - 1.0, rw, 1.0], argb);
-        game.native_fill(draw, [x0, y0 + 1.0, 1.0, rh - 2.0], argb);
-        game.native_fill(draw, [x0 + rw - 1.0, y0 + 1.0, 1.0, rh - 2.0], argb);
+        canvas.fill(draw, [x0, y0, rw, 1.0], argb);
+        canvas.fill(draw, [x0, y0 + rh - 1.0, rw, 1.0], argb);
+        canvas.fill(draw, [x0, y0 + 1.0, 1.0, rh - 2.0], argb);
+        canvas.fill(draw, [x0 + rw - 1.0, y0 + 1.0, 1.0, rh - 2.0], argb);
         return;
     }
     let rf = ri as f32;
     let flat_w = (rw - rf * 2.0).max(0.0);
     if flat_w > 0.0 {
-        game.native_fill(draw, [x0 + rf, y0, flat_w, 1.0], argb);
-        game.native_fill(draw, [x0 + rf, y0 + rh - 1.0, flat_w, 1.0], argb);
+        canvas.fill(draw, [x0 + rf, y0, flat_w, 1.0], argb);
+        canvas.fill(draw, [x0 + rf, y0 + rh - 1.0, flat_w, 1.0], argb);
     }
     let flat_h = (rh - rf * 2.0).max(0.0);
     if flat_h > 0.0 {
-        game.native_fill(draw, [x0, y0 + rf, 1.0, flat_h], argb);
-        game.native_fill(draw, [x0 + rw - 1.0, y0 + rf, 1.0, flat_h], argb);
+        canvas.fill(draw, [x0, y0 + rf, 1.0, flat_h], argb);
+        canvas.fill(draw, [x0 + rw - 1.0, y0 + rf, 1.0, flat_h], argb);
     }
     for row in 0..ri {
         let dy = (rf - 0.5) - row as f32;
         let dx = (rf * rf - dy * dy).max(0.0).sqrt();
         let inset = (rf - dx).round().max(0.0);
-        game.native_fill(draw, [x0 + inset, y0 + row as f32, 1.0, 1.0], argb);
-        game.native_fill(draw, [x0 + rw - 1.0 - inset, y0 + row as f32, 1.0, 1.0], argb);
-        game.native_fill(draw, [x0 + inset, y0 + rh - 1.0 - row as f32, 1.0, 1.0], argb);
-        game.native_fill(draw, [x0 + rw - 1.0 - inset, y0 + rh - 1.0 - row as f32, 1.0, 1.0], argb);
+        canvas.fill(draw, [x0 + inset, y0 + row as f32, 1.0, 1.0], argb);
+        canvas.fill(draw, [x0 + rw - 1.0 - inset, y0 + row as f32, 1.0, 1.0], argb);
+        canvas.fill(draw, [x0 + inset, y0 + rh - 1.0 - row as f32, 1.0, 1.0], argb);
+        canvas.fill(draw, [x0 + rw - 1.0 - inset, y0 + rh - 1.0 - row as f32, 1.0, 1.0], argb);
     }
 }
 
-pub fn fit_text(game: &Game<'_>, draw: &HudBatch, s: &str, max_w: f32) -> String {
+pub fn fit_text<C: UiCanvas>(canvas: &C, draw: &HudBatch, s: &str, max_w: f32) -> String {
     if max_w <= 6.0 {
         return String::new();
     }
-    if game.native_text_width(draw, s) <= max_w {
+    if canvas.text_width(draw, s) <= max_w {
         return s.to_owned();
     }
     let ell = "...";
-    let ell_w = game.native_text_width(draw, ell);
+    let ell_w = canvas.text_width(draw, ell);
     if ell_w >= max_w {
         return String::new();
     }
     for (idx, _) in s.char_indices().rev() {
-        if game.native_text_width(draw, &s[..idx]) + ell_w <= max_w {
+        if canvas.text_width(draw, &s[..idx]) + ell_w <= max_w {
             return format!("{}{}", &s[..idx], ell);
         }
     }
     String::new()
 }
 
-pub fn draw_pill(
-    game: &Game<'_>,
+pub fn draw_pill<C: UiCanvas>(
+    canvas: &C,
     draw: &mut HudBatch,
     rect: [f32; 4],
     label: &str,
     bg: u32,
     text_col: u32,
 ) {
-    draw_rounded_rect(game, draw, rect, (rect[3] * 0.5).min(8.0), bg);
-    let tw = game.native_text_width(draw, label);
+    draw_rounded_rect(canvas, draw, rect, (rect[3] * 0.5).min(8.0), bg);
+    let tw = canvas.text_width(draw, label);
     let tx = (rect[0] + (rect[2] - tw) * 0.5).floor();
     let ty = (rect[1] + (rect[3] - 8.0) * 0.5).floor();
-    game.native_text(draw, label, [tx, ty], text_col, false);
+    canvas.text(draw, label, [tx, ty], text_col, false);
 }
 
-pub fn draw_switch(
-    game: &Game<'_>,
+pub fn draw_switch<C: UiCanvas>(
+    canvas: &C,
     draw: &mut HudBatch,
     x: f32,
     y: f32,
     anim: f32,
 ) {
     let sw = [x, y, 28.0, 14.0];
-    draw_rounded_rect(game, draw, sw, 7.0, lerp_argb(UI_SWITCH_OFF, UI_BLUE, anim));
+    draw_rounded_rect(canvas, draw, sw, 7.0, lerp_argb(UI_SWITCH_OFF, UI_BLUE, anim));
     let knob_x = sw[0] + 2.0 + anim * 14.0;
-    draw_rounded_rect(game, draw, [knob_x, sw[1] + 2.0, 10.0, 10.0], 5.0, UI_THUMB);
+    draw_rounded_rect(canvas, draw, [knob_x, sw[1] + 2.0, 10.0, 10.0], 5.0, UI_THUMB);
 }
 
 pub fn slider_snap(mx: f32, track_x: f32, track_w: f32, min: i32, max: i32, step: i32) -> i32 {

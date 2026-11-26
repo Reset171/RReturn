@@ -61,7 +61,7 @@ Violating any of these breaks `horizon-launcher native-build`:
 ## 4. Repository Layout
 
 - `horizon-mod.toml` & `src/hooks/hook_*.rs` — Unified manifest, mixin declarations, and thin hook helpers injected into `horizon-client`.
-- `src/ext/*_ext.rs` — Engine extension traits (`dragon_ext.rs`, `end_ext.rs`, `fishing_ext.rs`, `potions_ext.rs`, `remote_ext.rs`, `stats_ext.rs`).
+- `src/ext/*_ext.rs` — Engine extension traits (`dragon_ext.rs`, `end_ext.rs`, `fishing_ext.rs`, `potions_ext.rs`, `remote_ext.rs`, `stats_ext.rs`, `startup_menu_ext.rs`, etc.).
 - `src/runtime/` — Modular runtime implementation:
   - `types.rs` — `RReturnState`, `AnchorMode`, `RollbackOrigin`, permissions, `mod_chat`, localization.
   - `policy.rs` — `RollbackPolicy` (35 deterministic rollback flags).

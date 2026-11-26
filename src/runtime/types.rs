@@ -422,9 +422,14 @@ pub fn collect_online_players(game: &Game<'_>) -> Vec<OnlinePlayerInfo> {
 }
 
 static STATE: OnceLock<Mutex<RReturnState>> = OnceLock::new();
+static GLOBAL_STATE: OnceLock<Mutex<RReturnState>> = OnceLock::new();
 
 fn state_lock() -> &'static Mutex<RReturnState> {
     STATE.get_or_init(|| Mutex::new(RReturnState::default()))
+}
+
+fn global_state_lock() -> &'static Mutex<RReturnState> {
+    GLOBAL_STATE.get_or_init(|| Mutex::new(RReturnState::default()))
 }
 
 pub fn with_state<R>(f: impl FnOnce(&RReturnState) -> R) -> R {
@@ -434,6 +439,16 @@ pub fn with_state<R>(f: impl FnOnce(&RReturnState) -> R) -> R {
 
 pub fn with_state_mut<R>(f: impl FnOnce(&mut RReturnState) -> R) -> R {
     let mut guard = state_lock().lock().unwrap_or_else(|e| e.into_inner());
+    f(&mut guard)
+}
+
+pub fn with_global_state<R>(f: impl FnOnce(&RReturnState) -> R) -> R {
+    let guard = global_state_lock().lock().unwrap_or_else(|e| e.into_inner());
+    f(&guard)
+}
+
+pub fn with_global_state_mut<R>(f: impl FnOnce(&mut RReturnState) -> R) -> R {
+    let mut guard = global_state_lock().lock().unwrap_or_else(|e| e.into_inner());
     f(&mut guard)
 }
 

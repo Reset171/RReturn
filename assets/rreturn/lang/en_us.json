@@ -71,6 +71,8 @@
 
   "rreturn.ui.search_placeholder": "Search...",
   "rreturn.ui.search_results": "Search Results",
+  "rreturn.ui.global.badge": "NEW WORLDS",
+  "rreturn.ui.global.sub": "Global defaults applied to newly created worlds",
   "rreturn.ui.no_results": "No matching settings",
   "rreturn.ui.enable_all": "Enable all",
   "rreturn.ui.disable_all": "Disable all",

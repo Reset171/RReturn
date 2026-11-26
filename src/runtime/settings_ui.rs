@@ -1,4 +1,4 @@
-use super::super::Game;
+use super::super::{Game, Screen};
 use super::hooks::handle_screen_key_pressed_any;
 use super::policy::{OverrideValue, PlayerProfileOverrides, RollbackPolicy};
 use super::scrub::{apply_scrub_wheel_delta, is_scrubbing};
@@ -14,8 +14,9 @@ use super::settings_ui_icons::{draw_ui_icon, UiIcon};
 use super::settings_ui_players::draw_players_tab;
 use super::settings_ui_tabs::{draw_grouped_tab, draw_search_tab, draw_system_tab};
 use super::types::*;
-use super::ui::{save_current_settings, sync_scrub_runtime};
-use horizon_client::hud::HudBatch;
+use super::ui::{load_global_settings, save_current_settings, save_global_settings, sync_scrub_runtime};
+use horizon_client::hud::{HudAtlas, HudBatch};
+use horizon_client::mod_list::ModList;
 use std::cell::RefCell;
 use std::time::Instant;
 
@@ -23,8 +24,56 @@ thread_local! {
     static UI_STATE: RefCell<SettingsUiState> = RefCell::new(SettingsUiState::default());
 }
 
-pub fn is_settings_ui_open(game: &Game<'_>) -> bool {
+pub fn is_world_settings_ui_open(game: &Game<'_>) -> bool {
     game.mod_screen() == Some(MOD_ID)
+}
+
+pub fn is_global_modal_open() -> bool {
+    UI_STATE.with(|cell| cell.borrow().global_modal_open)
+}
+
+pub fn is_settings_ui_open(game: &Game<'_>) -> bool {
+    is_world_settings_ui_open(game) || (game.screen == Screen::Options && is_global_modal_open())
+}
+
+pub fn open_global_settings_modal() {
+    load_global_settings();
+    UI_STATE.with(|cell| {
+        let mut ui = cell.borrow_mut();
+        ui.mode = SettingsUiMode::Global;
+        ui.global_modal_open = true;
+        if ui.active_tab == UiTab::Players {
+            ui.active_tab = UiTab::Rollback;
+        }
+        ui.search_query.clear();
+        ui.search_focused = false;
+        ui.scroll_y = 0.0;
+        ui.target_scroll_y = 0.0;
+        ui.dragging_slider = None;
+        ui.dragging_scroll = None;
+        ui.pending_jump_section = None;
+        ui.pending_open = false;
+        ui.pending_close = false;
+        ui.pending_save = false;
+        ui.pending_scrub_sync = None;
+    });
+}
+
+pub fn close_global_settings_modal() {
+    UI_STATE.with(|cell| {
+        let mut ui = cell.borrow_mut();
+        ui.global_modal_open = false;
+        ui.mode = SettingsUiMode::World;
+        ui.search_query.clear();
+        ui.search_focused = false;
+        ui.dragging_slider = None;
+        ui.dragging_scroll = None;
+        ui.pending_jump_section = None;
+        ui.pending_open = false;
+        ui.pending_close = false;
+        ui.pending_save = false;
+        ui.pending_scrub_sync = None;
+    });
 }
 
 pub fn request_open_settings_ui(game: &mut Game<'_>) {
@@ -47,6 +96,8 @@ pub fn request_open_settings_tab(game: &mut Game<'_>, tab: Option<UiTab>) {
     }
     UI_STATE.with(|cell| {
         let mut ui = cell.borrow_mut();
+        ui.mode = SettingsUiMode::World;
+        ui.global_modal_open = false;
         if let Some(t) = tab {
             ui.active_tab = t;
             ui.search_query.clear();
@@ -80,7 +131,13 @@ pub fn settings_ui_bounds_json() -> String {
             UiTab::Players => "players",
             UiTab::System => "system",
         };
+        let mode_name = match ui.mode {
+            SettingsUiMode::World => "world",
+            SettingsUiMode::Global => "global",
+        };
         serde_json::json!({
+            "mode": mode_name,
+            "global_open": ui.global_modal_open,
             "window": ui.window_bounds,
             "active_tab": tab_name,
             "scroll_y": ui.scroll_y,
@@ -100,16 +157,32 @@ pub fn reset_settings_ui_state() {
 }
 
 pub fn flush_settings_ui_actions(game: &mut Game<'_>) {
-    let (open_req, close_req, save_req, scrub_sync) = UI_STATE.with(|cell| {
+    if is_global_modal_open() && game.screen != Screen::Options {
+        close_global_settings_modal();
+    }
+    let (mode, open_req, close_req, save_req, scrub_sync) = UI_STATE.with(|cell| {
         let mut ui = cell.borrow_mut();
+        if ui.mode == SettingsUiMode::Global {
+            let s = ui.pending_save;
+            ui.pending_save = false;
+            ui.pending_scrub_sync = None;
+            return (SettingsUiMode::Global, false, false, s, None);
+        }
         let o = ui.pending_open;
         let c = ui.pending_close;
         ui.pending_close = false;
         let s = ui.pending_save;
         ui.pending_save = false;
         let sc = ui.pending_scrub_sync.take();
-        (o, c, s, sc)
+        (SettingsUiMode::World, o, c, s, sc)
     });
+
+    if mode == SettingsUiMode::Global {
+        if save_req {
+            save_global_settings();
+        }
+        return;
+    }
 
     if open_req && game.mod_screen_open(MOD_ID) {
         UI_STATE.with(|cell| cell.borrow_mut().pending_open = false);
@@ -126,7 +199,7 @@ pub fn flush_settings_ui_actions(game: &mut Game<'_>) {
 }
 
 fn sync_drag_at_cursor(mx: f32, my: f32) {
-    let drag_val = UI_STATE.with(|cell| {
+    let (mode, drag_val) = UI_STATE.with(|cell| {
         let mut ui = cell.borrow_mut();
         let now = Instant::now();
         let dt = now
@@ -141,18 +214,24 @@ fn sync_drag_at_cursor(mx: f32, my: f32) {
             ui.target_scroll_y = t;
             ui.scroll_y = t;
         }
-        ui.dragging_slider
+        let d = ui
+            .dragging_slider
             .as_ref()
-            .map(|d| (d.id, slider_snap(mx, d.track_x, d.track_w, d.min, d.max, d.step)))
+            .map(|d| (d.id, slider_snap(mx, d.track_x, d.track_w, d.min, d.max, d.step)));
+        (ui.mode, d)
     });
     if let Some((id, val)) = drag_val {
-        let changed = with_state_mut(|st| {
+        let changed = with_mode_state_mut(mode, |st| {
             let prev = read_slider_setting(st, id);
             write_slider_setting(st, id, val);
             read_slider_setting(st, id) != prev
         });
         if changed {
-            UI_STATE.with(|cell| cell.borrow_mut().pending_save = true);
+            if mode == SettingsUiMode::Global {
+                save_global_settings();
+            } else {
+                UI_STATE.with(|cell| cell.borrow_mut().pending_save = true);
+            }
         }
     }
 }
@@ -161,15 +240,36 @@ pub fn render_settings_screen(game: &Game<'_>, draw: &mut HudBatch) {
     if !is_settings_ui_open(game) {
         return;
     }
-    let [sw, sh] = game.native_size(draw);
+    render_settings_canvas(game, draw, game.world.game_time);
+}
+
+pub fn render_global_settings_in_menu(
+    draw: &mut HudBatch,
+    atlas: &HudAtlas,
+    cursor: (f32, f32),
+    mods: &ModList,
+) {
+    if !is_global_modal_open() {
+        return;
+    }
+    let canvas = MenuUiCanvas {
+        atlas,
+        cursor_pos: [cursor.0, cursor.1],
+        mods,
+    };
+    render_settings_canvas(&canvas, draw, 0);
+}
+
+fn render_settings_canvas<C: UiCanvas>(canvas: &C, draw: &mut HudBatch, game_time: i64) {
+    let [sw, sh] = canvas.screen_size(draw);
     if sw < 120.0 || sh < 80.0 {
         return;
     }
-    let [mx, my] = game.cursor();
+    let [mx, my] = canvas.cursor();
     sync_drag_at_cursor(mx, my);
 
-    game.native_fill(draw, [0.0, 0.0, sw, sh * 0.5], UI_SCRIM_TOP);
-    game.native_fill(draw, [0.0, sh * 0.5, sw, sh * 0.5], UI_SCRIM_BOT);
+    canvas.fill(draw, [0.0, 0.0, sw, sh * 0.5], UI_SCRIM_TOP);
+    canvas.fill(draw, [0.0, sh * 0.5, sw, sh * 0.5], UI_SCRIM_BOT);
 
     let mx_pad = if sw < 480.0 { 6.0 } else { 20.0 };
     let my_pad = if sh < 280.0 { 5.0 } else { 12.0 };
@@ -178,15 +278,16 @@ pub fn render_settings_screen(game: &Game<'_>, draw: &mut HudBatch) {
     let win_x = ((sw - win_w) * 0.5).floor();
     let win_y = ((sh - win_h) * 0.5).floor();
 
-    draw_soft_shadow(game, draw, [win_x, win_y, win_w, win_h], 10.0, 4);
-    draw_rounded_rect(game, draw, [win_x, win_y, win_w, win_h], 10.0, UI_WIN_BG);
-    draw_rounded_border(game, draw, [win_x, win_y, win_w, win_h], 10.0, UI_WIN_BORDER);
+    draw_soft_shadow(canvas, draw, [win_x, win_y, win_w, win_h], 10.0, 4);
+    draw_rounded_rect(canvas, draw, [win_x, win_y, win_w, win_h], 10.0, UI_WIN_BG);
+    draw_rounded_border(canvas, draw, [win_x, win_y, win_w, win_h], 10.0, UI_WIN_BORDER);
 
     let side_w = if win_w < 460.0 { 132.0 } else { 142.0 };
-    draw_rounded_left_rect(game, draw, [win_x + 1.0, win_y + 1.0, side_w, win_h - 2.0], 9.0, UI_SIDEBAR_BG);
-    game.native_fill(draw, [win_x + side_w, win_y + 1.0, 1.0, win_h - 2.0], UI_WIN_BORDER);
+    draw_rounded_left_rect(canvas, draw, [win_x + 1.0, win_y + 1.0, side_w, win_h - 2.0], 9.0, UI_SIDEBAR_BG);
+    canvas.fill(draw, [win_x + side_w, win_y + 1.0, 1.0, win_h - 2.0], UI_WIN_BORDER);
 
     let (
+        mode,
         rb_counts,
         sc_counts,
         player_cnt,
@@ -194,65 +295,80 @@ pub fn render_settings_screen(game: &Game<'_>, draw: &mut HudBatch) {
         search_q,
         search_focused,
         scroll_y,
-    ) = with_state(|st| {
-        UI_STATE.with(|cell| {
-            let ui = cell.borrow();
+    ) = UI_STATE.with(|cell| {
+        let mut ui = cell.borrow_mut();
+        if ui.mode == SettingsUiMode::Global && ui.active_tab == UiTab::Players {
+            ui.active_tab = UiTab::Rollback;
+        }
+        let m = ui.mode;
+        let (rb_c, sc_c, pl_c) = with_mode_state(m, |st| {
             (
                 count_tab_policies(st, UiTab::Rollback),
                 count_tab_policies(st, UiTab::Scrub),
                 st.online_players.len().max(st.player_overrides.len()),
-                ui.active_tab,
-                ui.search_query.clone(),
-                ui.search_focused,
-                ui.scroll_y,
             )
-        })
+        });
+        (
+            m,
+            rb_c,
+            sc_c,
+            pl_c,
+            ui.active_tab,
+            ui.search_query.clone(),
+            ui.search_focused,
+            ui.scroll_y,
+        )
     });
 
     let mut regions: Vec<HitRegion> = Vec::with_capacity(112);
 
     // Sidebar compact RReturn header + Search pill
-    draw_ui_icon(game, draw, UiIcon::RReturnLogo, win_x + 10.0, win_y + 10.0, UI_BLUE);
-    game.native_text(draw, "RReturn", [win_x + 25.0, win_y + 11.5], UI_TEXT_PRI, false);
+    draw_ui_icon(canvas, draw, UiIcon::RReturnLogo, win_x + 10.0, win_y + 10.0, UI_BLUE);
+    canvas.text(draw, "RReturn", [win_x + 25.0, win_y + 11.5], UI_TEXT_PRI, false);
 
     let search_rect = [win_x + 8.0, win_y + 28.0, side_w - 16.0, 17.0];
     let s_hov = hit_in_rect(mx, my, search_rect);
-    draw_rounded_rect(game, draw, search_rect, 8.0, UI_SEARCH_BG);
+    draw_rounded_rect(canvas, draw, search_rect, 8.0, UI_SEARCH_BG);
     if search_focused || s_hov {
-        draw_rounded_border(game, draw, search_rect, 8.0, if search_focused { UI_BLUE } else { UI_DIVIDER });
+        draw_rounded_border(canvas, draw, search_rect, 8.0, if search_focused { UI_BLUE } else { UI_DIVIDER });
     }
     regions.push(HitRegion { tag: "search".to_owned(), rect: search_rect, action: HitAction::FocusSearch });
     let clr_rect = [search_rect[0] + search_rect[2] - 15.0, search_rect[1] + 2.0, 13.0, 13.0];
     if search_q.is_empty() {
-        let ph = fit_text(game, draw, &tr("rreturn.ui.search_placeholder"), search_rect[2] - 14.0);
-        game.native_text(draw, &ph, [search_rect[0] + 7.0, search_rect[1] + 4.5], UI_TEXT_MUTED, false);
+        let ph = fit_text(canvas, draw, &tr("rreturn.ui.search_placeholder"), search_rect[2] - 14.0);
+        canvas.text(draw, &ph, [search_rect[0] + 7.0, search_rect[1] + 4.5], UI_TEXT_MUTED, false);
     } else {
-        let qf = fit_text(game, draw, &search_q, search_rect[2] - 24.0);
-        game.native_text(draw, &qf, [search_rect[0] + 7.0, search_rect[1] + 4.5], UI_TEXT_PRI, false);
+        let qf = fit_text(canvas, draw, &search_q, search_rect[2] - 24.0);
+        canvas.text(draw, &qf, [search_rect[0] + 7.0, search_rect[1] + 4.5], UI_TEXT_PRI, false);
         if search_focused {
-            let cw = game.native_text_width(draw, &qf);
-            game.native_fill(draw, [search_rect[0] + 7.0 + cw + 1.0, search_rect[1] + 4.0, 1.0, 9.0], UI_BLUE);
+            let cw = canvas.text_width(draw, &qf);
+            canvas.fill(draw, [search_rect[0] + 7.0 + cw + 1.0, search_rect[1] + 4.0, 1.0, 9.0], UI_BLUE);
         }
         let c_hov = hit_in_rect(mx, my, clr_rect);
-        game.native_text(draw, "x", [clr_rect[0] + 3.0, clr_rect[1] + 2.0], if c_hov { UI_RED } else { UI_TEXT_SEC }, false);
+        canvas.text(draw, "x", [clr_rect[0] + 3.0, clr_rect[1] + 2.0], if c_hov { UI_RED } else { UI_TEXT_SEC }, false);
         regions.push(HitRegion { tag: "clear_search".to_owned(), rect: clr_rect, action: HitAction::ClearSearch });
     }
 
-    // Sidebar 4 menu tabs with vector icons
+    // Sidebar tabs (Global mode omits Players tab)
+    let tabs: &[UiTab] = if mode == SettingsUiMode::Global {
+        &UiTab::GLOBAL
+    } else {
+        &UiTab::ALL
+    };
     let searching = !search_q.trim().is_empty();
     let compact_side = win_h < 225.0;
     let mut tab_y = win_y + 52.0;
     let tab_h = if compact_side { 20.0 } else { 22.0 };
     let tab_gap = if compact_side { 3.0 } else { 4.0 };
-    for &tab in UiTab::ALL.iter() {
+    for &tab in tabs.iter() {
         let tr_rect = [win_x + 8.0, tab_y, side_w - 16.0, tab_h];
         let active = !searching && active_tab == tab;
         let hov = hit_in_rect(mx, my, tr_rect);
         if active || hov {
-            draw_rounded_rect(game, draw, tr_rect, 7.0, if active { UI_PILL_BG } else { UI_ROW_HOV });
+            draw_rounded_rect(canvas, draw, tr_rect, 7.0, if active { UI_PILL_BG } else { UI_ROW_HOV });
         }
         if active {
-            draw_rounded_rect(game, draw, [tr_rect[0] + 2.0, tr_rect[1] + 5.0, 2.0, tab_h - 10.0], 1.0, UI_BLUE);
+            draw_rounded_rect(canvas, draw, [tr_rect[0] + 2.0, tr_rect[1] + 5.0, 2.0, tab_h - 10.0], 1.0, UI_BLUE);
         }
         let icon = match tab {
             UiTab::Rollback => UiIcon::Rollback,
@@ -262,7 +378,7 @@ pub fn render_settings_screen(game: &Game<'_>, draw: &mut HudBatch) {
         };
         let icon_y = tr_rect[1] + (tab_h - 11.0) * 0.5;
         draw_ui_icon(
-            game,
+            canvas,
             draw,
             icon,
             tr_rect[0] + 7.0,
@@ -276,12 +392,12 @@ pub fn render_settings_screen(game: &Game<'_>, draw: &mut HudBatch) {
             UiTab::Players => format!("{}", player_cnt),
             UiTab::System => String::new(),
         };
-        let bw = if badge.is_empty() { 0.0 } else { game.native_text_width(draw, &badge) + 7.0 };
-        let lfit = fit_text(game, draw, &tr(tab.title_key()), tr_rect[2] - 25.0 - bw);
+        let bw = if badge.is_empty() { 0.0 } else { canvas.text_width(draw, &badge) + 7.0 };
+        let lfit = fit_text(canvas, draw, &tr(tab.title_key()), tr_rect[2] - 25.0 - bw);
         let ty = tr_rect[1] + (tab_h - 8.0) * 0.5;
-        game.native_text(draw, &lfit, [tr_rect[0] + 21.0, ty], if active { UI_TEXT_PRI } else { UI_TEXT_SEC }, false);
+        canvas.text(draw, &lfit, [tr_rect[0] + 21.0, ty], if active { UI_TEXT_PRI } else { UI_TEXT_SEC }, false);
         if !badge.is_empty() {
-            game.native_text(
+            canvas.text(
                 draw,
                 &badge,
                 [tr_rect[0] + tr_rect[2] - bw + 1.0, ty],
@@ -304,14 +420,32 @@ pub fn render_settings_screen(game: &Game<'_>, draw: &mut HudBatch) {
     let right_w = (win_w - side_w - 22.0).max(80.0);
     let close_rect = [win_x + win_w - 26.0, win_y + 10.0, 16.0, 16.0];
     let c_hov = hit_in_rect(mx, my, close_rect);
-    draw_pill(game, draw, close_rect, "X", if c_hov { UI_PILL_HOV } else { UI_PILL_BG }, if c_hov { UI_TEXT_PRI } else { UI_TEXT_SEC });
+    draw_pill(canvas, draw, close_rect, "X", if c_hov { UI_PILL_HOV } else { UI_PILL_BG }, if c_hov { UI_TEXT_PRI } else { UI_TEXT_SEC });
     regions.push(HitRegion { tag: "close".to_owned(), rect: close_rect, action: HitAction::Close });
 
     let hdr_title = tr(if searching { "rreturn.ui.search_results" } else { active_tab.title_key() });
-    let hdr_sub = if searching { search_q.trim().to_owned() } else { tr(active_tab.subtitle_key()) };
-    let hdr_text_max = (right_w - 28.0).max(30.0);
-    game.native_text(draw, &fit_text(game, draw, &hdr_title, hdr_text_max), [right_x, win_y + 10.0], UI_TEXT_PRI, false);
-    game.native_text(draw, &fit_text(game, draw, &hdr_sub, hdr_text_max), [right_x, win_y + 22.0], UI_TEXT_MUTED, false);
+    let hdr_sub = if searching {
+        search_q.trim().to_owned()
+    } else if mode == SettingsUiMode::Global {
+        tr("rreturn.ui.global.sub")
+    } else {
+        tr(active_tab.subtitle_key())
+    };
+    let badge_lbl = (mode == SettingsUiMode::Global).then(|| tr("rreturn.ui.global.badge"));
+    let badge_reserve = badge_lbl
+        .as_ref()
+        .map_or(0.0, |b| canvas.text_width(draw, b) + 18.0);
+    let hdr_text_max = (right_w - 28.0 - badge_reserve).max(30.0);
+    let fit_hdr = fit_text(canvas, draw, &hdr_title, hdr_text_max);
+    canvas.text(draw, &fit_hdr, [right_x, win_y + 10.0], UI_TEXT_PRI, false);
+    if let Some(badge) = badge_lbl {
+        let bw = canvas.text_width(draw, &badge) + 10.0;
+        let bx = right_x + canvas.text_width(draw, &fit_hdr) + 8.0;
+        if bx + bw <= close_rect[0] - 6.0 {
+            draw_pill(canvas, draw, [bx, win_y + 8.0, bw, 12.0], &badge, UI_BLUE_SOFT, UI_BLUE);
+        }
+    }
+    canvas.text(draw, &fit_text(canvas, draw, &hdr_sub, (right_w - 28.0).max(30.0)), [right_x, win_y + 22.0], UI_TEXT_MUTED, false);
 
     // Quick-Jump Icon Bar only on multi-section Rollback / Scrub tabs
     let mut list_top_off = 38.0;
@@ -319,9 +453,10 @@ pub fn render_settings_screen(game: &Game<'_>, draw: &mut HudBatch) {
     if !searching && matches!(active_tab, UiTab::Rollback | UiTab::Scrub) {
         let jbar = [right_x, win_y + 35.0, (right_w - 8.0).max(60.0), 22.0];
         jump_tooltip = draw_quick_jump_bar(
-            game,
+            canvas,
             draw,
             active_tab,
+            mode,
             jbar,
             scroll_y,
             [mx, my],
@@ -342,18 +477,18 @@ pub fn render_settings_screen(game: &Game<'_>, draw: &mut HudBatch) {
     let total_h = UI_STATE.with(|cell| {
         let mut ui = cell.borrow_mut();
         if searching {
-            draw_search_tab(game, draw, &mut ui, &search_q, list_bounds, scroll_y, [mx, my], &mut list_regions)
+            draw_search_tab(canvas, draw, &mut ui, &search_q, list_bounds, scroll_y, [mx, my], &mut list_regions)
         } else {
             ui.section_offsets.clear();
             match active_tab {
                 UiTab::Rollback | UiTab::Scrub => {
-                    draw_grouped_tab(game, draw, &mut ui, active_tab, list_bounds, scroll_y, [mx, my], &mut list_regions)
+                    draw_grouped_tab(canvas, draw, &mut ui, active_tab, list_bounds, scroll_y, [mx, my], &mut list_regions)
                 }
                 UiTab::Players => {
-                    draw_players_tab(game, draw, &mut ui, list_bounds, scroll_y, [mx, my], &mut list_regions)
+                    draw_players_tab(canvas, draw, &mut ui, game_time, list_bounds, scroll_y, [mx, my], &mut list_regions)
                 }
                 UiTab::System => {
-                    draw_system_tab(game, draw, &mut ui, list_bounds, scroll_y, [mx, my], &mut list_regions)
+                    draw_system_tab(canvas, draw, &mut ui, list_bounds, scroll_y, [mx, my], &mut list_regions)
                 }
             }
         }
@@ -363,12 +498,12 @@ pub fn render_settings_screen(game: &Game<'_>, draw: &mut HudBatch) {
     let max_scroll = (total_h - list_h).max(0.0);
     if max_scroll > 0.5 {
         let sb_x = list_x + list_w + 3.0;
-        draw_rounded_rect(game, draw, [sb_x, list_y, 3.0, list_h], 1.5, 0x24FFFFFF);
+        draw_rounded_rect(canvas, draw, [sb_x, list_y, 3.0, list_h], 1.5, 0x24FFFFFF);
         let thumb_h = ((list_h / total_h) * list_h).clamp(16.0, list_h);
         let thumb_y = list_y + (scroll_y / max_scroll) * (list_h - thumb_h);
         let sb_rect = [sb_x - 2.0, list_y, 7.0, list_h];
         let sb_hov = hit_in_rect(mx, my, sb_rect);
-        draw_rounded_rect(game, draw, [sb_x, thumb_y, 3.0, thumb_h], 1.5, if sb_hov { UI_BLUE } else { 0x99727585 });
+        draw_rounded_rect(canvas, draw, [sb_x, thumb_y, 3.0, thumb_h], 1.5, if sb_hov { UI_BLUE } else { 0x99727585 });
         regions.push(HitRegion {
             tag: "scrollbar".to_owned(),
             rect: sb_rect,
@@ -395,11 +530,11 @@ pub fn render_settings_screen(game: &Game<'_>, draw: &mut HudBatch) {
 
     // Draw tooltip last so it renders crisply above everything inside the quick-jump dock
     if let Some(([tx, ty], tip)) = jump_tooltip {
-        let tw = game.native_text_width(draw, &tip) + 12.0;
+        let tw = canvas.text_width(draw, &tip) + 12.0;
         let rx = tx.min(win_x + win_w - tw - 6.0).max(win_x + 6.0);
-        draw_rounded_rect(game, draw, [rx, ty, tw, 15.0], 5.0, 0xF01C1E26);
-        draw_rounded_border(game, draw, [rx, ty, tw, 15.0], 5.0, UI_WIN_BORDER);
-        game.native_text(draw, &tip, [rx + 6.0, ty + 3.5], UI_TEXT_PRI, false);
+        draw_rounded_rect(canvas, draw, [rx, ty, tw, 15.0], 5.0, 0xF01C1E26);
+        draw_rounded_border(canvas, draw, [rx, ty, tw, 15.0], 5.0, UI_WIN_BORDER);
+        canvas.text(draw, &tip, [rx + 6.0, ty + 3.5], UI_TEXT_PRI, false);
     }
 }
 
@@ -412,7 +547,7 @@ struct JumpBtnSpec {
     scope_scrub: Option<bool>,
 }
 
-fn quick_jump_specs(tab: UiTab) -> &'static [JumpBtnSpec] {
+fn quick_jump_specs(tab: UiTab, mode: SettingsUiMode) -> Vec<JumpBtnSpec> {
     const RB_JUMPS: &[JumpBtnSpec] = &[
         JumpBtnSpec { tab: UiTab::Rollback, section: "rb_auto", icon: UiIcon::Clock, label_key: "rreturn.ui.jump.auto", tag: "jump.rb_auto", scope_scrub: None },
         JumpBtnSpec { tab: UiTab::Rollback, section: "rb_world", icon: UiIcon::WorldCube, label_key: "rreturn.ui.jump.world", tag: "jump.rb_world", scope_scrub: None },
@@ -429,31 +564,43 @@ fn quick_jump_specs(tab: UiTab) -> &'static [JumpBtnSpec] {
         JumpBtnSpec { tab: UiTab::Scrub, section: "scrub_rules", icon: UiIcon::RulesShield, label_key: "rreturn.ui.jump.rules", tag: "jump.scrub_rules", scope_scrub: None },
         JumpBtnSpec { tab: UiTab::Players, section: "players_rules", icon: UiIcon::Players, label_key: "rreturn.ui.jump.players", tag: "jump.open_players", scope_scrub: Some(true) },
     ];
-    match tab {
+    let base: &[JumpBtnSpec] = match tab {
         UiTab::Rollback => RB_JUMPS,
         UiTab::Scrub => SC_JUMPS,
         _ => &[],
-    }
+    };
+    base.iter()
+        .filter(|sp| mode == SettingsUiMode::World || sp.tab != UiTab::Players)
+        .map(|sp| JumpBtnSpec {
+            tab: sp.tab,
+            section: sp.section,
+            icon: sp.icon,
+            label_key: sp.label_key,
+            tag: sp.tag,
+            scope_scrub: sp.scope_scrub,
+        })
+        .collect()
 }
 
-fn draw_quick_jump_bar(
-    game: &Game<'_>,
+fn draw_quick_jump_bar<C: UiCanvas>(
+    canvas: &C,
     draw: &mut HudBatch,
     active_tab: UiTab,
+    mode: SettingsUiMode,
     rect: [f32; 4],
     scroll_y: f32,
     mouse: [f32; 2],
     regions: &mut Vec<HitRegion>,
 ) -> Option<([f32; 2], String)> {
-    let specs = quick_jump_specs(active_tab);
+    let specs = quick_jump_specs(active_tab, mode);
     if specs.is_empty() {
         return None;
     }
-    draw_rounded_rect(game, draw, rect, 6.0, UI_SEG_DOCK);
+    draw_rounded_rect(canvas, draw, rect, 6.0, UI_SEG_DOCK);
     let active_sec = UI_STATE.with(|cell| {
         let ui = cell.borrow();
         let mut best: Option<(&str, f32)> = None;
-        for sp in specs {
+        for sp in &specs {
             if sp.tab != active_tab {
                 continue;
             }
@@ -479,13 +626,13 @@ fn draw_quick_jump_bar(
         let is_cross = sp.tab != active_tab;
         let btn_w = if is_cross {
             let cw = if show_labels {
-                20.0 + game.native_text_width(draw, &lbl) + 6.0
+                20.0 + canvas.text_width(draw, &lbl) + 6.0
             } else {
                 24.0
             };
             cw.min((rect[0] + rect[2] - cur_x - 3.0).max(20.0))
         } else if show_labels {
-            (20.0 + game.native_text_width(draw, &lbl) + 6.0)
+            (20.0 + canvas.text_width(draw, &lbl) + 6.0)
                 .min(((rect[2] - 10.0) / specs.len() as f32).max(24.0))
         } else {
             24.0
@@ -496,7 +643,7 @@ fn draw_quick_jump_bar(
             cur_x
         };
         if is_cross && bx > cur_x + 2.0 {
-            game.native_fill(draw, [bx - 3.0, by + 2.0, 1.0, btn_h - 4.0], UI_DIVIDER);
+            canvas.fill(draw, [bx - 3.0, by + 2.0, 1.0, btn_h - 4.0], UI_DIVIDER);
         }
         if bx + btn_w > rect[0] + rect[2] {
             break;
@@ -513,7 +660,7 @@ fn draw_quick_jump_bar(
         } else {
             UI_PILL_BG
         };
-        draw_rounded_rect(game, draw, br, 4.5, bg);
+        draw_rounded_rect(canvas, draw, br, 4.5, bg);
         let fg = if active || (is_cross && hov) {
             UI_TEXT_PRI
         } else if is_cross {
@@ -525,10 +672,10 @@ fn draw_quick_jump_bar(
         };
         let ix = if show_labels { br[0] + 5.0 } else { br[0] + (br[2] - 11.0) * 0.5 };
         let iy = br[1] + (br[3] - 11.0) * 0.5;
-        draw_ui_icon(game, draw, sp.icon, ix, iy, fg);
+        draw_ui_icon(canvas, draw, sp.icon, ix, iy, fg);
         if show_labels {
-            let lfit = fit_text(game, draw, &lbl, (br[2] - 21.0).max(10.0));
-            game.native_text(draw, &lfit, [br[0] + 18.0, br[1] + 5.0], fg, false);
+            let lfit = fit_text(canvas, draw, &lbl, (br[2] - 21.0).max(10.0));
+            canvas.text(draw, &lfit, [br[0] + 18.0, br[1] + 5.0], fg, false);
         } else if hov {
             tooltip = Some(([br[0], rect[1] + rect[3] + 3.0], lbl));
         }
@@ -544,37 +691,45 @@ fn draw_quick_jump_bar(
     tooltip
 }
 
-pub fn handle_screen_mouse_pressed(game: &Game<'_>, button: i32, mx: f32, my: f32, canceled: &mut bool) {
-    if handle_scrub_hud_mouse_pressed(button, mx, my) {
-        *canceled = true;
-        return;
-    }
-    if is_scrubbing() {
-        *canceled = true;
-        return;
-    }
-    if !is_settings_ui_open(game) {
-        return;
-    }
-    *canceled = true;
+pub fn handle_settings_mouse_pressed_core(button: i32, mx: f32, my: f32) {
     if button != 0 {
         return;
     }
-    let (action_opt, win_rect) = UI_STATE.with(|cell| {
+    let (mode, action_opt, win_rect) = UI_STATE.with(|cell| {
         let mut ui = cell.borrow_mut();
         ui.search_focused = false;
         let found = ui.hit_regions.iter().rev().find(|r| hit_in_rect(mx, my, r.rect)).map(|r| r.action.clone());
-        (found, ui.window_bounds)
+        (ui.mode, found, ui.window_bounds)
     });
+    let close_now = || {
+        if mode == SettingsUiMode::Global {
+            close_global_settings_modal();
+        } else {
+            UI_STATE.with(|cell| cell.borrow_mut().pending_close = true);
+        }
+    };
     if action_opt.is_none() && !hit_in_rect(mx, my, win_rect) {
-        UI_STATE.with(|cell| cell.borrow_mut().pending_close = true);
+        close_now();
         return;
     }
     let Some(action) = action_opt else {
         return;
     };
+    let mark_dirty = |scrub_sync: Option<bool>| {
+        if mode == SettingsUiMode::Global {
+            save_global_settings();
+        } else {
+            UI_STATE.with(|cell| {
+                let mut ui = cell.borrow_mut();
+                ui.pending_save = true;
+                if let Some(sc) = scrub_sync {
+                    ui.pending_scrub_sync = Some(sc);
+                }
+            });
+        }
+    };
     match action {
-        HitAction::Close => UI_STATE.with(|cell| cell.borrow_mut().pending_close = true),
+        HitAction::Close => close_now(),
         HitAction::FocusSearch => UI_STATE.with(|cell| cell.borrow_mut().search_focused = true),
         HitAction::ClearSearch => UI_STATE.with(|cell| {
             let mut ui = cell.borrow_mut();
@@ -585,6 +740,9 @@ pub fn handle_screen_mouse_pressed(game: &Game<'_>, button: i32, mx: f32, my: f3
         }),
         HitAction::SelectTab(tab) => UI_STATE.with(|cell| {
             let mut ui = cell.borrow_mut();
+            if ui.mode == SettingsUiMode::Global && tab == UiTab::Players {
+                return;
+            }
             ui.active_tab = tab;
             ui.search_query.clear();
             ui.search_focused = false;
@@ -594,6 +752,9 @@ pub fn handle_screen_mouse_pressed(game: &Game<'_>, button: i32, mx: f32, my: f3
         }),
         HitAction::JumpToSection(tab, sec_id, scope_opt) => UI_STATE.with(|cell| {
             let mut ui = cell.borrow_mut();
+            if ui.mode == SettingsUiMode::Global && tab == UiTab::Players {
+                return;
+            }
             let same_tab = ui.active_tab == tab && ui.search_query.trim().is_empty();
             ui.active_tab = tab;
             ui.search_query.clear();
@@ -612,10 +773,10 @@ pub fn handle_screen_mouse_pressed(game: &Game<'_>, button: i32, mx: f32, my: f3
                 ui.pending_jump_section = Some(sec_id);
             }
         }),
-        HitAction::SetAutoSaveMode(mode) => {
-            with_state_mut(|st| {
+        HitAction::SetAutoSaveMode(sched_mode) => {
+            with_mode_state_mut(mode, |st| {
                 st.auto_save = true;
-                match mode {
+                match sched_mode {
                     AutoSaveScheduleMode::Fixed => {
                         st.adaptive_mode = false;
                         st.use_random_interval = false;
@@ -629,41 +790,34 @@ pub fn handle_screen_mouse_pressed(game: &Game<'_>, button: i32, mx: f32, my: f3
                     }
                 }
             });
-            UI_STATE.with(|cell| cell.borrow_mut().pending_save = true);
+            mark_dirty(None);
         }
         HitAction::ToggleBool(id) => {
-            let next_val = with_state_mut(|st| {
+            let next_val = with_mode_state_mut(mode, |st| {
                 let next = !read_bool_setting(st, id);
                 write_bool_setting(st, id, next);
                 next
             });
-            UI_STATE.with(|cell| {
-                let mut ui = cell.borrow_mut();
-                ui.pending_save = true;
-                if id == "scrub_enabled" {
-                    ui.pending_scrub_sync = Some(next_val);
-                }
-            });
+            mark_dirty((id == "scrub_enabled").then_some(next_val));
         }
         HitAction::SliderStep(id, delta) => {
-            with_state_mut(|st| {
+            with_mode_state_mut(mode, |st| {
                 let cur = read_slider_setting(st, id);
                 write_slider_setting(st, id, cur + delta);
             });
-            UI_STATE.with(|cell| cell.borrow_mut().pending_save = true);
+            mark_dirty(None);
         }
         HitAction::SliderDrag { id, track_x, track_w, min, max, step } => {
             let val = slider_snap(mx, track_x, track_w, min, max, step);
-            with_state_mut(|st| write_slider_setting(st, id, val));
+            with_mode_state_mut(mode, |st| write_slider_setting(st, id, val));
             UI_STATE.with(|cell| {
-                let mut ui = cell.borrow_mut();
-                ui.pending_save = true;
-                ui.dragging_slider = Some(SliderDragState { id, track_x, track_w, min, max, step });
+                cell.borrow_mut().dragging_slider = Some(SliderDragState { id, track_x, track_w, min, max, step });
             });
+            mark_dirty(None);
         }
-        HitAction::SetAnchorMode(mode) => {
-            with_state_mut(|st| st.anchor.mode = mode);
-            UI_STATE.with(|cell| cell.borrow_mut().pending_save = true);
+        HitAction::SetAnchorMode(amode) => {
+            with_mode_state_mut(mode, |st| st.anchor.mode = amode);
+            mark_dirty(None);
         }
         HitAction::SelectPlayer(uuid, _) => {
             UI_STATE.with(|cell| cell.borrow_mut().selected_player = Some(uuid));
@@ -672,7 +826,7 @@ pub fn handle_screen_mouse_pressed(game: &Game<'_>, button: i32, mx: f32, my: f3
             UI_STATE.with(|cell| cell.borrow_mut().player_scope_scrub = scrub_scope);
         }
         HitAction::SetPlayerOverride(uuid, name, scrub_scope, field, val) => {
-            with_state_mut(|st| {
+            with_mode_state_mut(mode, |st| {
                 let entry = st
                     .player_overrides
                     .entry(uuid)
@@ -692,10 +846,10 @@ pub fn handle_screen_mouse_pressed(game: &Game<'_>, button: i32, mx: f32, my: f3
                     st.player_overrides.remove(&uuid);
                 }
             });
-            UI_STATE.with(|cell| cell.borrow_mut().pending_save = true);
+            mark_dirty(None);
         }
         HitAction::BatchPlayerOverrides(uuid, name, scrub_scope, val) => {
-            with_state_mut(|st| {
+            with_mode_state_mut(mode, |st| {
                 let entry = st
                     .player_overrides
                     .entry(uuid)
@@ -715,10 +869,10 @@ pub fn handle_screen_mouse_pressed(game: &Game<'_>, button: i32, mx: f32, my: f3
                     st.player_overrides.remove(&uuid);
                 }
             });
-            UI_STATE.with(|cell| cell.borrow_mut().pending_save = true);
+            mark_dirty(None);
         }
         HitAction::ResetPlayerOverrides(uuid, scrub_scope) => {
-            with_state_mut(|st| {
+            with_mode_state_mut(mode, |st| {
                 if let Some(entry) = st.player_overrides.get_mut(&uuid) {
                     if scrub_scope {
                         entry.scrub.set_all(OverrideValue::Global);
@@ -730,10 +884,10 @@ pub fn handle_screen_mouse_pressed(game: &Game<'_>, button: i32, mx: f32, my: f3
                     }
                 }
             });
-            UI_STATE.with(|cell| cell.borrow_mut().pending_save = true);
+            mark_dirty(None);
         }
         HitAction::TogglePinPlayer(uuid) => {
-            with_state_mut(|st| {
+            with_mode_state_mut(mode, |st| {
                 if let Some(pos) = st.anchor.pinned.iter().position(|u| *u == uuid) {
                     st.anchor.pinned.remove(pos);
                 } else {
@@ -743,24 +897,24 @@ pub fn handle_screen_mouse_pressed(game: &Game<'_>, button: i32, mx: f32, my: f3
                     }
                 }
             });
-            UI_STATE.with(|cell| cell.borrow_mut().pending_save = true);
+            mark_dirty(None);
         }
         HitAction::ClearPins => {
-            with_state_mut(|st| st.anchor.pinned.clear());
-            UI_STATE.with(|cell| cell.borrow_mut().pending_save = true);
+            with_mode_state_mut(mode, |st| st.anchor.pinned.clear());
+            mark_dirty(None);
         }
         HitAction::BatchGroup(group, val) => {
-            with_state_mut(|st| {
+            with_mode_state_mut(mode, |st| {
                 for e in SETTINGS_CATALOG {
                     if e.group == group {
                         write_bool_setting(st, e.id, val);
                     }
                 }
             });
-            UI_STATE.with(|cell| cell.borrow_mut().pending_save = true);
+            mark_dirty(None);
         }
         HitAction::ResetDefaults => {
-            with_state_mut(|st| {
+            with_mode_state_mut(mode, |st| {
                 let slot = st.current_slot.clone();
                 let has_cp = st.has_checkpoint;
                 let last_save = st.last_save_tick;
@@ -770,13 +924,11 @@ pub fn handle_screen_mouse_pressed(game: &Game<'_>, button: i32, mx: f32, my: f3
                 st.has_checkpoint = has_cp;
                 st.last_save_tick = last_save;
                 st.online_players = players;
-                sync_scrub_atomics_from_state(st);
+                if mode == SettingsUiMode::World {
+                    sync_scrub_atomics_from_state(st);
+                }
             });
-            UI_STATE.with(|cell| {
-                let mut ui = cell.borrow_mut();
-                ui.pending_save = true;
-                ui.pending_scrub_sync = Some(false);
-            });
+            mark_dirty(Some(false));
         }
         HitAction::ScrollTrack { track_y, track_h, max_scroll } => {
             let frac = ((my - track_y) / track_h.max(1.0)).clamp(0.0, 1.0);
@@ -791,66 +943,38 @@ pub fn handle_screen_mouse_pressed(game: &Game<'_>, button: i32, mx: f32, my: f3
     }
 }
 
-pub fn handle_screen_mouse_released(game: &Game<'_>, button: i32, canceled: &mut bool) {
-    if is_scrubbing() {
-        handle_scrub_hud_mouse_released(button);
-        *canceled = true;
+pub fn handle_settings_mouse_released_core(button: i32) {
+    if button != 0 {
         return;
     }
-    if consume_scrub_hud_release() {
-        *canceled = true;
-        return;
-    }
-    if !is_settings_ui_open(game) {
-        return;
-    }
-    *canceled = true;
-    if button == 0 {
-        UI_STATE.with(|cell| {
-            let mut ui = cell.borrow_mut();
-            if ui.dragging_slider.take().is_some() {
-                ui.pending_save = true;
-            }
-            ui.dragging_scroll = None;
-        });
+    let (mode, was_drag) = UI_STATE.with(|cell| {
+        let mut ui = cell.borrow_mut();
+        let had = ui.dragging_slider.take().is_some();
+        if had && ui.mode == SettingsUiMode::World {
+            ui.pending_save = true;
+        }
+        ui.dragging_scroll = None;
+        (ui.mode, had)
+    });
+    if was_drag && mode == SettingsUiMode::Global {
+        save_global_settings();
     }
 }
 
-pub fn handle_screen_mouse_scrolled(game: &Game<'_>, scroll_y: f64, canceled: &mut bool) {
-    if is_scrubbing() && with_state(|st| st.scrub_enabled) {
-        if apply_scrub_wheel_delta(scroll_y) {
-            *canceled = true;
-        }
-        return;
-    }
-    if !is_settings_ui_open(game) {
-        return;
-    }
-    *canceled = true;
+pub fn handle_settings_mouse_scrolled_core(scroll_y: f64) {
     UI_STATE.with(|cell| {
         let mut ui = cell.borrow_mut();
         ui.target_scroll_y = (ui.target_scroll_y - scroll_y as f32 * 26.0).clamp(0.0, ui.max_scroll_y);
     });
 }
 
-pub fn handle_screen_key_pressed(
-    game: &Game<'_>,
+pub fn handle_settings_key_core(
     key: &str,
-    repeat: bool,
     modifiers: u32,
-    canceled: &mut bool,
-) {
-    if handle_screen_key_pressed_any(game, key, repeat, modifiers, canceled) {
-        return;
-    }
-    if !is_settings_ui_open(game) {
-        return;
-    }
-    let (settings_key, settings_mods) = game
-        .mod_key(MOD_ID, "settings_menu")
-        .map(|(k, m)| (k, m.bits & 7))
-        .unwrap_or_else(|| ("key.keyboard.k".to_owned(), 0));
-
+    close_key: &str,
+    close_mods: u32,
+    close_on_esc: bool,
+) -> bool {
     if key == "key.keyboard.escape" {
         let cleared = UI_STATE.with(|cell| {
             let mut ui = cell.borrow_mut();
@@ -865,15 +989,18 @@ pub fn handle_screen_key_pressed(
             }
         });
         if cleared {
-            *canceled = true;
+            return true;
         }
-        return;
+        if close_on_esc {
+            close_global_settings_modal();
+            return true;
+        }
+        return false;
     }
-    *canceled = true;
 
     if (modifiers & 2) != 0 && key == "key.keyboard.f" {
         UI_STATE.with(|cell| cell.borrow_mut().search_focused = true);
-        return;
+        return true;
     }
     if UI_STATE.with(|cell| cell.borrow().search_focused) {
         if key == "key.keyboard.backspace" {
@@ -886,15 +1013,19 @@ pub fn handle_screen_key_pressed(
         } else if key == "key.keyboard.enter" || key == "key.keyboard.keypad_enter" {
             UI_STATE.with(|cell| cell.borrow_mut().search_focused = false);
         }
-        return;
+        return true;
     }
-    if !settings_key.is_empty()
-        && settings_key != "key.keyboard.unknown"
-        && key == settings_key
-        && (settings_mods == 0 || ((modifiers & 7) & settings_mods) == settings_mods)
+    if !close_key.is_empty()
+        && close_key != "key.keyboard.unknown"
+        && key == close_key
+        && (close_mods == 0 || ((modifiers & 7) & close_mods) == close_mods)
     {
-        UI_STATE.with(|cell| cell.borrow_mut().pending_close = true);
-        return;
+        if close_on_esc {
+            close_global_settings_modal();
+        } else {
+            UI_STATE.with(|cell| cell.borrow_mut().pending_close = true);
+        }
+        return true;
     }
     match key {
         "key.keyboard.up" => UI_STATE.with(|cell| {
@@ -916,13 +1047,10 @@ pub fn handle_screen_key_pressed(
         "key.keyboard.slash" => UI_STATE.with(|cell| cell.borrow_mut().search_focused = true),
         _ => {}
     }
+    true
 }
 
-pub fn handle_screen_char_typed(game: &Game<'_>, ch: char, modifiers: u32, canceled: &mut bool) {
-    if !is_settings_ui_open(game) {
-        return;
-    }
-    *canceled = true;
+pub fn handle_settings_char_core(ch: char, modifiers: u32) {
     if (modifiers & 2) != 0 || ch.is_control() {
         return;
     }
@@ -937,4 +1065,82 @@ pub fn handle_screen_char_typed(game: &Game<'_>, ch: char, modifiers: u32, cance
         ui.scroll_y = 0.0;
         ui.target_scroll_y = 0.0;
     });
+}
+
+pub fn handle_screen_mouse_pressed(game: &Game<'_>, button: i32, mx: f32, my: f32, canceled: &mut bool) {
+    if handle_scrub_hud_mouse_pressed(button, mx, my) {
+        *canceled = true;
+        return;
+    }
+    if is_scrubbing() {
+        *canceled = true;
+        return;
+    }
+    if !is_settings_ui_open(game) {
+        return;
+    }
+    *canceled = true;
+    handle_settings_mouse_pressed_core(button, mx, my);
+}
+
+pub fn handle_screen_mouse_released(game: &Game<'_>, button: i32, canceled: &mut bool) {
+    if is_scrubbing() {
+        handle_scrub_hud_mouse_released(button);
+        *canceled = true;
+        return;
+    }
+    if consume_scrub_hud_release() {
+        *canceled = true;
+        return;
+    }
+    if !is_settings_ui_open(game) {
+        return;
+    }
+    *canceled = true;
+    handle_settings_mouse_released_core(button);
+}
+
+pub fn handle_screen_mouse_scrolled(game: &Game<'_>, scroll_y: f64, canceled: &mut bool) {
+    if is_scrubbing() && with_state(|st| st.scrub_enabled) {
+        if apply_scrub_wheel_delta(scroll_y) {
+            *canceled = true;
+        }
+        return;
+    }
+    if !is_settings_ui_open(game) {
+        return;
+    }
+    *canceled = true;
+    handle_settings_mouse_scrolled_core(scroll_y);
+}
+
+pub fn handle_screen_key_pressed(
+    game: &Game<'_>,
+    key: &str,
+    repeat: bool,
+    modifiers: u32,
+    canceled: &mut bool,
+) {
+    if handle_screen_key_pressed_any(game, key, repeat, modifiers, canceled) {
+        return;
+    }
+    if !is_settings_ui_open(game) {
+        return;
+    }
+    let (settings_key, settings_mods) = game
+        .mod_key(MOD_ID, "settings_menu")
+        .map(|(k, m)| (k, m.bits & 7))
+        .unwrap_or_else(|| ("key.keyboard.k".to_owned(), 0));
+    let is_global = game.screen == Screen::Options && is_global_modal_open();
+    if handle_settings_key_core(key, modifiers, &settings_key, settings_mods, is_global) {
+        *canceled = true;
+    }
+}
+
+pub fn handle_screen_char_typed(game: &Game<'_>, ch: char, modifiers: u32, canceled: &mut bool) {
+    if !is_settings_ui_open(game) {
+        return;
+    }
+    *canceled = true;
+    handle_settings_char_core(ch, modifiers);
 }

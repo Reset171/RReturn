@@ -11,6 +11,7 @@ pub enum UiTab {
 
 impl UiTab {
     pub const ALL: [Self; 4] = [Self::Rollback, Self::Scrub, Self::Players, Self::System];
+    pub const GLOBAL: [Self; 3] = [Self::Rollback, Self::Scrub, Self::System];
 
     pub fn title_key(self) -> &'static str {
         match self {

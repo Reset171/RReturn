@@ -12,8 +12,8 @@ use super::scrub_hud::{
     draw_scrub_hud, handle_scrub_hud_mouse_pressed, handle_scrub_hud_mouse_released,
 };
 use super::settings_ui::{
-    flush_settings_ui_actions, handle_screen_char_typed, is_settings_ui_open,
-    request_open_settings_ui, reset_settings_ui_state,
+    close_global_settings_modal, flush_settings_ui_actions, handle_screen_char_typed,
+    is_global_modal_open, is_settings_ui_open, request_open_settings_ui, reset_settings_ui_state,
 };
 use super::snapshots::*;
 use super::storage::has_disk_checkpoint;
@@ -199,7 +199,7 @@ pub fn handle_screen_char_typed_dispatch(
         *canceled = true;
         return;
     }
-    if screen_id == "mod" {
+    if screen_id == "mod" || screen_id == "options" {
         handle_screen_char_typed(game, ch, modifiers, canceled);
     }
 }
@@ -406,6 +406,7 @@ pub fn handle_key(game: &mut Game<'_>, key: &str, action: mod_api::KeyAction) {
 }
 
 pub fn handle_server_started(game: &mut Game<'_>) {
+    close_global_settings_modal();
     set_active_ui_world_root(&game.world_root);
     load_saved_settings(game);
     clear_all_slots();
@@ -710,6 +711,9 @@ pub fn handle_frame_render_pre(
     world_partial: f32,
     partial: f32,
 ) {
+    if is_global_modal_open() && game.screen != super::super::Screen::Options {
+        close_global_settings_modal();
+    }
     flush_pending_screen_hotkey(game);
     flush_settings_ui_actions(game);
     if is_settings_ui_open(game) {

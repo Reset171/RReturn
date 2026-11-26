@@ -5,6 +5,14 @@ use std::{
     path::{Path, PathBuf},
 };
 
+pub fn global_settings_path() -> PathBuf {
+    Path::new("config").join("rreturn.json")
+}
+
+pub fn world_settings_path(world_root: &Path) -> PathBuf {
+    world_root.join("rreturn").join("settings.json")
+}
+
 pub fn slot_dir(world_root: &Path, slot: &str) -> PathBuf {
     let clean = slot.trim();
     if clean.is_empty() || clean == "default" || !is_valid_slot_name(clean) {

@@ -1,5 +1,6 @@
 """Tests 112-114: Multi-screen hotkeys, exact UI/cursor/chat restore, and reversible UI scrubbing."""
 
+import re
 import tempfile
 from pathlib import Path
 from . import setup_clean_env
@@ -11,6 +12,24 @@ def _ui(h):
     st = h.rreturn("ui state")
     assert isinstance(st, dict), f"Expected JSON from 'rreturn ui state', got: {st}"
     return st
+
+
+def _tick(h):
+    st = h.rreturn("status --json")
+    assert isinstance(st, dict) and isinstance(st.get("game_time"), int), f"Invalid status JSON: {st}"
+    return st["game_time"]
+
+
+def _scrub_seek_to_tick(h, target_tick):
+    info = h.rreturn("scrub seek_ticks 0")
+    m = re.search(r"to tick\s+(-?\d+(?:\.\d+)?)\s+\(", str(info))
+    assert m is not None, f"Unexpected scrub seek output: {info}"
+    curr_tick = float(m.group(1))
+    delta = round(float(target_tick) - curr_tick)
+    res = h.rreturn(f"scrub seek_ticks {delta}")
+    assert re.search(r"to tick\s+(-?\d+(?:\.\d+)?)\s+\(", str(res)) is not None, (
+        f"Failed scrub seek to {target_tick} (delta={delta}): {res}"
+    )
 
 
 def test_112_scrub_blocks_chat_and_hud_controls(h):
@@ -921,28 +940,37 @@ def test_131_f5_perspective_save_rollback_and_scrub(h):
         h.wait(2)
         assert _ui(h)["perspective"] == 2, f"Expected 3rd person front after disk load: {_ui(h)}"
 
-        # Reset to 0 and record 0 -> 1 -> 2 across scrub timeline
+        # Reset to 0 and record 0 -> 1 -> 2 across scrub timeline synced to game_time
         h.raw_send("key f5 tap")
         h.wait(2)
         assert _ui(h)["perspective"] == 0
         h.rreturn("scrub on")
-        h.wait(12)
+        t0_start = _tick(h)
+        h.wait(18)
+        t0_end = _tick(h)
         h.raw_send("key f5 tap")
-        h.wait(14)
+        h.wait(4)
         assert _ui(h)["perspective"] == 1
+        t1_start = _tick(h)
+        h.wait(18)
+        t1_end = _tick(h)
         h.raw_send("key f5 tap")
-        h.wait(12)
+        h.wait(4)
         assert _ui(h)["perspective"] == 2
+        h.wait(14)
+
+        t0_mid = (t0_start + t0_end) // 2
+        t1_mid = (t1_start + t1_end) // 2
 
         h.raw_send("key u tap")
         h.wait(2)
         assert _ui(h)["scrubbing"] is True and _ui(h)["perspective"] == 2
 
-        h.rreturn("scrub seek_ticks -16")
+        _scrub_seek_to_tick(h, t1_mid)
         h.wait(2)
         assert _ui(h)["perspective"] == 1, f"Scrub preview did not restore perspective 1: {_ui(h)}"
 
-        h.rreturn("scrub seek_ticks -14")
+        _scrub_seek_to_tick(h, t0_mid)
         h.wait(2)
         assert _ui(h)["perspective"] == 0, f"Scrub preview did not restore perspective 0: {_ui(h)}"
 
@@ -956,7 +984,7 @@ def test_131_f5_perspective_save_rollback_and_scrub(h):
         # Re-open scrub -> seek to 1 -> commit -> stays 1
         h.raw_send("key u tap")
         h.wait(2)
-        h.rreturn("scrub seek_ticks -16")
+        _scrub_seek_to_tick(h, t1_mid)
         h.wait(2)
         assert _ui(h)["perspective"] == 1
         h.raw_send("key enter tap")
@@ -1118,7 +1146,10 @@ def test_133_virtual_cursor_scrub_and_commit_warp(h):
         cb_pos = ui_open["creative_tabs"]["minecraft:colored_blocks"]
         cx1, cy1 = int(round(cb_pos[0])), int(round(cb_pos[1]))
         h.raw_send(f"click-at {cx1} {cy1}")
-        h.wait(16)
+        h.wait(2)
+        t1_start = _tick(h)
+        h.wait(14)
+        t1_end = _tick(h)
         ui_t1 = _ui(h)
         assert abs(ui_t1["cursor"][0] - cx1) <= 2.0 and abs(ui_t1["cursor"][1] - cy1) <= 2.0, ui_t1
 
@@ -1129,10 +1160,11 @@ def test_133_virtual_cursor_scrub_and_commit_warp(h):
         ui_t2 = _ui(h)
         assert abs(ui_t2["cursor"][0] - cx2) <= 2.0 and abs(ui_t2["cursor"][1] - cy2) <= 2.0, ui_t2
 
-        # Enter scrub and seek backward into T1 (cursor at cx1, cy1)
+        # Enter scrub and seek backward into T1 (cursor at cx1, cy1) synced to game_time
+        t1_mid = (t1_start + t1_end) // 2
         h.raw_send("key u tap")
         h.wait(2)
-        h.rreturn("scrub seek_ticks -20")
+        _scrub_seek_to_tick(h, t1_mid)
         h.wait(2)
 
         ui_prev = _ui(h)

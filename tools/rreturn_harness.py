@@ -33,6 +33,30 @@ def default_saves_dir(instance=DEFAULT_INSTANCE):
     return data_home / "horizon" / "instances" / instance / "saves"
 
 
+def make_isolated_socket(prefix="rreturn_iso"):
+    return Path(tempfile.gettempdir()) / f"{prefix}_{os.getpid()}_{int(time.time() * 1000)}.sock"
+
+
+def cleanup_stale_sockets(prefix="rreturn_"):
+    tmp = Path(tempfile.gettempdir())
+    removed = 0
+    for sock_path in tmp.glob(f"{prefix}*.sock"):
+        try:
+            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            s.settimeout(2.0)
+            s.connect(str(sock_path))
+            s.sendall(b"quit\n")
+            s.close()
+        except OSError:
+            pass
+        try:
+            sock_path.unlink(missing_ok=True)
+            removed += 1
+        except OSError:
+            pass
+    return removed
+
+
 def purge_test_worlds_on_disk(instance=DEFAULT_INSTANCE):
     data_home = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share"))
     saves_dirs = [
@@ -55,8 +79,19 @@ def purge_test_worlds_on_disk(instance=DEFAULT_INSTANCE):
 
 
 class RReturnHarness:
-    def __init__(self, socket_path=DEFAULT_SOCKET, instance=DEFAULT_INSTANCE, world=None):
-        self.socket_path = Path(socket_path)
+    def __init__(
+        self,
+        socket_path=None,
+        instance=DEFAULT_INSTANCE,
+        world=None,
+        attach_live=False,
+    ):
+        if socket_path is None:
+            self.socket_path = DEFAULT_SOCKET if attach_live else make_isolated_socket()
+            self._owns_socket = not attach_live
+        else:
+            self.socket_path = Path(socket_path)
+            self._owns_socket = self.socket_path != DEFAULT_SOCKET
         self.instance = instance
         if world is None:
             world = f"rreturn_e2e_{int(time.time())}_{os.getpid()}"
@@ -67,6 +102,16 @@ class RReturnHarness:
         self.launched_new_process = False
         self.created_worlds = {self.world}
         self.current_test_id = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.launched_new_process:
+            self.stop_instance()
+        else:
+            self.close()
+        return False
 
     def connect(self, timeout=45, auto_launch=True):
         start = time.time()
@@ -179,6 +224,11 @@ class RReturnHarness:
                 except Exception:
                     pass
             self.proc = None
+        if self._owns_socket and self.socket_path.exists():
+            try:
+                self.socket_path.unlink(missing_ok=True)
+            except OSError:
+                pass
         if not keep_worlds:
             purge_test_worlds_on_disk(self.instance)
         if self.player_dir is not None and self.player_dir.exists():

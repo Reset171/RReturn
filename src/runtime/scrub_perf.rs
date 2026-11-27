@@ -175,7 +175,6 @@ pub fn append_diag_log(text: &str) {
         let _ = writeln!(f, "{}", text);
     }
     log::info!("{}", text);
-    eprintln!("{}", text);
 }
 
 fn log_mem_alert(tick: i64, step: &str, delta_rss_kb: i64, current_mem: StatmMem, details: &str) {

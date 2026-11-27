@@ -30,7 +30,7 @@ def _parse_health(chat_str):
     if ":" in s:
         s = s.split(":")[-1]
     nums = re.findall(r"[-+]?\d*\.?\d+", s)
-    return float(nums[0]) if nums else 20.0
+    return float(nums[0]) if nums else None
 
 
 def test_83_interactive_time_scrubbing_and_rewind(h):
@@ -107,10 +107,13 @@ def test_83_interactive_time_scrubbing_and_rewind(h):
     st = _parse_res(h.rreturn("scrub status"))
     assert not st.get("active", True), f"Scrub should be inactive after commit: {st}"
 
-    # Verify that the zombie remained at the rewound position and did NOT teleport back to 15.5!
     h.wait(10)
+    assert h.has_entity("@e[tag=scrub_zombie]"), "Zombie disappeared after scrub commit"
     rewound_pos = h.data_get_entity("@e[tag=scrub_zombie,limit=1]", "Pos")
-    assert "15." not in rewound_pos, f"Zombie snapped back to future position after commit: {rewound_pos}"
+    p_rewound = _parse_pos(rewound_pos)
+    assert p_rewound is not None and p_rewound[0] < 10.0 and p_rewound[2] < 10.0, (
+        f"Zombie snapped back to future position after commit: {rewound_pos}"
+    )
 
     # Test cancel workflow
     h.rreturn("scrub start")
@@ -294,7 +297,7 @@ def test_86_scrub_player_inventory_health_and_effects_no_dupe(h):
     assert "Count: 15b" in str(raw_inv_more) or "count: 15" in str(raw_inv_more).lower(), f"Expected 15 diamonds: {raw_inv_more}"
     hp_damaged = h.data_get_entity("@s", "Health")
     hp_val = _parse_health(hp_damaged)
-    assert hp_val < 19.0, f"Expected damaged HP: {hp_val} (raw: {hp_damaged})"
+    assert hp_val is not None and hp_val < 19.0, f"Expected damaged HP: {hp_val} (raw: {hp_damaged})"
 
     # 3. Start scrub and step backward ~16 steps before the damage and extra diamonds
     res = h.rreturn("scrub start")
@@ -312,10 +315,11 @@ def test_86_scrub_player_inventory_health_and_effects_no_dupe(h):
     )
     assert "Count: 15b" not in str(raw_inv_rewound), f"Future diamonds remained: {raw_inv_rewound}"
 
-    # Health must be restored to 20!
     hp_rewound = h.data_get_entity("@s", "Health")
     hp_rewound_val = _parse_health(hp_rewound)
-    assert hp_rewound_val >= 19.9, f"HP was not restored: {hp_rewound_val} (raw: {hp_rewound})"
+    assert hp_rewound_val is not None and hp_rewound_val >= 19.9, (
+        f"HP was not restored: {hp_rewound_val} (raw: {hp_rewound})"
+    )
 
     # Poison effect must be gone!
     raw_effects = h.data_get_entity("@s", "active_effects")

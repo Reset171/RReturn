@@ -353,7 +353,7 @@ def run_worker_batch(worker_idx, batch, use_default_socket=False, fresh_worlds=T
     stamp = int(time.time())
     base_world = f"rreturn_e2e_w{worker_idx}_{stamp}"
     if use_default_socket:
-        h = RReturnHarness(world=base_world)
+        h = RReturnHarness(world=base_world, attach_live=True)
         label = ""
     else:
         sock = Path(tempfile.gettempdir()) / f"rreturn_w{worker_idx}_{stamp}.sock"
@@ -401,12 +401,17 @@ def run_worker_batch(worker_idx, batch, use_default_socket=False, fresh_worlds=T
 
 def main():
     parser = argparse.ArgumentParser(description="RReturn E2E modular test suite for Horizon engine")
-    parser.add_argument("--test", type=str, default="all", help="Test number or search string")
+    parser.add_argument(
+        "--test",
+        nargs="+",
+        default=["all"],
+        help="Test number(s) or search string(s), space or comma separated",
+    )
     parser.add_argument(
         "--group",
         type=str,
         default=None,
-        help="Filter by group (chunks, explosions, vehicles, mobs, death, slots, policies, containers, dimensions, ai, world, portals, determinism)",
+        help="Filter by group name from build_test_catalog()",
     )
     parser.add_argument(
         "--fast",
@@ -433,7 +438,13 @@ def main():
     parser.add_argument(
         "--isolated",
         action="store_true",
-        help="Force a dedicated temporary control socket instead of reusing /run/user/1000/horizon-control.sock",
+        default=True,
+        help="Use a dedicated temporary control socket (default)",
+    )
+    parser.add_argument(
+        "--attach-live",
+        action="store_true",
+        help="Attach to the default live control socket instead of an isolated socket",
     )
     args = parser.parse_args()
 
@@ -445,17 +456,43 @@ def main():
     elif args.group:
         selected = [t for t in selected if t[2].lower() == args.group.lower()]
 
-    if args.test != "all":
-        try:
-            num = int(args.test)
-            selected = [t for t in selected if t[0] == num]
-        except ValueError:
-            selected = [t for t in selected if args.test.lower() in t[1].lower()]
+    raw_tokens = []
+    for item in args.test:
+        for part in str(item).split(","):
+            tok = part.strip()
+            if tok:
+                raw_tokens.append(tok)
+    if raw_tokens and not (len(raw_tokens) == 1 and raw_tokens[0].lower() == "all"):
+        wanted_ids = set()
+        wanted_substrs = []
+        for tok in raw_tokens:
+            try:
+                wanted_ids.add(int(tok))
+            except ValueError:
+                wanted_substrs.append(tok.lower())
+        selected = [
+            t
+            for t in selected
+            if t[0] in wanted_ids or any(sub in t[1].lower() for sub in wanted_substrs)
+        ]
+
+    if not selected:
+        groups = sorted({t[2] for t in catalog})
+        print(
+            f"[FAIL] No tests matched filters (group={args.group!r}, test={args.test!r}). "
+            f"Available groups: {', '.join(groups)}",
+            file=sys.stderr,
+        )
+        sys.exit(2)
 
     workers = max(1, min(args.workers, len(selected)))
     fresh_worlds = not args.in_place
+    use_default_socket = bool(args.attach_live)
     print("\n=======================================================")
-    print(f"   RReturn Modular E2E Suite ({len(selected)} tests, workers={workers}, fresh_worlds={fresh_worlds})")
+    print(
+        f"   RReturn Modular E2E Suite ({len(selected)} tests, workers={workers}, "
+        f"isolated={not use_default_socket}, fresh_worlds={fresh_worlds})"
+    )
     print("=======================================================")
 
     total_start = time.time()
@@ -464,7 +501,7 @@ def main():
             run_worker_batch(
                 1,
                 selected,
-                use_default_socket=not args.isolated,
+                use_default_socket=use_default_socket,
                 fresh_worlds=fresh_worlds,
                 keep_worlds=args.keep_worlds,
             )

@@ -100,7 +100,7 @@ def build_package(
         raise ValueError("Missing 'horizon' in [native] section of horizon-mod.toml")
 
     runtime_path = ROOT / "src" / "runtime.rs"
-    if not skip_check and not runtime_path.is_file():
+    if not skip_check:
         subprocess.run(["cargo", "check"], cwd=ROOT, check=True)
 
     if not runtime_path.is_file():
@@ -342,6 +342,13 @@ impl mod_api::Hooks for Mod {
     return result
 
 
+def run_native_build(instance: str | None = None):
+    cmd = ["horizon-launcher", "native-build", "--trust-native-code"]
+    if instance:
+        cmd.extend(["--instance", instance])
+    subprocess.run(cmd, cwd=ROOT, check=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Package RReturn into a deterministic .hmod bundle")
     parser.add_argument("--target-dir", type=Path, default=ROOT / "target")
@@ -354,13 +361,23 @@ def main():
         metavar="INSTANCE",
         help="Deploy packaged .hmod to instance horizon-native-mods (default: active instance or global)",
     )
+    parser.add_argument(
+        "--native-build",
+        action="store_true",
+        help="Run horizon-launcher native-build --trust-native-code immediately after deploy",
+    )
     args = parser.parse_args()
+    deploy_arg = args.deploy
+    if args.native_build and deploy_arg is None:
+        deploy_arg = ""
     build_package(
         args.target_dir,
         skip_check=args.skip_check,
         quiet=args.quiet,
-        deploy=args.deploy,
+        deploy=deploy_arg,
     )
+    if args.native_build:
+        run_native_build(deploy_arg if deploy_arg else None)
 
 
 if __name__ == "__main__":

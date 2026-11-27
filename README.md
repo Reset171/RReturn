@@ -29,7 +29,7 @@ horizon-launcher native-build --trust-native-code
 | `/rreturn scrub <start\|commit\|cancel\|step>` | CLI controls for sub-tick timeline scrubbing |
 | `F6` / `/rreturn set [slot]` | Save checkpoint to `slot` (default: `default`) |
 | `F7` / `/rreturn load [slot]` | Roll back world and player state to `slot` |
-| `/rreturn anchor mode <mode>` | Set key player mode (`fixed`, `multi`, `everyone`, `rotating`) |
+| `/rreturn anchor mode <mode>` | Set key player mode (`manual`, `everyone`, `rotating`) |
 | `K` / `/rreturn menu` | Open RReturn settings and player configuration menu |
 | `/rreturn anchor cooldown <sec>` | Set rollback cooldown in seconds (`0` disables cooldown) |
 | `/rreturn slot <list\|save\|load\|select\|delete> [name]` | Manage named checkpoint slots |

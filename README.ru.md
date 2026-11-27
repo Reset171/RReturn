@@ -29,7 +29,7 @@ horizon-launcher native-build --trust-native-code
 | `/rreturn scrub <start\|commit\|cancel\|step>`            | Консольное управление субтиковым скраббингом времени              |
 | `F6` / `/rreturn set [slot]`                              | Сохранить чекпоинт в слот (по умолчанию `default`)                |
 | `F7` / `/rreturn load [slot]`                             | Откатить мир и игрока к слоту                                     |
-| `/rreturn anchor mode <mode>`                             | Режим ключевого игрока (`fixed`, `multi`, `everyone`, `rotating`) |
+| `/rreturn anchor mode <mode>`                             | Режим ключевого игрока (`manual`, `everyone`, `rotating`)         |
 | `K` / `/rreturn menu`                                     | Открыть меню настроек RReturn и правил игроков                    |
 | `/rreturn anchor cooldown <sec>`                          | Кулдаун между откатами в секундах (`0` — выключен)                |
 | `/rreturn slot <list\|save\|load\|select\|delete> [name]` | Управление именованными слотами                                   |

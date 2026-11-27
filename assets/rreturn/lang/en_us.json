@@ -6,7 +6,6 @@
   "key.rreturn.load": "Return to Checkpoint",
   "key.rreturn.settings_menu": "Open RReturn Menu",
   "rreturn.setting.death_rollback": "Rollback on Death",
-  "rreturn.setting.death_rollback.desc": "Automatically rewind timeline when a key player dies",
   "rreturn.setting.death_rollback.tooltip": "Automatically rewind the timeline when a key player dies",
   "rreturn.setting.auto_save": "Auto-Save",
   "rreturn.setting.auto_save.tooltip": "Automatically create checkpoints during gameplay",

@@ -690,6 +690,36 @@ pub fn load_slot_from_disk(world_root: &Path, slot: &str) -> Option<TimelineSnap
         .as_i64()
         .map(|v| v as i32)
         .unwrap_or(1200);
+    let patrol_next_tick = meta["patrol_next_tick"]
+        .as_i64()
+        .map(|v| v as i32)
+        .unwrap_or(0);
+    let trader_tick_delay = meta["trader_tick_delay"]
+        .as_i64()
+        .map(|v| v as i32)
+        .unwrap_or(1200)
+        .clamp(1, 1200);
+    let trader_dirty = meta["trader_dirty"].as_bool().unwrap_or(false);
+    let village_siege = {
+        let vs = &meta["village_siege"];
+        let spot = vs["spot"]
+            .as_array()
+            .and_then(|a| {
+                if a.len() == 3 {
+                    Some([a[0].as_i64()? as i32, a[1].as_i64()? as i32, a[2].as_i64()? as i32])
+                } else {
+                    None
+                }
+            })
+            .unwrap_or([0; 3]);
+        VillageSiegeSnapshot {
+            tonight: vs["tonight"].as_bool().unwrap_or(false),
+            set_up: vs["set_up"].as_bool().unwrap_or(false),
+            zombies_to_spawn: vs["zombies_to_spawn"].as_i64().unwrap_or(0) as i32,
+            next_spawn_time: vs["next_spawn_time"].as_i64().unwrap_or(0) as i32,
+            spot,
+        }
+    };
 
     let mut shoulder_time = HashMap::new();
     if let Some(arr) = meta["shoulder_time"].as_array() {
@@ -921,6 +951,10 @@ pub fn load_slot_from_disk(world_root: &Path, slot: &str) -> Option<TimelineSnap
         },
         cat_tick,
         phantom_tick,
+        patrol_next_tick,
+        trader_tick_delay,
+        trader_dirty,
+        village_siege,
         player_extra,
         shoulder_time,
         fangs: Default::default(),

@@ -1,5 +1,6 @@
 use super::super::{Dim, Game};
 use super::benchmark::*;
+use super::det_rng::*;
 use super::policy::*;
 use super::scrub_server_diff::chunk_ticks_eq;
 use super::snapshots::*;
@@ -267,10 +268,23 @@ pub fn apply_level_snapshot_in_place(
             game.world.block_entities.keys().copied().collect();
         be_positions.extend(snap.block_entities.keys().copied());
         game.world.block_entities.clear();
+        let mut inserted: HashSet<(i32, i32, i32)> =
+            HashSet::with_capacity(snap.block_entities.len());
+        for &pos in &snap.block_entity_ticker_order {
+            if pos.1 == horizon_gameplay::minecarts::CART_KEY_Y || inserted.contains(&pos) {
+                continue;
+            }
+            if let Some(be) = snap.block_entities.get(&pos) {
+                game.world
+                    .block_entities
+                    .load_chunk(vec![(pos, be.clone())]);
+                inserted.insert(pos);
+            }
+        }
         let mut by_chunk: BTreeMap<(i32, i32), Vec<((i32, i32, i32), BlockEntity)>> =
             BTreeMap::new();
         for (&pos, be) in &snap.block_entities {
-            if pos.1 == horizon_gameplay::minecarts::CART_KEY_Y {
+            if pos.1 == horizon_gameplay::minecarts::CART_KEY_Y || inserted.contains(&pos) {
                 continue;
             }
             by_chunk
@@ -286,6 +300,21 @@ pub fn apply_level_snapshot_in_place(
             game.world
                 .block_entities
                 .restore_attachments(*pos, att.clone());
+        }
+        // Promote `added` -> `live`/`tickers` immediately in the exact restored order,
+        // then re-apply sleep flags afterward so snapshot captures before the next tick keep them.
+        if game.world.block_entities.has_states() {
+            let _ = game.world.block_entities.tickers(|p| {
+                game.world
+                    .chunks
+                    .get(&(p.0 >> 4, p.2 >> 4))
+                    .map_or(0, |c| c.block(p.0 & 15, p.1, p.2 & 15).0)
+            });
+        }
+        for &pos in &snap.block_entity_asleep {
+            if game.world.block_entities.contains_key(&pos) {
+                game.world.block_entities.sleep(pos);
+            }
         }
         game.world.block_names = snap.block_names.clone();
         game.hoppers = snap.hoppers.clone();
@@ -526,6 +555,9 @@ pub fn apply_level_snapshot_in_place(
     if policy.world_raids {
         if let Some(raids) = &snap.raids_mem {
             game.raiding.raids = raids.clone();
+            if snap.raid_runtime.present {
+                game.rreturn_restore_raid_runtime(dim, &snap.raid_runtime);
+            }
             if let Some(bytes) = &snap.raids_dat {
                 let path = raids_dat_path(&game.world_root, dim);
                 if let Some(parent) = path.parent() {
@@ -546,8 +578,24 @@ pub fn apply_level_snapshot_in_place(
                     let _ = fs::remove_file(&path);
                 }
             }
-            game.raiding.loaded = None;
-            game.load_raids();
+            if snap.raid_runtime.present && !snap.raid_runtime.loaded {
+                game.rreturn_clear_raid_runtime();
+                game.rreturn_restore_raid_runtime(dim, &snap.raid_runtime);
+            } else {
+                // Preserve live `DET_RNG_UNIQUIFIER` so disk hydration (when `raids_mem` is absent)
+                // cannot consume extra steps before post-load gameplay begins.
+                let saved_det_rng = det_rng_raw_state();
+                game.raiding.loaded = None;
+                if snap.raid_runtime.present && snap.raid_runtime.unseeded.is_some() {
+                    game.rreturn_read_raids_only();
+                } else {
+                    game.load_raids();
+                }
+                restore_det_rng_raw(saved_det_rng.0, saved_det_rng.1);
+                if snap.raid_runtime.present {
+                    game.rreturn_restore_raid_runtime_after_disk_load(&snap.raid_runtime);
+                }
+            }
         }
     }
 
@@ -641,12 +689,18 @@ pub fn apply_level_snapshot_in_place(
         game.audio.stop_and_release(sound_id);
     }
     game.lan_songs.clear();
-    for be in game.world.block_entities.values_mut() {
-        if let BlockEntity::Jukebox(j) = be {
-            if j.playing {
-                j.loaded_clock = false;
-                j.ticks = 0;
-            }
+    // Clear jukebox active clocks without calling `values_mut()`, which clears
+    // `world.block_entities.asleep` restored above from `snap.block_entity_asleep`.
+    let playing_jukeboxes: Vec<(i32, i32, i32)> = game
+        .world
+        .block_entities
+        .iter()
+        .filter_map(|(&pos, be)| matches!(be, BlockEntity::Jukebox(j) if j.playing).then_some(pos))
+        .collect();
+    for pos in playing_jukeboxes {
+        if let Some(BlockEntity::Jukebox(j)) = game.world.block_entities.get_mut(&pos) {
+            j.loaded_clock = false;
+            j.ticks = 0;
         }
     }
     game.lan_cushion_breaks.clear();

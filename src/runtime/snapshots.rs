@@ -9,6 +9,7 @@ use horizon_gameplay::{
     minecarts::Minecart,
     tnt::PrimedTnt,
 };
+use super::mob_disk_extra::*;
 use super::types::*;
 use super::ui_snapshot::clear_client_ui_slots;
 use horizon_client::{
@@ -228,12 +229,353 @@ pub struct DiskMobControls {
     pub mov_speed_bits: u64,
     pub mov_strafe_bits: [u32; 2],
     pub mov_op: u8,
+    pub mov_kind: Option<DiskMoveKind>,
     pub look_wanted_bits: [u64; 3],
     pub look_rot_bits: [u32; 2],
     pub look_cooldown: i32,
+    pub look_kind: Option<DiskLookKind>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum DiskWho {
+    Player,
+    Mob(u32),
+}
+
+impl DiskWho {
+    pub fn from_who(w: horizon_client::mobs::Who) -> Self {
+        match w {
+            horizon_client::mobs::Who::Player => Self::Player,
+            horizon_client::mobs::Who::Mob(id) => Self::Mob(id),
+        }
+    }
+
+    pub fn to_who(self, map_id: &dyn Fn(u32) -> Option<u32>) -> Option<horizon_client::mobs::Who> {
+        match self {
+            Self::Player => Some(horizon_client::mobs::Who::Player),
+            Self::Mob(id) => map_id(id).map(horizon_client::mobs::Who::Mob),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct DiskPath {
+    pub nodes: Vec<[i32; 4]>,
+    pub next: usize,
+    pub target: [i32; 3],
+    pub dist_to_target_bits: u32,
+    pub reached: bool,
+}
+
+impl DiskPath {
+    pub fn from_path(p: &horizon_client::mobs::path::Path) -> Self {
+        Self {
+            nodes: p
+                .nodes
+                .iter()
+                .map(|n| [n.x, n.y, n.z, n.kind as usize as i32])
+                .collect(),
+            next: p.next,
+            target: p.target,
+            dist_to_target_bits: p.dist_to_target.to_bits(),
+            reached: p.reached,
+        }
+    }
+
+    pub fn to_path(&self) -> horizon_client::mobs::path::Path {
+        horizon_client::mobs::path::Path {
+            nodes: self
+                .nodes
+                .iter()
+                .map(|n| horizon_client::mobs::path::PathNode {
+                    x: n[0],
+                    y: n[1],
+                    z: n[2],
+                    kind: horizon_client::mobs::path::PathType::ALL
+                        .get(n[3].max(0) as usize)
+                        .copied()
+                        .unwrap_or(horizon_client::mobs::path::PathType::Blocked),
+                })
+                .collect(),
+            next: self.next,
+            target: self.target,
+            dist_to_target: f32::from_bits(self.dist_to_target_bits),
+            reached: self.reached,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct DiskMobSteps {
+    pub floats_bits: [u32; 4],
+    pub gallop: i32,
+}
+
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct DiskNavState {
+    pub path: Option<DiskPath>,
+    pub pending_path: Option<DiskPath>,
+    pub target_pos: Option<[i32; 3]>,
+    pub speed_modifier_bits: u64,
+    pub max_distance_to_waypoint_bits: u32,
+    pub max_visited_multiplier_bits: u32,
+    pub required_path_length_bits: u32,
+    pub max_visited_nodes: i32,
+    pub bools: [bool; 7],
+}
+
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct DiskPiglinMemories {
+    pub guarded_angry_at: Option<Option<[i32; 4]>>,
+    pub cannot_hunt: bool,
+    pub hurt: bool,
+    pub baby_hoglin: Option<u32>,
+    pub ride_wait: i32,
+    pub activity: u8,
+    pub hurt_seen: i32,
+    pub piglins: i32,
+    pub hoglins: i32,
+    pub nearest_piglin: Option<u32>,
+    pub adults: Vec<u32>,
+    pub zombified: Option<DiskWho>,
+    pub nemesis: Option<DiskWho>,
+    pub sees_loved: bool,
+    pub retreats: Vec<(DiskWho, [u64; 3])>,
+    pub seen_admire: i32,
+    pub reach_time: Option<i32>,
+    pub walk_off: i32,
+    pub admire_disabled: i32,
+    pub ate_recently: i32,
+    pub hit_stop: bool,
+    pub spear_status: Option<u8>,
+    pub spear_engage_time: Option<i32>,
+    pub spear_charge_pos: Option<[u64; 3]>,
+    pub spear_flee_time: Option<i32>,
+    pub spear_flee_pos: Option<[u64; 3]>,
+}
+
+impl DiskPiglinMemories {
+    fn from_memories(p: &horizon_client::mobs::piglin::Memories) -> Option<Self> {
+        let act = match p.activity {
+            horizon_client::mobs::piglin::Activity::Idle => 0,
+            horizon_client::mobs::piglin::Activity::Fight => 1,
+            horizon_client::mobs::piglin::Activity::Avoid => 2,
+            horizon_client::mobs::piglin::Activity::Admire => 3,
+            horizon_client::mobs::piglin::Activity::Celebrate => 4,
+            horizon_client::mobs::piglin::Activity::Ride => 5,
+        };
+        let spear_status = p.spear.status.map(|s| match s {
+            horizon_client::mobs::spear_use::SpearStatus::Approach => 0,
+            horizon_client::mobs::spear_use::SpearStatus::Charging => 1,
+            horizon_client::mobs::spear_use::SpearStatus::Retreat => 2,
+        });
+        let has_data = p.guarded_angry_at.is_some()
+            || p.cannot_hunt
+            || p.hurt
+            || p.baby_hoglin.is_some()
+            || p.ride_wait != 0
+            || act != 0
+            || p.hurt_seen != 0
+            || p.piglins != 0
+            || p.hoglins != 0
+            || p.nearest_piglin.is_some()
+            || !p.adults.is_empty()
+            || p.zombified.is_some()
+            || p.nemesis.is_some()
+            || p.sees_loved
+            || !p.retreats.is_empty()
+            || p.seen_admire != 0
+            || p.reach_time.is_some()
+            || p.walk_off != 0
+            || p.admire_disabled != 0
+            || p.ate_recently != 0
+            || p.hit_stop
+            || spear_status.is_some()
+            || p.spear.engage_time.is_some()
+            || p.spear.charge_position.is_some()
+            || p.spear.fleeing_time.is_some()
+            || p.spear.fleeing_position.is_some();
+        has_data.then(|| Self {
+            guarded_angry_at: p.guarded_angry_at,
+            cannot_hunt: p.cannot_hunt,
+            hurt: p.hurt,
+            baby_hoglin: p.baby_hoglin,
+            ride_wait: p.ride_wait,
+            activity: act,
+            hurt_seen: p.hurt_seen,
+            piglins: p.piglins,
+            hoglins: p.hoglins,
+            nearest_piglin: p.nearest_piglin,
+            adults: p.adults.clone(),
+            zombified: p.zombified.map(DiskWho::from_who),
+            nemesis: p.nemesis.map(DiskWho::from_who),
+            sees_loved: p.sees_loved,
+            retreats: p
+                .retreats
+                .iter()
+                .map(|(w, v)| (DiskWho::from_who(*w), [v.x.to_bits(), v.y.to_bits(), v.z.to_bits()]))
+                .collect(),
+            seen_admire: p.seen_admire,
+            reach_time: p.reach_time,
+            walk_off: p.walk_off,
+            admire_disabled: p.admire_disabled,
+            ate_recently: p.ate_recently,
+            hit_stop: p.hit_stop,
+            spear_status,
+            spear_engage_time: p.spear.engage_time,
+            spear_charge_pos: p.spear.charge_position.map(|a| a.map(f64::to_bits)),
+            spear_flee_time: p.spear.fleeing_time,
+            spear_flee_pos: p.spear.fleeing_position.map(|a| a.map(f64::to_bits)),
+        })
+    }
+
+    fn apply_scalar(&self, p: &mut horizon_client::mobs::piglin::Memories) {
+        p.guarded_angry_at = self.guarded_angry_at;
+        p.cannot_hunt = self.cannot_hunt;
+        p.hurt = self.hurt;
+        p.ride_wait = self.ride_wait;
+        p.activity = match self.activity {
+            1 => horizon_client::mobs::piglin::Activity::Fight,
+            2 => horizon_client::mobs::piglin::Activity::Avoid,
+            3 => horizon_client::mobs::piglin::Activity::Admire,
+            4 => horizon_client::mobs::piglin::Activity::Celebrate,
+            5 => horizon_client::mobs::piglin::Activity::Ride,
+            _ => horizon_client::mobs::piglin::Activity::Idle,
+        };
+        p.hurt_seen = self.hurt_seen;
+        p.piglins = self.piglins;
+        p.hoglins = self.hoglins;
+        p.sees_loved = self.sees_loved;
+        p.seen_admire = self.seen_admire;
+        p.reach_time = self.reach_time;
+        p.walk_off = self.walk_off;
+        p.admire_disabled = self.admire_disabled;
+        p.ate_recently = self.ate_recently;
+        p.hit_stop = self.hit_stop;
+        p.spear.status = self.spear_status.map(|s| match s {
+            1 => horizon_client::mobs::spear_use::SpearStatus::Charging,
+            2 => horizon_client::mobs::spear_use::SpearStatus::Retreat,
+            _ => horizon_client::mobs::spear_use::SpearStatus::Approach,
+        });
+        p.spear.engage_time = self.spear_engage_time;
+        p.spear.charge_position = self.spear_charge_pos.map(|a| a.map(f64::from_bits));
+        p.spear.fleeing_time = self.spear_flee_time;
+        p.spear.fleeing_position = self.spear_flee_pos.map(|a| a.map(f64::from_bits));
+    }
+
+    fn apply_ids(
+        &self,
+        p: &mut horizon_client::mobs::piglin::Memories,
+        map_id: &dyn Fn(u32) -> Option<u32>,
+    ) {
+        p.baby_hoglin = self.baby_hoglin.and_then(map_id);
+        p.nearest_piglin = self.nearest_piglin.and_then(map_id);
+        p.adults = self.adults.iter().copied().filter_map(map_id).collect();
+        p.zombified = self.zombified.and_then(|w| w.to_who(map_id));
+        p.nemesis = self.nemesis.and_then(|w| w.to_who(map_id));
+        p.retreats = self
+            .retreats
+            .iter()
+            .filter_map(|(w, v)| {
+                w.to_who(map_id)
+                    .map(|mw| (mw, Vec3::new(f64::from_bits(v[0]), f64::from_bits(v[1]), f64::from_bits(v[2]))))
+            })
+            .collect();
+    }
+}
+
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct DiskRaiderState {
+    pub patrol_leader: bool,
+    pub patrolling: bool,
+    pub patrol_target: Option<[i32; 3]>,
+    pub patrol_cooldown_until: i64,
+    pub wave: i32,
+    pub can_join_raid: bool,
+    pub raid_id: Option<i32>,
+    pub ticks_outside_raid: i32,
+    pub celebrating: bool,
+    pub active_raid: bool,
+    pub raided: bool,
+    pub raid_over: bool,
+    pub raid_loss: bool,
+    pub raid_center: [i32; 3],
+    pub in_village: bool,
+    pub banner_at_bits: Option<[u64; 3]>,
+    pub banner_item: u32,
+    pub unreachable_banners: Vec<(u32, i64)>,
+    pub recruit_due: bool,
+    pub homes: Option<Vec<[i32; 3]>>,
+    pub rider: bool,
+    pub registered: bool,
+    pub hurt_seq: u64,
+    pub pre_hurt_health_bits: u32,
+}
+
+impl DiskRaiderState {
+    fn from_state(r: &horizon_client::mobs::raider::State) -> Self {
+        Self {
+            patrol_leader: r.patrol_leader,
+            patrolling: r.patrolling,
+            patrol_target: r.patrol_target,
+            patrol_cooldown_until: r.patrol_cooldown_until,
+            wave: r.wave,
+            can_join_raid: r.can_join_raid,
+            raid_id: r.raid_id,
+            ticks_outside_raid: r.ticks_outside_raid,
+            celebrating: r.celebrating,
+            active_raid: r.active_raid,
+            raided: r.raided,
+            raid_over: r.raid_over,
+            raid_loss: r.raid_loss,
+            raid_center: r.raid_center,
+            in_village: r.in_village,
+            banner_at_bits: r.banner_at.map(|a| a.map(f64::to_bits)),
+            banner_item: r.banner_item,
+            unreachable_banners: r.unreachable_banners.clone(),
+            recruit_due: r.recruit_due,
+            homes: r.homes.as_deref().cloned(),
+            rider: r.rider,
+            registered: r.registered,
+            hurt_seq: r.hurt_seq,
+            pre_hurt_health_bits: r.pre_hurt_health.to_bits(),
+        }
+    }
+
+    fn apply_to_state(&self, r: &mut horizon_client::mobs::raider::State) {
+        r.patrol_leader = self.patrol_leader;
+        r.patrolling = self.patrolling;
+        r.patrol_target = self.patrol_target;
+        r.patrol_cooldown_until = self.patrol_cooldown_until;
+        r.wave = self.wave;
+        r.can_join_raid = self.can_join_raid;
+        r.raid_id = self.raid_id;
+        r.ticks_outside_raid = self.ticks_outside_raid;
+        r.celebrating = self.celebrating;
+        r.active_raid = self.active_raid;
+        r.raided = self.raided;
+        r.raid_over = self.raid_over;
+        r.raid_loss = self.raid_loss;
+        r.raid_center = self.raid_center;
+        r.in_village = self.in_village;
+        r.banner_at = self.banner_at_bits.map(|a| a.map(f64::from_bits));
+        r.banner_item = self.banner_item;
+        r.unreachable_banners = self.unreachable_banners.clone();
+        r.recruit_due = self.recruit_due;
+        r.homes = self.homes.clone().map(std::sync::Arc::new);
+        r.rider = self.rider;
+        r.registered = self.registered;
+        r.hurt_seq = self.hurt_seq;
+        r.pre_hurt_health = f32::from_bits(self.pre_hurt_health_bits);
+    }
+}
+
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct DiskMobExtra {
     pub prev_bits: [u64; 3],
@@ -263,6 +605,22 @@ pub struct DiskMobExtra {
     pub section_seq: Option<([i32; 3], u64)>,
     pub controls: Option<DiskMobControls>,
     pub bee: Option<DiskBeeExtra>,
+    pub home: Option<([i32; 3], i32)>,
+    pub ai_paused: bool,
+    pub goal_disabled: [u8; 2],
+    pub last_hurt_by_time: i32,
+    pub last_hurt_by_ref: Option<[i32; 4]>,
+    pub malus: Vec<Option<u32>>,
+    pub steps: Option<DiskMobSteps>,
+    pub nav: Option<DiskNavState>,
+    pub target: Option<DiskWho>,
+    pub last_hurt_by: Option<DiskWho>,
+    pub seen_cache: Vec<(DiskWho, bool)>,
+    pub pushed: Vec<u32>,
+    pub angry_at: Option<DiskWho>,
+    pub piglin: Option<DiskPiglinMemories>,
+    pub raider: Option<DiskRaiderState>,
+    pub ext: Option<DiskMobExtended>,
 }
 
 impl DiskMobExtra {
@@ -368,19 +726,77 @@ impl DiskMobExtra {
                     horizon_client::mobs::control::Operation::Strafe => 2,
                     horizon_client::mobs::control::Operation::Jumping => 3,
                 },
+                mov_kind: Some(DiskMoveKind::from_mov(m.ai.mov.kind)),
                 look_wanted_bits: m.ai.look.wanted.map(f64::to_bits),
                 look_rot_bits: [
                     m.ai.look.y_max_rot_speed.to_bits(),
                     m.ai.look.x_max_rot_angle.to_bits(),
                 ],
                 look_cooldown: m.ai.look.cooldown,
+                look_kind: Some(DiskLookKind::from_look(m.ai.look.kind)),
             }),
             bee: m.extra.bee.as_deref().map(DiskBeeExtra::from_bee),
+            home: m.ai.home,
+            ai_paused: m.ai.ai_paused,
+            goal_disabled: [m.ai.goals.disabled, m.ai.targets.disabled],
+            last_hurt_by_time: m.ai.last_hurt_by_time,
+            last_hurt_by_ref: m.ai.last_hurt_by_ref,
+            malus: if m.ai.malus.iter().any(Option::is_some) {
+                m.ai.malus.iter().map(|v| v.map(f32::to_bits)).collect()
+            } else {
+                Vec::new()
+            },
+            steps: Some(DiskMobSteps {
+                floats_bits: [
+                    m.ai.steps.move_dist.to_bits(),
+                    m.ai.steps.fly_dist.to_bits(),
+                    m.ai.steps.next_step.to_bits(),
+                    m.ai.steps.next_flap.to_bits(),
+                ],
+                gallop: m.ai.steps.gallop,
+            }),
+            nav: Some(DiskNavState {
+                path: m.ai.nav.path.as_ref().map(DiskPath::from_path),
+                pending_path: m.ai.pending_path.as_ref().map(DiskPath::from_path),
+                target_pos: m.ai.nav.target_pos,
+                speed_modifier_bits: m.ai.nav.speed_modifier.to_bits(),
+                max_distance_to_waypoint_bits: m.ai.nav.max_distance_to_waypoint.to_bits(),
+                max_visited_multiplier_bits: m.ai.nav.max_visited_multiplier.to_bits(),
+                required_path_length_bits: m.ai.nav.required_path_length.to_bits(),
+                max_visited_nodes: m.ai.nav.max_visited_nodes,
+                bools: [
+                    m.ai.nav.stuck,
+                    m.ai.nav.can_float,
+                    m.ai.nav.can_open_doors,
+                    m.ai.nav.can_pass_doors,
+                    m.ai.nav.can_walk_over_fences,
+                    m.ai.nav.avoid_sun,
+                    m.ai.nav.below_surface,
+                ],
+            }),
+            target: m.ai.target.map(DiskWho::from_who),
+            last_hurt_by: m.ai.last_hurt_by.map(DiskWho::from_who),
+            seen_cache: m
+                .ai
+                .seen_cache
+                .iter()
+                .map(|&(w, b)| (DiskWho::from_who(w), b))
+                .collect(),
+            pushed: m.pushed.clone(),
+            angry_at: m.extra.angry_at.map(DiskWho::from_who),
+            piglin: DiskPiglinMemories::from_memories(&m.extra.piglin),
+            raider: m.extra.raider.as_deref().map(DiskRaiderState::from_state),
+            ext: DiskMobExtended::from_mob(m),
         }
     }
 
     /// Restores transient runtime fields onto a hydrated `Mob`.
     pub fn apply_to_mob(&self, m: &mut Mob) {
+        self.apply_to_mob_with_orig(m, m.id);
+    }
+
+    /// Restores transient runtime fields onto a hydrated `Mob` using its pre-load ID for brain seeds.
+    pub fn apply_to_mob_with_orig(&self, m: &mut Mob, orig_id: u32) {
         m.previous = Vec3::new(
             f64::from_bits(self.prev_bits[0]),
             f64::from_bits(self.prev_bits[1]),
@@ -473,19 +889,99 @@ impl DiskMobExtra {
                 3 => horizon_client::mobs::control::Operation::Jumping,
                 _ => horizon_client::mobs::control::Operation::Wait,
             };
+            if let Some(mk) = c.mov_kind {
+                m.ai.mov.kind = mk.to_mov();
+            }
             m.ai.look.wanted = c.look_wanted_bits.map(f64::from_bits);
             m.ai.look.y_max_rot_speed = f32::from_bits(c.look_rot_bits[0]);
             m.ai.look.x_max_rot_angle = f32::from_bits(c.look_rot_bits[1]);
             m.ai.look.cooldown = c.look_cooldown;
+            if let Some(lk) = c.look_kind {
+                m.ai.look.kind = lk.to_look();
+            }
         }
         if let Some(bee_extra) = &self.bee {
             let dst = m.extra.bee.get_or_insert_with(Default::default);
             bee_extra.apply_to_bee(dst);
         }
+        m.ai.home = self.home;
+        m.ai.ai_paused = self.ai_paused;
+        m.ai.goals.disabled = self.goal_disabled[0];
+        m.ai.targets.disabled = self.goal_disabled[1];
+        m.ai.last_hurt_by_time = self.last_hurt_by_time;
+        m.ai.last_hurt_by_ref = self.last_hurt_by_ref;
+        if self.malus.len() == horizon_client::mobs::path::PATH_TYPES {
+            for (dst, src) in m.ai.malus.iter_mut().zip(&self.malus) {
+                *dst = src.map(f32::from_bits);
+            }
+        }
+        if let Some(s) = self.steps {
+            m.ai.steps.move_dist = f32::from_bits(s.floats_bits[0]);
+            m.ai.steps.fly_dist = f32::from_bits(s.floats_bits[1]);
+            m.ai.steps.next_step = f32::from_bits(s.floats_bits[2]);
+            m.ai.steps.next_flap = f32::from_bits(s.floats_bits[3]);
+            m.ai.steps.gallop = s.gallop;
+        }
+        if let Some(nav) = &self.nav {
+            m.ai.nav.path = nav.path.as_ref().map(DiskPath::to_path);
+            m.ai.pending_path = nav.pending_path.as_ref().map(DiskPath::to_path);
+            m.ai.nav.target_pos = nav.target_pos;
+            m.ai.nav.speed_modifier = f64::from_bits(nav.speed_modifier_bits);
+            m.ai.nav.max_distance_to_waypoint = f32::from_bits(nav.max_distance_to_waypoint_bits);
+            m.ai.nav.max_visited_multiplier = f32::from_bits(nav.max_visited_multiplier_bits);
+            m.ai.nav.required_path_length = f32::from_bits(nav.required_path_length_bits);
+            m.ai.nav.max_visited_nodes = nav.max_visited_nodes;
+            m.ai.nav.stuck = nav.bools[0];
+            m.ai.nav.can_float = nav.bools[1];
+            m.ai.nav.can_open_doors = nav.bools[2];
+            m.ai.nav.can_pass_doors = nav.bools[3];
+            m.ai.nav.can_walk_over_fences = nav.bools[4];
+            m.ai.nav.avoid_sun = nav.bools[5];
+            m.ai.nav.below_surface = nav.bools[6];
+        }
+        if let Some(p) = &self.piglin {
+            p.apply_scalar(&mut m.extra.piglin);
+        }
+        if let Some(r) = &self.raider {
+            let dst = m.extra.raider.get_or_insert_with(Default::default);
+            r.apply_to_state(dst);
+        }
+        if let Some(ext) = &self.ext {
+            ext.apply_scalar(m, orig_id);
+        }
+    }
+
+    /// Remaps and restores entity-ID-bearing AI/memory references after all mobs are hydrated.
+    pub fn apply_id_refs(&self, m: &mut Mob, map_id: &dyn Fn(u32) -> Option<u32>) {
+        if let Some(target) = self.target {
+            m.ai.target = target.to_who(map_id);
+        }
+        if let Some(hurt) = self.last_hurt_by {
+            m.ai.last_hurt_by = hurt.to_who(map_id);
+        }
+        if !self.seen_cache.is_empty() {
+            m.ai.seen_cache = self
+                .seen_cache
+                .iter()
+                .filter_map(|&(w, b)| w.to_who(map_id).map(|mw| (mw, b)))
+                .collect();
+        }
+        if !self.pushed.is_empty() {
+            m.pushed = self.pushed.iter().copied().filter_map(map_id).collect();
+        }
+        if let Some(angry) = self.angry_at {
+            m.extra.angry_at = angry.to_who(map_id);
+        }
+        if let Some(p) = &self.piglin {
+            p.apply_ids(&mut m.extra.piglin, map_id);
+        }
+        if let Some(ext) = &self.ext {
+            ext.apply_id_refs(m, map_id);
+        }
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct DiskMobRuntime {
     pub age: u32,
     pub invulnerable: i32,
@@ -635,6 +1131,8 @@ pub struct RocketSnapshot {
 pub struct LevelSnapshot {
     pub chunks: FxHashMap<(i32, i32), Arc<Chunk>>,
     pub block_entities: HashMap<(i32, i32, i32), BlockEntity>,
+    pub block_entity_ticker_order: Vec<(i32, i32, i32)>,
+    pub block_entity_asleep: Vec<(i32, i32, i32)>,
     pub block_names: FxHashMap<(i32, i32, i32), Tag>,
     pub be_attachments: Vec<((i32, i32, i32), Attachments)>,
     pub world_attachments: Attachments,
@@ -684,6 +1182,7 @@ pub struct LevelSnapshot {
     pub persist_passenger_slots: HashMap<u32, Vec<super::super::persist::PassengerSlot>>,
     pub raids_dat: Option<Vec<u8>>,
     pub raids_mem: Option<Raids>,
+    pub raid_runtime: RaidRuntimeSnapshot,
     pub last_hurt_by_player: HashMap<u32, super::super::combat::PlayerCredit>,
     pub love_cause: HashMap<u32, Option<u32>>,
     pub died: HashSet<u32>,
@@ -723,6 +1222,10 @@ pub struct TimelineSnapshot {
     pub ordered_state: OrderedStateSnapshot,
     pub cat_tick: i32,
     pub phantom_tick: i32,
+    pub patrol_next_tick: i32,
+    pub trader_tick_delay: i32,
+    pub trader_dirty: bool,
+    pub village_siege: VillageSiegeSnapshot,
     pub player_extra: Option<Tag>,
     pub shoulder_time: HashMap<[i32; 4], i64>,
     pub fangs: horizon_client::join_seq::ResidentList<super::super::fangs::Fangs>,

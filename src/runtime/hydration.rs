@@ -143,6 +143,8 @@ pub fn hydrate_level_from_disk(
     Some(LevelSnapshot {
         chunks: chunks_res.chunks,
         block_entities,
+        block_entity_ticker_order: chunks_res.be_ticker_order,
+        block_entity_asleep: chunks_res.be_asleep,
         block_names: chunks_res.block_names,
         be_attachments: chunks_res.be_attachments,
         world_attachments: chunks_res.world_attachments,
@@ -192,6 +194,7 @@ pub fn hydrate_level_from_disk(
         persist_passenger_slots: entities_res.persist_passenger_slots,
         raids_dat,
         raids_mem: None,
+        raid_runtime: chunks_res.raid_runtime,
         last_hurt_by_player: entities_res.last_hurt_by_player,
         love_cause: entities_res.love_cause,
         died: entities_res.died,

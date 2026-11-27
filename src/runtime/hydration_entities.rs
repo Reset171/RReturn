@@ -620,7 +620,7 @@ pub fn hydrate_entities_from_disk(
             m.extra.vector = rt.vector;
             m.extra.ints = rt.ints;
             if let Some(extra) = &rt.extra {
-                extra.apply_to_mob(m);
+                extra.apply_to_mob_with_orig(m, rt_id);
             }
             if rt.body_adopted {
                 horizon_client::mobs::sulfur_cube::adopt_body(m);
@@ -920,6 +920,26 @@ pub fn hydrate_entities_from_disk(
         .collect();
     let remapped_disk_died: Option<HashSet<u32>> = has_disk_died
         .then(|| disk_died.into_iter().filter_map(map_level_id).collect());
+    for m in game.mobs.iter_mut() {
+        let rt_id = spawned_to_orig.get(&m.id).copied().unwrap_or(m.id);
+        if let Some(rt) = disk_mob_rt.get(&rt_id)
+            && let Some(extra) = &rt.extra
+        {
+            extra.apply_id_refs(m, &map_level_id);
+            if let Some(ext) = &extra.ext
+                && let Some(vb) = &ext.villager_brain
+            {
+                ext.apply_villager_brain(
+                    m,
+                    rt_id,
+                    snap.game_time,
+                    snap.day_time,
+                    &map_level_id,
+                    vb,
+                );
+            }
+        }
+    }
     *fresh_cursor = next_fresh;
     slot_orig_to_fresh.extend(orig_to_fresh);
 

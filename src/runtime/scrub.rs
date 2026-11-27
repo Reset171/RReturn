@@ -537,30 +537,38 @@ pub fn start_scrub(game: &mut Game<'_>) {
     // Freeze the integrated server before reading its time range or draining client packets so
     // any in-flight explosion/block updates settle cleanly into `anchor` and `frames`.
     let start_fence = next_remote_fence_nonce();
-    let (srv_frozen, server_range, players, fenced) = if let Some(server) = &game.integrated {
-        server
-            .call(move |srv| {
-                let prev = srv.clock.frozen();
-                srv.clock.set_frozen(true);
-                if let Some(host) = srv.lan.as_ref() {
-                    let pkt = C::TickingState(play::TickingState {
-                        rate: srv.clock.rate(),
-                        frozen: true,
-                    });
-                    host.hub.broadcast_level(&pkt);
-                }
-                let fenced = send_owner_remote_fence(srv, start_fence);
-                (
-                    prev,
-                    server_scrub_time_range(),
-                    collect_online_players(srv),
-                    fenced,
-                )
-            })
-            .unwrap_or((game.clock.frozen(), None, Vec::new(), false))
-    } else {
-        (game.clock.frozen(), server_scrub_time_range(), Vec::new(), false)
-    };
+    let (srv_frozen, srv_now_tick, server_range, players, fenced) =
+        if let Some(server) = &game.integrated {
+            server
+                .call(move |srv| {
+                    let prev = srv.clock.frozen();
+                    srv.clock.set_frozen(true);
+                    if let Some(host) = srv.lan.as_ref() {
+                        let pkt = C::TickingState(play::TickingState {
+                            rate: srv.clock.rate(),
+                            frozen: true,
+                        });
+                        host.hub.broadcast_level(&pkt);
+                    }
+                    let fenced = send_owner_remote_fence(srv, start_fence);
+                    (
+                        prev,
+                        Some(srv.world.game_time),
+                        server_scrub_time_range(),
+                        collect_online_players(srv),
+                        fenced,
+                    )
+                })
+                .unwrap_or((game.clock.frozen(), None, None, Vec::new(), false))
+        } else {
+            (
+                game.clock.frozen(),
+                None,
+                server_scrub_time_range(),
+                Vec::new(),
+                false,
+            )
+        };
     if !players.is_empty() {
         with_state_mut(|st| st.online_players = players);
     }
@@ -581,18 +589,26 @@ pub fn start_scrub(game: &mut Game<'_>) {
         return;
     }
 
-    let now_tick = game.world.game_time;
+    let client_now_tick = game.world.game_time;
     let client_range = with_scrub_ring(|r| r.time_range());
 
     let (min_tick, max_tick) = match (client_range, server_range) {
-        (Some((cmin, cmax)), Some((smin, smax))) => (cmin.max(smin), cmax.max(smax)),
+        (Some((cmin, _cmax)), Some((smin, smax))) => (cmin.max(smin), smax),
         (Some(cr), None) => cr,
         (None, Some(sr)) => sr,
-        (None, None) => (now_tick, now_tick),
+        (None, None) => {
+            let t = srv_now_tick.unwrap_or(client_now_tick);
+            (t, t)
+        }
     };
 
     s.active = true;
-    s.anchor_tick = now_tick.max(max_tick);
+    // In singleplayer, anchor to the authoritative server clock/journal so a client tick
+    // arriving +1 ahead before `TickingState(frozen=true)` cannot shift the scrub anchor.
+    s.anchor_tick = match srv_now_tick {
+        Some(srv_t) => srv_t.max(max_tick),
+        None => client_now_tick.max(max_tick),
+    };
     s.min_tick = min_tick.min(s.anchor_tick);
     s.current_time = s.anchor_tick as f64;
     s.target_time = s.current_time;

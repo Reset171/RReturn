@@ -231,6 +231,8 @@ pub struct CowGuestPrev {
 pub struct CowLevelRecord {
     pub chunk_changes: Vec<((i32, i32), Option<Arc<Chunk>>)>,
     pub be_changes: Vec<((i32, i32, i32), Option<Arc<BlockEntity>>)>,
+    pub be_ticker_order: Arc<Vec<(i32, i32, i32)>>,
+    pub be_asleep: Arc<Vec<(i32, i32, i32)>>,
     pub block_names: Arc<FxHashMap<(i32, i32, i32), Tag>>,
     pub be_attachments: Arc<Vec<((i32, i32, i32), Attachments)>>,
     pub world_attachments: Arc<Attachments>,
@@ -281,6 +283,7 @@ pub struct CowLevelRecord {
     pub persist_raw_changes: Vec<(u32, Option<Arc<Tag>>)>,
     pub persist_passenger_slots: Arc<HashMap<u32, Vec<super::super::persist::PassengerSlot>>>,
     pub raids_mem: Option<Arc<Raids>>,
+    pub raid_runtime: Arc<RaidRuntimeSnapshot>,
     pub last_hurt_by_player: Arc<HashMap<u32, super::super::combat::PlayerCredit>>,
     pub love_cause: Arc<HashMap<u32, Option<u32>>>,
     pub died: Arc<HashSet<u32>>,
@@ -318,6 +321,10 @@ pub struct ServerTickRecord {
     pub ordered_state: OrderedStateSnapshot,
     pub cat_tick: i32,
     pub phantom_tick: i32,
+    pub patrol_next_tick: i32,
+    pub trader_tick_delay: i32,
+    pub trader_dirty: bool,
+    pub village_siege: VillageSiegeSnapshot,
     pub player_extra: Arc<Option<Tag>>,
     pub shoulder_time: Arc<HashMap<[i32; 4], i64>>,
     pub fangs: Arc<horizon_client::join_seq::ResidentList<super::super::fangs::Fangs>>,
@@ -427,6 +434,8 @@ pub struct CowLevelPrev {
     pub ticks_dirty_since_hdr: bool,
     pub ticks_hdr_arc: Option<Arc<HashMap<(i32, i32), Arc<(ChunkTicks, ChunkTicks)>>>>,
     pub block_entities: HashMap<(i32, i32, i32), Arc<BlockEntity>>,
+    pub be_ticker_order: Option<Arc<Vec<(i32, i32, i32)>>>,
+    pub be_asleep: Option<Arc<Vec<(i32, i32, i32)>>>,
     pub be_encoded_tags: FxHashMap<(i32, i32, i32), Tag>,
     pub be_dirty_since_hdr: bool,
     pub be_hdr_arc: Option<Arc<HashMap<(i32, i32, i32), Arc<BlockEntity>>>>,
@@ -476,6 +485,7 @@ pub struct CowLevelPrev {
     pub persist_raw_dirty: bool,
     pub persist_raw_hdr_arc: Option<Arc<HashMap<u32, Arc<Tag>>>>,
     pub raids_mem: Option<Arc<Raids>>,
+    pub raid_runtime: Option<Arc<RaidRuntimeSnapshot>>,
 }
 
 #[derive(Default)]

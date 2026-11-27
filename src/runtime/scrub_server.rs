@@ -1,5 +1,5 @@
 use super::super::{Dim, Game};
-use super::capture::snapshot_stopwatches_elapsed;
+use super::capture::{promote_world_block_entity_tickers, snapshot_stopwatches_elapsed};
 use super::det_rng::*;
 use super::rrtl::*;
 use super::scrub_perf::*;
@@ -545,6 +545,10 @@ impl ServerScrubJournal {
             ordered_state: game.rreturn_capture_ordered_state(),
             cat_tick: game.creatures.cat.next_tick,
             phantom_tick: game.stats.rreturn_phantom_tick(),
+            patrol_next_tick: game.rreturn_patrol_next_tick(),
+            trader_tick_delay: current_trader_tick_delay(),
+            trader_dirty: game.creatures.trader.to_save().is_some(),
+            village_siege: current_village_siege(),
             player_extra,
             shoulder_time,
             fangs,
@@ -875,6 +879,8 @@ impl ServerScrubJournal {
                 LevelSnapshot {
                     chunks,
                     block_entities,
+                    block_entity_ticker_order: (*lrec.be_ticker_order).clone(),
+                    block_entity_asleep: (*lrec.be_asleep).clone(),
                     block_names: (*lrec.block_names).clone(),
                     be_attachments: (*lrec.be_attachments).clone(),
                     world_attachments: (*lrec.world_attachments).clone(),
@@ -924,6 +930,7 @@ impl ServerScrubJournal {
                     persist_passenger_slots: (*lrec.persist_passenger_slots).clone(),
                     raids_dat: None,
                     raids_mem: lrec.raids_mem.as_deref().cloned(),
+                    raid_runtime: (*lrec.raid_runtime).clone(),
                     last_hurt_by_player: (*lrec.last_hurt_by_player).clone(),
                     love_cause: (*lrec.love_cause).clone(),
                     died: (*lrec.died).clone(),
@@ -971,6 +978,10 @@ impl ServerScrubJournal {
             ordered_state: rec.ordered_state.clone(),
             cat_tick: rec.cat_tick,
             phantom_tick: rec.phantom_tick,
+            patrol_next_tick: rec.patrol_next_tick,
+            trader_tick_delay: rec.trader_tick_delay,
+            trader_dirty: rec.trader_dirty,
+            village_siege: rec.village_siege,
             player_extra: (*rec.player_extra).clone(),
             shoulder_time: (*rec.shoulder_time).clone(),
             fangs: (*rec.fangs).clone(),
@@ -1088,20 +1099,27 @@ pub fn cached_server_scrub_time_range() -> Option<(i64, i64)> {
     }
 }
 
-pub fn record_server_tick(game: &Game<'_>) {
+pub fn record_server_tick(game: &mut Game<'_>) {
     record_server_tick_mode(game, false);
 }
 
-pub fn record_initial_server_tick(game: &Game<'_>) {
+pub fn record_initial_server_tick(game: &mut Game<'_>) {
     record_server_tick_mode(game, true);
 }
 
-fn record_server_tick_mode(game: &Game<'_>, only_if_empty: bool) {
+fn record_server_tick_mode(game: &mut Game<'_>, only_if_empty: bool) {
     if !with_state(|st| st.scrub_enabled) {
         return;
     }
     if !only_if_empty && !game.clock.runs_normally() {
         return;
+    }
+    if only_if_empty && SERVER_JOURNAL.with(|cell| !cell.borrow().segments.is_empty()) {
+        return;
+    }
+    promote_world_block_entity_tickers(&mut game.world);
+    for parked in game.levels.parked.values_mut() {
+        promote_world_block_entity_tickers(&mut parked.world);
     }
     SERVER_JOURNAL.with(|cell| {
         let mut j = cell.borrow_mut();

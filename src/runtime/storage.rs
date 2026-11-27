@@ -39,6 +39,16 @@ pub fn copy_dir_recursive(src: &Path, dst: &Path) -> usize {
 }
 
 pub fn copy_dir_recursive_opts(src: &Path, dst: &Path, force: bool) -> usize {
+    let mut mca_ignored = false;
+    copy_dir_recursive_track_mca(src, dst, force, &mut mca_ignored)
+}
+
+fn copy_dir_recursive_track_mca(
+    src: &Path,
+    dst: &Path,
+    force: bool,
+    mca_changed: &mut bool,
+) -> usize {
     if !src.is_dir() {
         return 0;
     }
@@ -49,7 +59,7 @@ pub fn copy_dir_recursive_opts(src: &Path, dst: &Path, force: bool) -> usize {
             let p = entry.path();
             let target = dst.join(entry.file_name());
             if p.is_dir() {
-                copied += copy_dir_recursive_opts(&p, &target, force);
+                copied += copy_dir_recursive_track_mca(&p, &target, force, mca_changed);
             } else if p.is_file() {
                 if !force {
                     if let (Ok(m_src), Ok(m_dst)) = (p.metadata(), target.metadata()) {
@@ -64,6 +74,9 @@ pub fn copy_dir_recursive_opts(src: &Path, dst: &Path, force: bool) -> usize {
                 }
                 if fs::copy(&p, &target).is_ok() {
                     copied += 1;
+                    if p.extension().and_then(|e| e.to_str()) == Some("mca") {
+                        *mca_changed = true;
+                    }
                     if let (Ok(m), Ok(f)) =
                         (p.metadata(), fs::File::options().write(true).open(&target))
                     {
@@ -177,19 +190,33 @@ pub fn prune_extra_nbt_recursive(src: &Path, dst: &Path) -> usize {
     removed
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DiskRestoreReport {
+    pub changed: usize,
+    pub mca_changed: bool,
+}
+
 pub fn restore_disk_files_for_slot(world_root: &Path, slot: &str) -> usize {
     restore_disk_files_for_slot_opts(world_root, slot, false)
 }
 
 pub fn restore_disk_files_for_slot_opts(world_root: &Path, slot: &str, force: bool) -> usize {
+    restore_disk_files_for_slot_report(world_root, slot, force).changed
+}
+
+pub fn restore_disk_files_for_slot_report(
+    world_root: &Path,
+    slot: &str,
+    force: bool,
+) -> DiskRestoreReport {
+    let mut rep = DiskRestoreReport::default();
     if !is_valid_slot_name(slot.trim()) {
-        return 0;
+        return rep;
     }
     let cp_dir = slot_dir(world_root, slot);
     if !cp_dir.join("meta.json").is_file() {
-        return 0;
+        return rep;
     }
-    let mut changed = 0;
     let cp_level = cp_dir.join("level.dat");
     let target_level = world_root.join("level.dat");
     if cp_level.is_file() {
@@ -206,6 +233,7 @@ pub fn restore_disk_files_for_slot_opts(world_root: &Path, slot: &str, force: bo
             }
         }
         if !skip && fs::copy(&cp_level, &target_level).is_ok() {
+            rep.changed += 1;
             if let (Ok(m), Ok(f)) = (
                 cp_level.metadata(),
                 fs::File::options().write(true).open(&target_level),
@@ -218,29 +246,41 @@ pub fn restore_disk_files_for_slot_opts(world_root: &Path, slot: &str, force: bo
     }
     let cp_players = cp_dir.join("players");
     let target_players = world_root.join("players");
-    changed += prune_extra_dat_json_recursive(&cp_players, &target_players);
+    rep.changed += prune_extra_dat_json_recursive(&cp_players, &target_players);
     if cp_players.is_dir() {
-        changed += copy_dir_recursive_opts(&cp_players, &target_players, force);
+        rep.changed += copy_dir_recursive_track_mca(
+            &cp_players,
+            &target_players,
+            force,
+            &mut rep.mca_changed,
+        );
     }
     let cp_data = cp_dir.join("data");
     let target_data = world_root.join("data");
-    changed += prune_extra_dat_json_recursive(&cp_data, &target_data);
+    rep.changed += prune_extra_dat_json_recursive(&cp_data, &target_data);
     if cp_data.is_dir() {
-        changed += copy_dir_recursive_opts(&cp_data, &target_data, force);
+        rep.changed +=
+            copy_dir_recursive_track_mca(&cp_data, &target_data, force, &mut rep.mca_changed);
     }
     let cp_dims = cp_dir.join("dimensions");
     let target_dims = world_root.join("dimensions");
-    changed += prune_extra_dat_json_recursive(&cp_dims, &target_dims);
+    rep.changed += prune_extra_dat_json_recursive(&cp_dims, &target_dims);
     if cp_dims.is_dir() {
-        changed += copy_dir_recursive_opts(&cp_dims, &target_dims, force);
+        rep.changed +=
+            copy_dir_recursive_track_mca(&cp_dims, &target_dims, force, &mut rep.mca_changed);
     }
     let cp_generated = cp_dir.join("generated");
     let target_generated = world_root.join("generated");
-    changed += prune_extra_nbt_recursive(&cp_generated, &target_generated);
+    rep.changed += prune_extra_nbt_recursive(&cp_generated, &target_generated);
     if cp_generated.is_dir() {
-        changed += copy_dir_recursive_opts(&cp_generated, &target_generated, force);
+        rep.changed += copy_dir_recursive_track_mca(
+            &cp_generated,
+            &target_generated,
+            force,
+            &mut rep.mca_changed,
+        );
     }
-    changed
+    rep
 }
 
 pub fn restore_disk_files_on_rollback(world_root: &Path) {

@@ -6,7 +6,7 @@ use super::hydration::hydrate_slot_from_disk_on_server;
 use super::restore_level::apply_level_snapshot_in_place;
 use super::restore_players::{restore_offline_files, restore_players_on_rollback};
 use super::snapshots::*;
-use super::storage::{restore_disk_files_for_slot_opts, slot_dir};
+use super::storage::{restore_disk_files_for_slot_report, slot_dir};
 use super::tracker::loop_tracker;
 use super::types::*;
 use horizon_client::bossbar::BossBars;
@@ -105,6 +105,7 @@ pub fn apply_timeline_snapshot_on_server(
 ) -> bool {
     let t_start = std::time::Instant::now();
     mark_det_rng_server_thread(true);
+    clear_det_rng_transient_caches();
     let is_scrub = matches!(origin, RollbackOrigin::ScrubSnapshot { .. });
     let prev_dim = game.dim;
     let bench_name = match origin {
@@ -126,19 +127,18 @@ pub fn apply_timeline_snapshot_on_server(
     let live_policy = with_state(|st| if is_scrub { st.scrub_policy } else { st.policy });
     let target_dim = resolve_rollback_target_dim(game, snap, &live_policy, is_scrub);
 
-    let (need_force_disk, is_hot_rollback, disk_files_changed) = match origin {
+    let (need_force_disk, is_hot_rollback, disk_files_changed, disk_mca_changed) = match origin {
         RollbackOrigin::DiskSlot(slot) => {
             let need_force = !snap.disk_restored;
-            let is_hot = slot == "default"
-                && game.dim == target_dim
+            let is_hot = game.dim == target_dim
                 && snap.levels.contains_key(&game.dim)
                 && !need_force;
             let t_disk = std::time::Instant::now();
-            let changed = restore_disk_files_for_slot_opts(&game.world_root, slot, need_force);
+            let rep = restore_disk_files_for_slot_report(&game.world_root, slot, need_force);
             bench_accum(Phase::RestoreDiskFiles, t_disk);
-            (need_force, is_hot, changed)
+            (need_force, is_hot, rep.changed, rep.mca_changed)
         }
-        RollbackOrigin::ScrubSnapshot { .. } => (false, true, 0),
+        RollbackOrigin::ScrubSnapshot { .. } => (false, true, 0, false),
     };
 
     let t_savedir = std::time::Instant::now();
@@ -306,6 +306,9 @@ pub fn apply_timeline_snapshot_on_server(
     game.rreturn_restore_ordered_state(&snap.ordered_state);
     game.creatures.cat.next_tick = snap.cat_tick;
     game.stats.rreturn_set_phantom_tick(snap.phantom_tick);
+    game.rreturn_set_patrol_next_tick(snap.patrol_next_tick);
+    set_village_siege(snap.village_siege);
+    set_trader_tick_delay(snap.trader_tick_delay);
     game.level.player_extra = snap.player_extra.clone();
     game.creatures.shoulder_time = snap.shoulder_time.clone();
     if policy.entities_presence {
@@ -364,17 +367,15 @@ pub fn apply_timeline_snapshot_on_server(
                     let _ = fs::remove_file(&trader_path);
                 }
             }
-            game.creatures.reset_trader();
-            game.load_trader_data();
+            game.rreturn_restore_trader_disk(snap.trader_tick_delay);
         }
         RollbackOrigin::ScrubSnapshot { .. } => {
-            if let Some(tag) = &snap.trader_tag {
-                game.creatures.reset_trader();
-                game.creatures.trader.load(tag.get("data"));
-            } else if game.creatures.trader.to_save().is_some() {
-                game.creatures.reset_trader();
-                game.creatures.trader.load(None);
-            }
+            game.rreturn_restore_trader_scrub(
+                snap.trader_tag.as_ref(),
+                None,
+                snap.trader_tick_delay,
+                snap.trader_dirty,
+            );
         }
     }
     bench_accum(Phase::Bosses, t_bosses);
@@ -628,17 +629,21 @@ pub fn apply_timeline_snapshot_on_server(
     }
     bench_accum(Phase::FutureMca, t_mca);
 
+    let streaming_active = game.streaming.busy()
+        || game.streaming.terrain_loading()
+        || game.streaming.pending() > 0;
     if target_dim != game.dim
         || deleted_region_files
         || restored_unloaded_count > 0
-        || disk_files_changed > 0
+        || disk_mca_changed
         || !is_hot_rollback
+        || streaming_active
     {
         let t_stream = std::time::Instant::now();
         if let RollbackOrigin::DiskSlot(_) = origin {
             restore_offline_files(&snap.offline_player_data, policy, is_scrub);
         }
-        game.streaming.wait(std::time::Duration::from_millis(2));
+        game.streaming.abort_generation();
         if game.dim != target_dim {
             let _ = game.enter_level(target_dim);
         }
@@ -659,6 +664,7 @@ pub fn apply_timeline_snapshot_on_server(
             fresh_streaming.extra = game.streaming.extra.clone();
             fresh_streaming.mesh = game.streaming.mesh;
             fresh_streaming.paused = game.streaming.paused;
+            fresh_streaming.forced = game.streaming.forced.clone();
             if let Some(tables) = game.save.tables.get() {
                 let _ = fresh_save.tables.set(Arc::clone(tables));
             } else {
@@ -810,6 +816,29 @@ pub fn apply_timeline_snapshot_on_server(
 
     let t_player = std::time::Instant::now();
     restore_players_on_rollback(game, snap, policy, prev_dim, target_dim, is_scrub);
+    if !is_scrub {
+        let restored_pos = game
+            .player
+            .as_ref()
+            .map(|p| [p.position.x, p.position.y, p.position.z])
+            .or_else(|| {
+                let owner_uuid = game.serving.as_ref().map(|s| s.owner)?;
+                game.lan.as_ref().and_then(|lan| {
+                    lan.hub
+                        .guests
+                        .iter()
+                        .find(|g| g.uuid == owner_uuid && Dim::from_id(&g.dimension) == target_dim)
+                        .map(|g| g.position)
+                })
+            });
+        if let Some(pos) = restored_pos {
+            game.streaming.center = ((pos[0].floor() as i32) >> 4, (pos[2].floor() as i32) >> 4);
+        }
+    }
+    if snap.det_rng_uniquifier != 0 {
+        set_det_rng_uniquifier(snap.det_rng_uniquifier);
+        let _ = horizon_client::random_source::set_thread_uniquifier(snap.det_rng_uniquifier);
+    }
     bench_accum(Phase::PlayersOnline, t_player);
     let player_ms = (std::time::Instant::now() - t_player).as_secs_f64() * 1000.0;
     let total_ms = (std::time::Instant::now() - t_start).as_secs_f64() * 1000.0;

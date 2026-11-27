@@ -8,6 +8,7 @@ const RUNTIME_FILES: &[&str] = &[
     "policy.rs",
     "det_rng.rs",
     "snapshots.rs",
+    "mob_disk_extra.rs",
     "ui_snapshot.rs",
     "benchmark.rs",
     "adaptive.rs",
@@ -116,11 +117,15 @@ use crate::game::perspective::rreturn_perspective::PerspectiveExt;
 use crate::game::hand::rreturn_hand::HandExt;
 use crate::game::pointer_capture::rreturn_pointer_capture::PointerCaptureExt;
 use crate::game::potions::rreturn_potions::{PotionStateExt, ThrownPotionsSnapshot};
+use crate::game::raids::rreturn_raids::{
+    RaidRuntimeSnapshot, RaidsExt, VillageSiegeSnapshot, capture_raiding_runtime,
+};
 use crate::game::recipe_book::rreturn_recipe_book::{RecipeBookExt, RecipeUiSnapshot};
 use crate::game::remote::rreturn_remote::{GameRemoteContainerExt, RemoteExt};
 use crate::game::sign_edit::rreturn_sign_edit::{SignEditExt, SignEditorSnapshot};
 use crate::game::stations::rreturn_stations::{StationUiSnapshot, StationsExt};
 use crate::game::stats::rreturn_stats::StatsExt;
+use crate::game::wandering_trader::rreturn_trader::WanderingTraderExt;
 use horizon_mod_runtime::attachments::Attachments;
 use horizon_client::{
     advancements::Progress,
@@ -143,7 +148,7 @@ use horizon_client::{
     keybinds,
     lan::{abilities::PlayerAbilities, guest::SavedBody},
     lang,
-    mobs::{armadillo, bee, warden, Species},
+    mobs::{animal_brain, armadillo, bee, villager_brain, warden, Species},
     mod_list::ModList,
     particles::Particle,
     raid::Raids,

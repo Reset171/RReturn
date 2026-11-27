@@ -890,6 +890,59 @@ fn collect_dim_player_chunks(game: &Game<'_>, dim: Dim) -> Vec<(i32, i32)> {
     out
 }
 
+fn diff_be_tick_meta_cow(
+    world: &horizon_client::world::World,
+    prev: &mut CowLevelPrev,
+    force_full: bool,
+) -> (Arc<Vec<(i32, i32, i32)>>, Arc<Vec<(i32, i32, i32)>>) {
+    let slots = world.block_entities.ticker_slots();
+    let mut same_order = !force_full
+        && prev
+            .be_ticker_order
+            .as_ref()
+            .is_some_and(|p| p.len() == slots.len() && p.iter().zip(slots.iter()).all(|(a, (b, _))| a == b));
+    let be_ticker_order = if same_order {
+        Arc::clone(prev.be_ticker_order.as_ref().unwrap())
+    } else {
+        let ord: Vec<(i32, i32, i32)> = slots.iter().map(|&(pos, _)| pos).collect();
+        let arc = Arc::new(ord);
+        prev.be_ticker_order = Some(Arc::clone(&arc));
+        same_order = false;
+        arc
+    };
+
+    let mut asleep: Vec<(i32, i32, i32)> = Vec::new();
+    let mut seen_asleep = HashSet::new();
+    for &(pos, _) in slots.iter() {
+        if world.block_entities.is_asleep(&pos) && seen_asleep.insert(pos) {
+            asleep.push(pos);
+        }
+    }
+    let mut extra_asleep: Vec<(i32, i32, i32)> = world
+        .block_entities
+        .keys()
+        .copied()
+        .filter(|p| !seen_asleep.contains(p) && world.block_entities.is_asleep(p))
+        .collect();
+    if !extra_asleep.is_empty() {
+        extra_asleep.sort_unstable();
+        asleep.extend(extra_asleep);
+    }
+
+    let be_asleep = if same_order
+        && let Some(prev_asleep) = &prev.be_asleep
+        && **prev_asleep == asleep
+    {
+        Arc::clone(prev_asleep)
+    } else {
+        let arc = Arc::new(asleep);
+        prev.be_asleep = Some(Arc::clone(&arc));
+        arc
+    };
+
+    (be_ticker_order, be_asleep)
+}
+
 pub fn capture_cow_level_direct(
     game: &Game<'_>,
     dim: Dim,
@@ -933,6 +986,7 @@ pub fn capture_cow_level_direct(
         be_changes.len(),
         !be_changes.is_empty(),
     );
+    let (be_ticker_order, be_asleep) = diff_be_tick_meta_cow(world, prev, force_full);
 
     let block_names = if !force_full
         && prev.world_revision == world.revision
@@ -1241,6 +1295,17 @@ pub fn capture_cow_level_direct(
         prev.raids_mem = Some(Arc::clone(&arc));
         Some(arc)
     };
+    let cur_raid_runtime = capture_raiding_runtime(&game.raiding, dim);
+    let raid_runtime = if !force_full
+        && let Some(prev_rt) = prev.raid_runtime.as_ref()
+        && **prev_rt == cur_raid_runtime
+    {
+        Arc::clone(prev_rt)
+    } else {
+        let arc = Arc::new(cur_raid_runtime);
+        prev.raid_runtime = Some(Arc::clone(&arc));
+        arc
+    };
 
     let chest_openers = if world.chest_openers.is_empty() {
         empty_chest_openers()
@@ -1308,6 +1373,8 @@ pub fn capture_cow_level_direct(
     CowLevelRecord {
         chunk_changes,
         be_changes,
+        be_ticker_order,
+        be_asleep,
         block_names,
         be_attachments,
         world_attachments,
@@ -1361,6 +1428,7 @@ pub fn capture_cow_level_direct(
         persist_raw_changes,
         persist_passenger_slots,
         raids_mem,
+        raid_runtime,
         last_hurt_by_player,
         love_cause,
         died,
@@ -1391,6 +1459,7 @@ pub fn capture_cow_parked_direct(
         prev,
         force_full,
     );
+    let (be_ticker_order, be_asleep) = diff_be_tick_meta_cow(world, prev, force_full);
 
     let block_names = if !force_full
         && prev.world_revision == world.revision
@@ -1675,6 +1744,19 @@ pub fn capture_cow_parked_direct(
         prev.raids_mem = Some(Arc::clone(&arc));
         Some(arc)
     };
+    let mut cur_raid_runtime = capture_raiding_runtime(&parked.raiding, dim);
+    cur_raid_runtime.omen_position = game.raiding.omen_position;
+    cur_raid_runtime.omen_loaded = game.raiding.omen_loaded;
+    let raid_runtime = if !force_full
+        && let Some(prev_rt) = prev.raid_runtime.as_ref()
+        && **prev_rt == cur_raid_runtime
+    {
+        Arc::clone(prev_rt)
+    } else {
+        let arc = Arc::new(cur_raid_runtime);
+        prev.raid_runtime = Some(Arc::clone(&arc));
+        arc
+    };
 
     let chest_openers = if world.chest_openers.is_empty() {
         empty_chest_openers()
@@ -1729,6 +1811,8 @@ pub fn capture_cow_parked_direct(
     CowLevelRecord {
         chunk_changes,
         be_changes,
+        be_ticker_order,
+        be_asleep,
         block_names,
         be_attachments,
         world_attachments,
@@ -1782,6 +1866,7 @@ pub fn capture_cow_parked_direct(
         persist_raw_changes,
         persist_passenger_slots,
         raids_mem,
+        raid_runtime,
         last_hurt_by_player: empty_hurt_by_player(),
         love_cause: empty_love_cause(),
         died: empty_died(),

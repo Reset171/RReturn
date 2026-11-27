@@ -444,6 +444,7 @@ pub fn restore_players_on_rollback(
                         g.above_ground_ticks = 0;
                         g.rests_on_ground = gs.on_ground;
                         g.moves.clear();
+                        g.move_packet_queue.clear();
                         g.moves_from_ground = gs.on_ground;
                         g.known_movement = [0.0; 3];
                     }
@@ -848,6 +849,15 @@ pub fn restore_players_on_rollback(
                             });
                     } else {
                         host.hub.teleport(gi, Some(gs.position));
+                        if p_policy.player_motion
+                            && (gs.velocity.x != 0.0 || gs.velocity.y != 0.0 || gs.velocity.z != 0.0)
+                        {
+                            let target_id = host.hub.guests[gi].entity_id;
+                            host.hub.guests[gi].send(&C::SetEntityMotion(play::SetEntityMotion {
+                                id: target_id,
+                                velocity: [gs.velocity.x, gs.velocity.y, gs.velocity.z],
+                            }));
+                        }
                     }
                 }
                 if p_policy.player_inventory {

@@ -676,6 +676,73 @@ pub fn save_slot_to_disk_with_facts(
                 "inhabited".to_owned(),
                 serde_json::Value::Array(inhabited_rt),
             );
+            let be_ticker_order_rt: Vec<serde_json::Value> = lsnap
+                .block_entity_ticker_order
+                .iter()
+                .map(|&(x, y, z)| serde_json::json!([x, y, z]))
+                .collect();
+            let be_asleep_rt: Vec<serde_json::Value> = lsnap
+                .block_entity_asleep
+                .iter()
+                .map(|&(x, y, z)| serde_json::json!([x, y, z]))
+                .collect();
+            rs_obj.insert(
+                "be_ticker_order".to_owned(),
+                serde_json::Value::Array(be_ticker_order_rt),
+            );
+            rs_obj.insert(
+                "be_asleep".to_owned(),
+                serde_json::Value::Array(be_asleep_rt),
+            );
+            let rt_bar_hurts: Vec<serde_json::Value> = lsnap
+                .raid_runtime
+                .bar_hurts
+                .iter()
+                .map(|&(id, seq)| serde_json::json!([id, seq]))
+                .collect();
+            let rt_homes: Vec<serde_json::Value> = lsnap
+                .raid_runtime
+                .homes
+                .iter()
+                .map(|(id, at, beds)| {
+                    let beds_json: Vec<serde_json::Value> = beds
+                        .iter()
+                        .map(|b| serde_json::json!([b[0], b[1], b[2]]))
+                        .collect();
+                    serde_json::json!([id, at, beds_json])
+                })
+                .collect();
+            let mut raid_rt_obj = serde_json::Map::new();
+            raid_rt_obj.insert(
+                "loaded".to_owned(),
+                serde_json::json!(lsnap.raid_runtime.loaded),
+            );
+            raid_rt_obj.insert(
+                "omen_loaded".to_owned(),
+                serde_json::json!(lsnap.raid_runtime.omen_loaded),
+            );
+            if let Some(op) = lsnap.raid_runtime.omen_position {
+                raid_rt_obj.insert(
+                    "omen_position".to_owned(),
+                    serde_json::json!([op[0], op[1], op[2]]),
+                );
+            }
+            if let Some(unseeded) = &lsnap.raid_runtime.unseeded {
+                let items: Vec<serde_json::Value> = unseeded
+                    .iter()
+                    .map(|&(id, pos)| serde_json::json!([id, pos]))
+                    .collect();
+                raid_rt_obj.insert("unseeded".to_owned(), serde_json::Value::Array(items));
+            }
+            raid_rt_obj.insert(
+                "bar_hurts".to_owned(),
+                serde_json::Value::Array(rt_bar_hurts),
+            );
+            raid_rt_obj.insert("homes".to_owned(), serde_json::Value::Array(rt_homes));
+            rs_obj.insert(
+                "raid_runtime".to_owned(),
+                serde_json::Value::Object(raid_rt_obj),
+            );
             level_redstone_json.insert(dim.id().to_owned(), serde_json::Value::Object(rs_obj));
         }
 
@@ -789,6 +856,28 @@ pub fn save_slot_to_disk_with_facts(
         );
         meta_map.insert("cat_tick".to_owned(), serde_json::json!(snap.cat_tick));
         meta_map.insert("phantom_tick".to_owned(), serde_json::json!(snap.phantom_tick));
+        meta_map.insert(
+            "patrol_next_tick".to_owned(),
+            serde_json::json!(snap.patrol_next_tick),
+        );
+        meta_map.insert(
+            "trader_tick_delay".to_owned(),
+            serde_json::json!(snap.trader_tick_delay),
+        );
+        meta_map.insert(
+            "trader_dirty".to_owned(),
+            serde_json::json!(snap.trader_dirty),
+        );
+        meta_map.insert(
+            "village_siege".to_owned(),
+            serde_json::json!({
+                "tonight": snap.village_siege.tonight,
+                "set_up": snap.village_siege.set_up,
+                "zombies_to_spawn": snap.village_siege.zombies_to_spawn,
+                "next_spawn_time": snap.village_siege.next_spawn_time,
+                "spot": snap.village_siege.spot,
+            }),
+        );
         meta_map.insert(
             "shoulder_time".to_owned(),
             serde_json::Value::Array(shoulder_time_json),

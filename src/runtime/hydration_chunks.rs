@@ -141,6 +141,8 @@ fn decode_chunk_ticks_map(arr: &[serde_json::Value]) -> HashMap<(i32, i32), Chun
 pub struct HydratedChunksResult {
     pub chunks: FxHashMap<(i32, i32), Arc<Chunk>>,
     pub block_entities: HashMap<(i32, i32, i32), BlockEntity>,
+    pub be_ticker_order: Vec<(i32, i32, i32)>,
+    pub be_asleep: Vec<(i32, i32, i32)>,
     pub block_names: FxHashMap<(i32, i32, i32), Tag>,
     pub be_attachments: Vec<((i32, i32, i32), Attachments)>,
     pub world_attachments: Attachments,
@@ -161,6 +163,7 @@ pub struct HydratedChunksResult {
     pub level_rng: Option<u64>,
     pub level_rng_gaussian: Option<f64>,
     pub random_tick_value: Option<i32>,
+    pub raid_runtime: RaidRuntimeSnapshot,
 }
 
 pub fn hydrate_chunks_from_disk(
@@ -194,6 +197,9 @@ pub fn hydrate_chunks_from_disk(
     let mut disk_fluid_ticks: HashMap<(i32, i32), ChunkTicks> = HashMap::new();
     let mut disk_inhabited: FxHashMap<(i32, i32), i64> = FxHashMap::default();
     let mut has_disk_inhabited = false;
+    let mut disk_be_ticker_order: Vec<(i32, i32, i32)> = Vec::new();
+    let mut disk_be_asleep: Vec<(i32, i32, i32)> = Vec::new();
+    let mut disk_raid_runtime = RaidRuntimeSnapshot::default();
 
     if let Some(meta) = meta {
         if let Some(arr) = meta["loaded_chunks"][dim.id()].as_array() {
@@ -407,6 +413,89 @@ pub fn hydrate_chunks_from_disk(
                 }
             }
         }
+        if let Some(arr) = rs["be_ticker_order"].as_array() {
+            disk_be_ticker_order.reserve(arr.len());
+            for row in arr {
+                if let Some(a) = row.as_array()
+                    && a.len() == 3
+                    && let (Some(x), Some(y), Some(z)) =
+                        (a[0].as_i64(), a[1].as_i64(), a[2].as_i64())
+                {
+                    disk_be_ticker_order.push((x as i32, y as i32, z as i32));
+                }
+            }
+        }
+        if let Some(arr) = rs["be_asleep"].as_array() {
+            disk_be_asleep.reserve(arr.len());
+            for row in arr {
+                if let Some(a) = row.as_array()
+                    && a.len() == 3
+                    && let (Some(x), Some(y), Some(z)) =
+                        (a[0].as_i64(), a[1].as_i64(), a[2].as_i64())
+                {
+                    disk_be_asleep.push((x as i32, y as i32, z as i32));
+                }
+            }
+        }
+        if let Some(rr) = rs["raid_runtime"].as_object() {
+            disk_raid_runtime.present = true;
+            if let Some(v) = rr.get("loaded").and_then(|v| v.as_bool()) {
+                disk_raid_runtime.loaded = v;
+            }
+            if let Some(v) = rr.get("omen_loaded").and_then(|v| v.as_bool()) {
+                disk_raid_runtime.omen_loaded = v;
+            }
+            if let Some(arr) = rr.get("omen_position").and_then(|v| v.as_array())
+                && arr.len() == 3
+                && let (Some(x), Some(y), Some(z)) =
+                    (arr[0].as_i64(), arr[1].as_i64(), arr[2].as_i64())
+            {
+                disk_raid_runtime.omen_position = Some([x as i32, y as i32, z as i32]);
+            }
+            if let Some(arr) = rr.get("unseeded").and_then(|v| v.as_array()) {
+                let mut items = Vec::with_capacity(arr.len());
+                for row in arr {
+                    if let Some(a) = row.as_array()
+                        && a.len() == 2
+                        && let (Some(id), Some(pos)) = (a[0].as_i64(), a[1].as_u64())
+                    {
+                        items.push((id as i32, pos as usize));
+                    }
+                }
+                disk_raid_runtime.unseeded = Some(items);
+            }
+            if let Some(arr) = rr.get("bar_hurts").and_then(|v| v.as_array()) {
+                for row in arr {
+                    if let Some(a) = row.as_array()
+                        && a.len() == 2
+                        && let (Some(id), Some(seq)) = (a[0].as_i64(), a[1].as_u64())
+                    {
+                        disk_raid_runtime.bar_hurts.push((id as i32, seq));
+                    }
+                }
+            }
+            if let Some(arr) = rr.get("homes").and_then(|v| v.as_array()) {
+                for row in arr {
+                    if let Some(a) = row.as_array()
+                        && a.len() == 3
+                        && let (Some(id), Some(at), Some(beds_arr)) =
+                            (a[0].as_i64(), a[1].as_i64(), a[2].as_array())
+                    {
+                        let mut beds = Vec::with_capacity(beds_arr.len());
+                        for b in beds_arr {
+                            if let Some(ba) = b.as_array()
+                                && ba.len() == 3
+                                && let (Some(x), Some(y), Some(z)) =
+                                    (ba[0].as_i64(), ba[1].as_i64(), ba[2].as_i64())
+                            {
+                                beds.push([x as i32, y as i32, z as i32]);
+                            }
+                        }
+                        disk_raid_runtime.homes.push((id as i32, at, Arc::new(beds)));
+                    }
+                }
+            }
+        }
     }
 
     if game.dim == dim {
@@ -496,6 +585,7 @@ pub fn hydrate_chunks_from_disk(
                 if let Some(live_sec) = live_chunk.sections.get(s_idx)
                     && live_sec.blocks == disk_sec.blocks
                     && live_sec.biomes == disk_sec.biomes
+                    && live_sec.light.same_as(&disk_sec.light)
                 {
                     *disk_sec = Arc::clone(live_sec);
                 }
@@ -514,6 +604,8 @@ pub fn hydrate_chunks_from_disk(
     Some(HydratedChunksResult {
         chunks,
         block_entities,
+        be_ticker_order: disk_be_ticker_order,
+        be_asleep: disk_be_asleep,
         block_names,
         be_attachments,
         world_attachments,
@@ -534,5 +626,6 @@ pub fn hydrate_chunks_from_disk(
         level_rng: disk_level_rng,
         level_rng_gaussian: disk_level_rng_gaussian,
         random_tick_value: disk_random_tick_value,
+        raid_runtime: disk_raid_runtime,
     })
 }

@@ -127,6 +127,36 @@ file = "crates/horizon-client/src/game/world/ordered_tick.rs"
 name = "rreturn_ordered"
 source = "src/ext/ordered_ext.rs"
 
+[[native.module]]
+id = "raids_ext"
+file = "crates/horizon-client/src/game/mobs/raids/mod.rs"
+name = "rreturn_raids"
+source = "src/ext/raids_ext.rs"
+
+[[native.module]]
+id = "trader_ext"
+file = "crates/horizon-client/src/game/mobs/wandering_trader.rs"
+name = "rreturn_trader"
+source = "src/ext/trader_ext.rs"
+
+[[native.module]]
+id = "persist_ext"
+file = "crates/horizon-client/src/game/world/persist.rs"
+name = "rreturn_persist"
+source = "src/ext/persist_ext.rs"
+
+[[native.module]]
+id = "trial_spawner_ext"
+file = "crates/horizon-client/src/game/mobs/trial_spawner.rs"
+name = "rreturn_trial_spawner"
+source = "src/ext/trial_spawner_ext.rs"
+
+[[native.module]]
+id = "creatures_ext"
+file = "crates/horizon-client/src/game/mobs/creatures/mod.rs"
+name = "rreturn_creatures"
+source = "src/ext/creatures_ext.rs"
+
 [[native.mixin]]
 id = "remote-poll-pre"
 target = "horizon_client::game::remote::Game<'_>::poll_remote"
@@ -851,5 +881,311 @@ helper = "src/hooks/hook_det_mobs_joined.rs"
 bindings = [
   { name = "game", ty = "&mut Game<'_>", value = "&mut *self" },
   { name = "from", ty = "usize", value = "from" },
+]
+
+[[native.mixin]]
+id = "det-rng-load-mob-pre"
+target = "horizon_client::game::persist::Game<'_>::load_mob"
+kind = "HEAD"
+helper = "src/hooks/hook_det_load_mob_pre.rs"
+bindings = [
+  { name = "game", ty = "&Game<'_>", value = "&*self" },
+  { name = "tag", ty = "&horizon_core::nbt::Tag", value = "&tag" },
+]
+
+[[native.mixin]]
+id = "det-rng-load-mob-post"
+target = "horizon_client::game::persist::Game<'_>::load_mob"
+kind = "RETURN"
+helper = "src/hooks/hook_det_load_mob_post.rs"
+bindings = [
+  { name = "res", ty = "Option<u32>", value = "$value" },
+  { name = "game", ty = "&mut Game<'_>", value = "&mut *self" },
+]
+
+[[native.mixin]]
+id = "det-rng-convert-event"
+target = "horizon_client::game::creatures::mob_conversion::Game<'_>::convert_event"
+kind = "HEAD"
+cancellable = true
+helper = "src/hooks/hook_det_convert_event.rs"
+bindings = [
+  { name = "game", ty = "&mut Game<'_>", value = "&mut *self" },
+  { name = "from", ty = "&horizon_client::mobs::Mob", value = "from" },
+  { name = "kind", ty = "&str", value = "kind" },
+  { name = "params", ty = "horizon_client::mobs::conversion::Params", value = "params" },
+  { name = "after", ty = "horizon_client::mobs::conversion::After", value = "after" },
+]
+
+[[native.mixin]]
+id = "det-rng-creaking-flush"
+target = "horizon_client::game::creaking::Game<'_>::scan_for_hearts"
+kind = "HEAD"
+helper = "src/hooks/hook_det_creaking_flush.rs"
+bindings = [
+  { name = "game", ty = "&mut Game<'_>", value = "&mut *self" },
+]
+
+[[native.mixin]]
+id = "det-rng-creaking-mob"
+target = "horizon_client::game::creaking::<Host<'_> as HeartHost>::create_mob"
+kind = "WRAP_OPERATION"
+selector = "Mob::new"
+ordinal = 0
+require = 1
+helper = "src/hooks/hook_det_creaking_mob.rs"
+bindings = [
+  { name = "id", ty = "u32", value = "$arg0" },
+  { name = "kind", ty = "std::sync::Arc<horizon_client::mobs::MobType>", value = "$arg1" },
+  { name = "pos", ty = "horizon_core::geometry::Vec3", value = "$arg2" },
+  { name = "yaw", ty = "f32", value = "$arg3" },
+  { name = "op", ty = "impl FnOnce(u32, std::sync::Arc<horizon_client::mobs::MobType>, horizon_core::geometry::Vec3, f32) -> horizon_client::mobs::Mob", value = "$operation" },
+]
+
+[[native.mixin]]
+id = "det-rng-creaking-brain"
+target = "horizon_client::game::creaking::<Host<'_> as HeartHost>::create_mob"
+kind = "WRAP_OPERATION"
+selector = "horizon_client::mobs::monster_brain::init"
+ordinal = 0
+require = 1
+helper = "src/hooks/hook_det_monster_brain.rs"
+bindings = [
+  { name = "mob", ty = "&mut horizon_client::mobs::Mob", value = "$arg0" },
+  { name = "seed", ty = "i64", value = "$arg1" },
+  { name = "op", ty = "impl FnOnce(&mut horizon_client::mobs::Mob, i64) -> ()", value = "$operation" },
+]
+
+[[native.mixin]]
+id = "det-rng-finalize-create"
+target = "horizon_client::game::finalize_spawn::<FinalizeGame<'_, '_> as FinalizeLevel>::create"
+kind = "WRAP_OPERATION"
+selector = "Mob::new"
+ordinal = 0
+require = 1
+helper = "src/hooks/hook_det_mob_new.rs"
+bindings = [
+  { name = "id", ty = "u32", value = "$arg0" },
+  { name = "kind", ty = "std::sync::Arc<horizon_client::mobs::MobType>", value = "$arg1" },
+  { name = "pos", ty = "horizon_core::geometry::Vec3", value = "$arg2" },
+  { name = "yaw", ty = "f32", value = "$arg3" },
+  { name = "op", ty = "impl FnOnce(u32, std::sync::Arc<horizon_client::mobs::MobType>, horizon_core::geometry::Vec3, f32) -> horizon_client::mobs::Mob", value = "$operation" },
+]
+
+[[native.mixin]]
+id = "det-rng-pass-level-create"
+target = "horizon_client::game::natural_spawning::<PassLevel<'_, '_, '_> as FinalizeLevel>::create"
+kind = "WRAP_OPERATION"
+selector = "Mob::new"
+ordinal = 0
+require = 1
+helper = "src/hooks/hook_det_mob_new.rs"
+bindings = [
+  { name = "id", ty = "u32", value = "$arg0" },
+  { name = "kind", ty = "std::sync::Arc<horizon_client::mobs::MobType>", value = "$arg1" },
+  { name = "pos", ty = "horizon_core::geometry::Vec3", value = "$arg2" },
+  { name = "yaw", ty = "f32", value = "$arg3" },
+  { name = "op", ty = "impl FnOnce(u32, std::sync::Arc<horizon_client::mobs::MobType>, horizon_core::geometry::Vec3, f32) -> horizon_client::mobs::Mob", value = "$operation" },
+]
+
+[[native.mixin]]
+id = "det-rng-spawn-event-mob"
+target = "horizon_client::game::raids::Game<'_>::spawn_event_mob"
+kind = "WRAP_OPERATION"
+selector = "Mob::new"
+ordinal = 0
+require = 1
+helper = "src/hooks/hook_det_mob_new.rs"
+bindings = [
+  { name = "id", ty = "u32", value = "$arg0" },
+  { name = "kind", ty = "std::sync::Arc<horizon_client::mobs::MobType>", value = "$arg1" },
+  { name = "pos", ty = "horizon_core::geometry::Vec3", value = "$arg2" },
+  { name = "yaw", ty = "f32", value = "$arg3" },
+  { name = "op", ty = "impl FnOnce(u32, std::sync::Arc<horizon_client::mobs::MobType>, horizon_core::geometry::Vec3, f32) -> horizon_client::mobs::Mob", value = "$operation" },
+]
+
+[[native.mixin]]
+id = "det-rng-create-triggered"
+target = "horizon_client::game::golems::Game<'_>::create_triggered"
+kind = "WRAP_OPERATION"
+selector = "horizon_client::mobs::Mob::new"
+ordinal = 0
+require = 1
+helper = "src/hooks/hook_det_mob_new.rs"
+bindings = [
+  { name = "id", ty = "u32", value = "$arg0" },
+  { name = "kind", ty = "std::sync::Arc<horizon_client::mobs::MobType>", value = "$arg1" },
+  { name = "pos", ty = "horizon_core::geometry::Vec3", value = "$arg2" },
+  { name = "yaw", ty = "f32", value = "$arg3" },
+  { name = "op", ty = "impl FnOnce(u32, std::sync::Arc<horizon_client::mobs::MobType>, horizon_core::geometry::Vec3, f32) -> horizon_client::mobs::Mob", value = "$operation" },
+]
+
+[[native.mixin]]
+id = "det-rng-try-summon-warden"
+target = "horizon_client::game::sculk::Game<'_>::try_summon_warden"
+kind = "WRAP_OPERATION"
+selector = "Mob::new"
+ordinal = 0
+require = 1
+helper = "src/hooks/hook_det_mob_new.rs"
+bindings = [
+  { name = "id", ty = "u32", value = "$arg0" },
+  { name = "kind", ty = "std::sync::Arc<horizon_client::mobs::MobType>", value = "$arg1" },
+  { name = "pos", ty = "horizon_core::geometry::Vec3", value = "$arg2" },
+  { name = "yaw", ty = "f32", value = "$arg3" },
+  { name = "op", ty = "impl FnOnce(u32, std::sync::Arc<horizon_client::mobs::MobType>, horizon_core::geometry::Vec3, f32) -> horizon_client::mobs::Mob", value = "$operation" },
+]
+
+[[native.mixin]]
+id = "det-rng-load-raids"
+target = "horizon_client::game::raids::Game<'_>::load_raids"
+kind = "WRAP_OPERATION"
+selector = "random_source::unique_seed"
+ordinal = 0
+require = 1
+helper = "src/hooks/hook_det_unique_seed.rs"
+bindings = [
+  { name = "op", ty = "impl FnOnce() -> i64", value = "$operation" },
+]
+
+[[native.mixin]]
+id = "det-rng-create-raid"
+target = "horizon_client::game::raids::Game<'_>::create_or_extend_raid"
+kind = "WRAP_OPERATION"
+selector = "random_source::unique_seed"
+ordinal = 0
+require = 1
+helper = "src/hooks/hook_det_unique_seed.rs"
+bindings = [
+  { name = "op", ty = "impl FnOnce() -> i64", value = "$operation" },
+]
+
+[[native.mixin]]
+id = "det-rng-load-dragon"
+target = "horizon_client::game::persist::Game<'_>::load_dragon"
+kind = "HEAD"
+cancellable = true
+helper = "src/hooks/hook_det_load_dragon.rs"
+bindings = [
+  { name = "game", ty = "&mut Game<'_>", value = "&mut *self" },
+  { name = "tag", ty = "&horizon_core::nbt::Tag", value = "&tag" },
+  { name = "uuid", ty = "Option<[i32; 4]>", value = "uuid" },
+]
+
+[[native.mixin]]
+id = "det-rng-add-ominous-spawner"
+target = "horizon_client::game::ominous_item_spawner::Game<'_>::add_ominous_item_spawner"
+kind = "WRAP_OPERATION"
+selector = "horizon_client::save::random_uuid"
+ordinal = 0
+require = 1
+helper = "src/hooks/hook_det_random_uuid.rs"
+bindings = [
+  { name = "op", ty = "impl FnOnce() -> [i32; 4]", value = "$operation" },
+]
+
+[[native.mixin]]
+id = "det-rng-persist-uuid-for"
+target = "horizon_client::game::persist::Game<'_>::uuid_for"
+kind = "HEAD"
+cancellable = true
+helper = "src/hooks/hook_det_persist_uuid_for.rs"
+bindings = [
+  { name = "game", ty = "&mut Game<'_>", value = "&mut *self" },
+  { name = "id", ty = "u32", value = "id" },
+]
+
+[[native.mixin]]
+id = "det-rng-persist-saved-uuid"
+target = "horizon_client::game::persist::Game<'_>::saved_uuid_or_random"
+kind = "HEAD"
+cancellable = true
+helper = "src/hooks/hook_det_persist_saved_uuid.rs"
+bindings = [
+  { name = "game", ty = "&Game<'_>", value = "&*self" },
+  { name = "id", ty = "u32", value = "id" },
+]
+
+[[native.mixin]]
+id = "det-rng-trial-spawner-tick"
+target = "horizon_client::game::trial_spawner::Game<'_>::tick_trial_spawner"
+kind = "HEAD"
+cancellable = true
+helper = "src/hooks/hook_det_trial_spawner.rs"
+bindings = [
+  { name = "game", ty = "&mut Game<'_>", value = "&mut *self" },
+  { name = "key", ty = "(i32, i32, i32)", value = "key" },
+]
+
+[[native.mixin]]
+id = "det-spawner-trader-tick"
+target = "horizon_client::game::wandering_trader::Game<'_>::tick_wandering_trader"
+kind = "HEAD"
+helper = "src/hooks/hook_det_trader_tick.rs"
+bindings = [
+  { name = "game", ty = "&Game<'_>", value = "&*self" },
+]
+
+[[native.mixin]]
+id = "det-spawner-village-siege-tick"
+target = "horizon_client::game::raids::Game<'_>::tick_village_siege"
+kind = "HEAD"
+cancellable = true
+helper = "src/hooks/hook_det_village_siege.rs"
+bindings = [
+  { name = "game", ty = "&mut Game<'_>", value = "&mut *self" },
+]
+
+[[native.mixin]]
+id = "det-rng-spawn-mob"
+target = "horizon_client::game::creatures::Game<'_>::spawn_mob"
+kind = "HEAD"
+cancellable = true
+helper = "src/hooks/hook_det_spawn_mob.rs"
+bindings = [
+  { name = "game", ty = "&mut Game<'_>", value = "&mut *self" },
+  { name = "kind", ty = "&str", value = "kind" },
+  { name = "at", ty = "[f64; 3]", value = "at" },
+  { name = "persistent", ty = "bool", value = "persistent" },
+  { name = "site", ty = "crate::game::creatures::SpawnSite", value = "site" },
+]
+
+[[native.mixin]]
+id = "det-rng-spawn-mob-facing"
+target = "horizon_client::game::creatures::Game<'_>::spawn_mob_facing"
+kind = "HEAD"
+cancellable = true
+helper = "src/hooks/hook_det_spawn_mob_facing.rs"
+bindings = [
+  { name = "game", ty = "&mut Game<'_>", value = "&mut *self" },
+  { name = "kind", ty = "&str", value = "kind" },
+  { name = "at", ty = "[f64; 3]", value = "at" },
+  { name = "persistent", ty = "bool", value = "persistent" },
+  { name = "site", ty = "crate::game::creatures::SpawnSite", value = "site" },
+  { name = "yaw", ty = "f32", value = "yaw" },
+]
+
+[[native.mixin]]
+id = "det-rng-place-end-crystal"
+target = "horizon_client::game::dragon::Game<'_>::place_end_crystal"
+kind = "WRAP_OPERATION"
+selector = "random_source::entity"
+ordinal = 0
+require = 1
+helper = "src/hooks/hook_det_entity_rng.rs"
+bindings = [
+  { name = "op", ty = "impl FnOnce() -> horizon_core::random::LegacyRandom", value = "$operation" },
+]
+
+[[native.mixin]]
+id = "det-rng-spawn-dragon-spawned"
+target = "horizon_client::game::dragon::Game<'_>::spawn_dragon_spawned"
+kind = "WRAP_OPERATION"
+selector = "random_source::unique_seed"
+ordinal = 0
+require = 1
+helper = "src/hooks/hook_det_unique_seed.rs"
+bindings = [
+  { name = "op", ty = "impl FnOnce() -> i64", value = "$operation" },
 ]
 

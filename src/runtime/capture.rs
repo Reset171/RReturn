@@ -118,6 +118,44 @@ pub fn backup_offline_files(world_root: &Path) -> HashMap<PathBuf, Vec<u8>> {
     try_backup_offline_files(world_root).unwrap_or_default()
 }
 
+/// Promotes pending `BlockEntities::added` slots into live ticker order without altering tick state.
+pub fn promote_world_block_entity_tickers(world: &mut horizon_client::world::World) {
+    if world.block_entities.has_states() {
+        let _ = world.block_entities.tickers(|p| {
+            world
+                .chunks
+                .get(&(p.0 >> 4, p.2 >> 4))
+                .map_or(0, |c| c.block(p.0 & 15, p.1, p.2 & 15).0)
+        });
+    }
+}
+
+fn capture_be_tick_meta(
+    world: &horizon_client::world::World,
+) -> (Vec<(i32, i32, i32)>, Vec<(i32, i32, i32)>) {
+    let slots = world.block_entities.ticker_slots();
+    let mut order = Vec::with_capacity(slots.len());
+    let mut asleep = Vec::new();
+    let mut seen_asleep = HashSet::new();
+    for &(pos, _) in slots.iter() {
+        order.push(pos);
+        if world.block_entities.is_asleep(&pos) && seen_asleep.insert(pos) {
+            asleep.push(pos);
+        }
+    }
+    let mut extra_asleep: Vec<(i32, i32, i32)> = world
+        .block_entities
+        .keys()
+        .copied()
+        .filter(|p| !seen_asleep.contains(p) && world.block_entities.is_asleep(p))
+        .collect();
+    if !extra_asleep.is_empty() {
+        extra_asleep.sort_unstable();
+        asleep.extend(extra_asleep);
+    }
+    (order, asleep)
+}
+
 pub fn capture_level_snapshot(game: &Game<'_>, dim: Dim) -> LevelSnapshot {
     capture_level_snapshot_opts(game, dim, true)
 }
@@ -134,6 +172,7 @@ fn capture_level_snapshot_opts(game: &Game<'_>, dim: Dim, read_disk_raids: bool)
         None
     };
     let raids_mem = Some(game.raiding.raids.clone());
+    let raid_runtime = capture_raiding_runtime(&game.raiding, dim);
     let chunks_map: FxHashMap<(i32, i32), Arc<Chunk>> = (&*game.world.chunks).clone();
     let mut be_attachments = Vec::new();
     for &(cx, cz) in chunks_map.keys() {
@@ -198,9 +237,12 @@ fn capture_level_snapshot_opts(game: &Game<'_>, dim: Dim, read_disk_raids: bool)
             }
         })
         .collect();
+    let (block_entity_ticker_order, block_entity_asleep) = capture_be_tick_meta(&game.world);
     LevelSnapshot {
         chunks: chunks_map,
         block_entities: (&*game.world.block_entities).clone(),
+        block_entity_ticker_order,
+        block_entity_asleep,
         block_names: game.world.block_names.clone(),
         be_attachments,
         world_attachments: game.world.attachments.clone(),
@@ -291,6 +333,7 @@ fn capture_level_snapshot_opts(game: &Game<'_>, dim: Dim, read_disk_raids: bool)
         persist_passenger_slots: game.persist.passenger_slots.clone(),
         raids_dat,
         raids_mem,
+        raid_runtime,
         last_hurt_by_player: game.last_hurt_by_player.clone(),
         love_cause: game.love_cause.clone(),
         died: game.died.iter().copied().collect(),
@@ -325,6 +368,9 @@ fn capture_parked_snapshot_opts(
         None
     };
     let raids_mem = Some(p.raiding.raids.clone());
+    let mut raid_runtime = capture_raiding_runtime(&p.raiding, dim);
+    raid_runtime.omen_position = game.raiding.omen_position;
+    raid_runtime.omen_loaded = game.raiding.omen_loaded;
     let chunks_map: FxHashMap<(i32, i32), Arc<Chunk>> = (&*p.world.chunks).clone();
     let mut be_attachments = Vec::new();
     for &(cx, cz) in chunks_map.keys() {
@@ -386,9 +432,12 @@ fn capture_parked_snapshot_opts(
             }
         })
         .collect();
+    let (block_entity_ticker_order, block_entity_asleep) = capture_be_tick_meta(&p.world);
     LevelSnapshot {
         chunks: chunks_map,
         block_entities: (&*p.world.block_entities).clone(),
+        block_entity_ticker_order,
+        block_entity_asleep,
         block_names: p.world.block_names.clone(),
         be_attachments,
         world_attachments: p.world.attachments.clone(),
@@ -468,6 +517,7 @@ fn capture_parked_snapshot_opts(
         persist_passenger_slots: p.persist.passenger_slots.clone(),
         raids_dat,
         raids_mem,
+        raid_runtime,
         last_hurt_by_player: HashMap::new(),
         love_cause: HashMap::new(),
         died: Default::default(),
@@ -715,6 +765,10 @@ pub fn capture_timeline_snapshot_in_memory(game: &Game<'_>) -> Arc<TimelineSnaps
         ordered_state: game.rreturn_capture_ordered_state(),
         cat_tick: game.creatures.cat.next_tick,
         phantom_tick: game.stats.rreturn_phantom_tick(),
+        patrol_next_tick: game.rreturn_patrol_next_tick(),
+        trader_tick_delay: current_trader_tick_delay(),
+        trader_dirty: game.creatures.trader.to_save().is_some(),
+        village_siege: current_village_siege(),
         player_extra: game.level.player_extra.clone(),
         shoulder_time: game.creatures.shoulder_time.clone(),
         fangs: game.fangs.list.clone(),
@@ -772,6 +826,10 @@ pub fn create_slot_checkpoint_on_server(
 ) -> bool {
     if !is_valid_slot_name(slot.trim()) {
         return false;
+    }
+    promote_world_block_entity_tickers(&mut game.world);
+    for parked in game.levels.parked.values_mut() {
+        promote_world_block_entity_tickers(&mut parked.world);
     }
     let now = game.world.game_time;
     bench_begin(&format!("CHECKPOINT CAPTURE [{}]", slot), now);
@@ -909,6 +967,10 @@ pub fn create_slot_checkpoint_on_server(
         ordered_state: game.rreturn_capture_ordered_state(),
         cat_tick: game.creatures.cat.next_tick,
         phantom_tick: game.stats.rreturn_phantom_tick(),
+        patrol_next_tick: game.rreturn_patrol_next_tick(),
+        trader_tick_delay: current_trader_tick_delay(),
+        trader_dirty: game.creatures.trader.to_save().is_some(),
+        village_siege: current_village_siege(),
         player_extra: game.level.player_extra.clone(),
         shoulder_time: game.creatures.shoulder_time.clone(),
         fangs: game.fangs.list.clone(),

@@ -21,6 +21,11 @@ from tools.tests.test_vehicles import (
     test_16_flying_arrow_projectile,
     test_45_fishing_bobber_unheld_rod_rollback,
 )
+from tools.tests.test_mob_spawn_determinism import (
+    test_134_mob_creation_rng_and_uuid_determinism,
+    test_135_trial_spawner_creaking_and_raid_determinism,
+    test_136_custom_spawner_schedules_rollback_determinism,
+)
 from tools.tests.test_mobs_ai import (
     test_6_remote_chunks_mob_cleanup,
     test_7_villager_ai_determinism,
@@ -346,6 +351,9 @@ def build_test_catalog():
         (131, "Test 131: F5 Perspective Save Rollback and Scrub", "ui_state", test_131_f5_perspective_save_rollback_and_scrub),
         (132, "Test 132: Creative Hotbar Direct Place Clears Hand on Scrub", "scrubbing", test_132_creative_hotbar_direct_place_clears_hand_on_scrub),
         (133, "Test 133: Virtual Cursor Scrub and Commit Warp", "scrubbing", test_133_virtual_cursor_scrub_and_commit_warp),
+        (134, "Test 134: Mob Creation RNG and UUID Determinism", "determinism", test_134_mob_creation_rng_and_uuid_determinism),
+        (135, "Test 135: Trial Spawner, Creaking Heart, and Raid Determinism", "determinism", test_135_trial_spawner_creaking_and_raid_determinism),
+        (136, "Test 136: Custom Spawner Schedules Rollback Determinism", "determinism", test_136_custom_spawner_schedules_rollback_determinism),
     ]
 
 

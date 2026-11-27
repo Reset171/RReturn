@@ -13,6 +13,7 @@ from tools.tests.test_chunks import test_1_unloaded_chunks
 from tools.tests.test_explosions import (
     test_2_tnt_explosion_rollback,
     test_3_tnt_future_chain_isolation,
+    test_130_mass_tnt_fill_11x11_chain_determinism,
 )
 from tools.tests.test_vehicles import (
     test_4_fishing_bobber_preservation,
@@ -69,6 +70,9 @@ from tools.tests.test_ui_rollback_scrub import (
     test_122_scrub_f3_f4_gamemode_switcher_display,
     test_125_chat_history_rollback_and_scrub,
     test_126_sign_edit_wheel_and_scrub_hud_drag_lock,
+    test_131_f5_perspective_save_rollback_and_scrub,
+    test_132_creative_hotbar_direct_place_clears_hand_on_scrub,
+    test_133_virtual_cursor_scrub_and_commit_warp,
 )
 from tools.tests.test_portals import (
     test_24_nether_portal_cold_chunk,
@@ -338,6 +342,10 @@ def build_test_catalog():
         (127, "Test 127: UI Polish Boss Default Players Heads and Modes", "world_settings", test_127_ui_polish_boss_default_players_heads_and_modes),
         (128, "Test 128: Scrub Live TNT Multi-Chunk Preview Restoration", "scrubbing", test_128_scrub_live_tnt_preview_multi_chunk_block_restoration),
         (129, "Test 129: Scrub Mob Species Villager TP and Dead Resurrection", "scrubbing", test_129_scrub_mob_species_villager_tp_and_dead_resurrection),
+        (130, "Test 130: Mass 11x11 TNT Fill Chain Determinism", "explosions", test_130_mass_tnt_fill_11x11_chain_determinism),
+        (131, "Test 131: F5 Perspective Save Rollback and Scrub", "ui_state", test_131_f5_perspective_save_rollback_and_scrub),
+        (132, "Test 132: Creative Hotbar Direct Place Clears Hand on Scrub", "scrubbing", test_132_creative_hotbar_direct_place_clears_hand_on_scrub),
+        (133, "Test 133: Virtual Cursor Scrub and Commit Warp", "scrubbing", test_133_virtual_cursor_scrub_and_commit_warp),
     ]
 
 

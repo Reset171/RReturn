@@ -9,7 +9,7 @@ use horizon_client::{
 use horizon_core::{
     geometry::Direction,
     position::{BlockPos, ChunkPos},
-    ticks::ChunkTicks,
+    ticks::{ChunkTicks, SavedTick, ScheduledTick, TickPriority, TickTypeId},
 };
 use horizon_mod_runtime::attachments::Attachments;
 use horizon_world::{
@@ -48,6 +48,96 @@ fn decode_piston(v: &serde_json::Value) -> Option<MovingPiston> {
     })
 }
 
+/// Decodes live pending and queued ticks captured per chunk, preserving both intact.
+fn decode_chunk_ticks_map(arr: &[serde_json::Value]) -> HashMap<(i32, i32), ChunkTicks> {
+    let mut out = HashMap::new();
+    for row in arr {
+        let Some(pair) = row.as_array() else {
+            continue;
+        };
+        if pair.len() != 4 {
+            continue;
+        }
+        let (Some(cx), Some(cz), Some(pending_arr), Some(queued_arr)) = (
+            pair[0].as_i64(),
+            pair[1].as_i64(),
+            pair[2].as_array(),
+            pair[3].as_array(),
+        ) else {
+            continue;
+        };
+        let mut ct = if !pending_arr.is_empty() {
+            let mut saved = Vec::with_capacity(pending_arr.len());
+            for item in pending_arr {
+                let Some(t) = item.as_array() else {
+                    continue;
+                };
+                if t.len() == 6
+                    && let (
+                        Some(kind),
+                        Some(x),
+                        Some(y),
+                        Some(z),
+                        Some(delay),
+                        Some(prio),
+                    ) = (
+                        t[0].as_u64(),
+                        t[1].as_i64(),
+                        t[2].as_i64(),
+                        t[3].as_i64(),
+                        t[4].as_i64(),
+                        t[5].as_i64(),
+                    )
+                {
+                    saved.push(SavedTick {
+                        kind: TickTypeId(kind as u32),
+                        pos: BlockPos::new(x as i32, y as i32, z as i32),
+                        delay: delay as i32,
+                        priority: TickPriority::by_value(prio as i32),
+                    });
+                }
+            }
+            ChunkTicks::from_saved(saved)
+        } else {
+            ChunkTicks::default()
+        };
+        for item in queued_arr {
+            let Some(t) = item.as_array() else {
+                continue;
+            };
+            if t.len() == 7
+                && let (
+                    Some(kind),
+                    Some(x),
+                    Some(y),
+                    Some(z),
+                    Some(trigger_tick),
+                    Some(prio),
+                    Some(sub_order),
+                ) = (
+                    t[0].as_u64(),
+                    t[1].as_i64(),
+                    t[2].as_i64(),
+                    t[3].as_i64(),
+                    t[4].as_i64(),
+                    t[5].as_i64(),
+                    t[6].as_i64(),
+                )
+            {
+                let _ = ct.schedule(ScheduledTick {
+                    kind: TickTypeId(kind as u32),
+                    pos: BlockPos::new(x as i32, y as i32, z as i32),
+                    trigger_tick,
+                    priority: TickPriority::by_value(prio as i32),
+                    sub_tick_order: sub_order,
+                });
+            }
+        }
+        out.insert((cx as i32, cz as i32), ct);
+    }
+    out
+}
+
 pub struct HydratedChunksResult {
     pub chunks: FxHashMap<(i32, i32), Arc<Chunk>>,
     pub block_entities: HashMap<(i32, i32, i32), BlockEntity>,
@@ -69,6 +159,7 @@ pub struct HydratedChunksResult {
     pub hoppers: HashMap<(i32, i32, i32), super::super::machines::HopperState>,
     pub end_clock: i64,
     pub level_rng: Option<u64>,
+    pub level_rng_gaussian: Option<f64>,
     pub random_tick_value: Option<i32>,
 }
 
@@ -82,6 +173,7 @@ pub fn hydrate_chunks_from_disk(
 ) -> Option<HydratedChunksResult> {
     let mut candidate_set: HashSet<(i32, i32)> = HashSet::new();
     let mut disk_level_rng: Option<u64> = None;
+    let mut disk_level_rng_gaussian: Option<f64> = None;
     let mut disk_random_tick_value: Option<i32> = None;
     let mut disk_end_clock: i64 = 0;
     let mut disk_comparator_outputs = HashMap::new();
@@ -96,6 +188,12 @@ pub fn hydrate_chunks_from_disk(
         Vec::new();
     let mut disk_hoppers: HashMap<(i32, i32, i32), super::super::machines::HopperState> =
         HashMap::new();
+    let mut has_disk_block_ticks = false;
+    let mut disk_block_ticks: HashMap<(i32, i32), ChunkTicks> = HashMap::new();
+    let mut has_disk_fluid_ticks = false;
+    let mut disk_fluid_ticks: HashMap<(i32, i32), ChunkTicks> = HashMap::new();
+    let mut disk_inhabited: FxHashMap<(i32, i32), i64> = FxHashMap::default();
+    let mut has_disk_inhabited = false;
 
     if let Some(meta) = meta {
         if let Some(arr) = meta["loaded_chunks"][dim.id()].as_array() {
@@ -110,6 +208,9 @@ pub fn hydrate_chunks_from_disk(
             }
         }
         disk_level_rng = meta["level_rng"][dim.id()].as_u64();
+        disk_level_rng_gaussian = meta["level_rng_gaussian"][dim.id()]
+            .as_u64()
+            .map(f64::from_bits);
         disk_random_tick_value = meta["random_tick_values"][dim.id()]
             .as_i64()
             .map(|v| v as i32);
@@ -286,6 +387,26 @@ pub fn hydrate_chunks_from_disk(
                 }
             }
         }
+        if let Some(arr) = rs["chunk_block_ticks"].as_array() {
+            has_disk_block_ticks = true;
+            disk_block_ticks = decode_chunk_ticks_map(arr);
+        }
+        if let Some(arr) = rs["chunk_fluid_ticks"].as_array() {
+            has_disk_fluid_ticks = true;
+            disk_fluid_ticks = decode_chunk_ticks_map(arr);
+        }
+        if let Some(arr) = rs["inhabited"].as_array() {
+            has_disk_inhabited = true;
+            for row in arr {
+                if let Some(a) = row.as_array()
+                    && a.len() >= 3
+                    && let (Some(cx), Some(cz), Some(val)) =
+                        (a[0].as_i64(), a[1].as_i64(), a[2].as_i64())
+                {
+                    disk_inhabited.insert((cx as i32, cz as i32), val);
+                }
+            }
+        }
     }
 
     if game.dim == dim {
@@ -329,18 +450,37 @@ pub fn hydrate_chunks_from_disk(
             block_names.insert(pos, name.clone());
         }
         if let Some(saved) = disk_chunk.saved.as_deref() {
-            if let Some(Tag::Long(t)) = saved.root.get(&"InhabitedTime".into()) {
+            if !has_disk_inhabited
+                && let Some(Tag::Long(t)) = saved.root.get(&"InhabitedTime".into())
+            {
                 inhabited.insert((cx, cz), *t);
             }
             be_attachments.extend(saved.block_entity_attachments.iter().cloned());
-            let mut b_ticks = ChunkTicks::from_saved(saved.block_ticks.clone());
-            let mut f_ticks = ChunkTicks::from_saved(saved.fluid_ticks.clone());
-            b_ticks.unpack(snap.game_time);
-            f_ticks.unpack(snap.game_time);
-            chunk_ticks.insert((cx, cz), (b_ticks, f_ticks));
-        } else {
-            chunk_ticks.insert((cx, cz), (ChunkTicks::default(), ChunkTicks::default()));
         }
+        if has_disk_inhabited
+            && let Some(&val) = disk_inhabited.get(&(cx, cz))
+        {
+            inhabited.insert((cx, cz), val);
+        }
+        let b_ticks = if has_disk_block_ticks {
+            disk_block_ticks.remove(&(cx, cz)).unwrap_or_default()
+        } else if let Some(saved) = disk_chunk.saved.as_deref() {
+            let mut bt = ChunkTicks::from_saved(saved.block_ticks.clone());
+            bt.unpack(snap.game_time);
+            bt
+        } else {
+            ChunkTicks::default()
+        };
+        let f_ticks = if has_disk_fluid_ticks {
+            disk_fluid_ticks.remove(&(cx, cz)).unwrap_or_default()
+        } else if let Some(saved) = disk_chunk.saved.as_deref() {
+            let mut ft = ChunkTicks::from_saved(saved.fluid_ticks.clone());
+            ft.unpack(snap.game_time);
+            ft
+        } else {
+            ChunkTicks::default()
+        };
+        chunk_ticks.insert((cx, cz), (b_ticks, f_ticks));
 
         let live_chunk_opt = if game.dim == dim {
             game.world.chunks.get(&(cx, cz))
@@ -392,6 +532,7 @@ pub fn hydrate_chunks_from_disk(
         hoppers: disk_hoppers,
         end_clock: disk_end_clock,
         level_rng: disk_level_rng,
+        level_rng_gaussian: disk_level_rng_gaussian,
         random_tick_value: disk_random_tick_value,
     })
 }

@@ -878,3 +878,291 @@ def test_126_sign_edit_wheel_and_scrub_hud_drag_lock(h):
         h.command("setblock 0 65 2 minecraft:air")
         h.close_screen()
         h.wait(2)
+
+
+def test_131_f5_perspective_save_rollback_and_scrub(h):
+    """F5 camera perspective (first-person / 3rd back / 3rd front) must save and rollback via F6/F7 RAM, disk, and Scrub."""
+    setup_clean_env(h)
+    try:
+        # Ensure we start at first-person (0)
+        for _ in range(4):
+            if _ui(h)["perspective"] == 0:
+                break
+            h.raw_send("key f5 tap")
+            h.wait(2)
+        assert _ui(h)["perspective"] == 0 and _ui(h)["perspective_name"] == "first_person", _ui(h)
+
+        # Press F5 -> third_person_back (1) & save
+        h.raw_send("key f5 tap")
+        h.wait(2)
+        assert _ui(h)["perspective"] == 1 and _ui(h)["perspective_name"] == "third_person_back", _ui(h)
+        h.rreturn("save persp_t1")
+
+        # Press F5 -> third_person_front (2) & save
+        h.raw_send("key f5 tap")
+        h.wait(2)
+        assert _ui(h)["perspective"] == 2 and _ui(h)["perspective_name"] == "third_person_front", _ui(h)
+        h.rreturn("save persp_t2")
+
+        # Press F5 -> back to 0
+        h.raw_send("key f5 tap")
+        h.wait(2)
+        assert _ui(h)["perspective"] == 0
+
+        # F7 RAM load persp_t1 -> 1
+        h.rreturn("load persp_t1")
+        h.wait(2)
+        assert _ui(h)["perspective"] == 1, f"Expected 3rd person back after RAM load: {_ui(h)}"
+
+        # F7 disk load after purge_memory persp_t2 -> 2
+        h.rreturn("purge_memory")
+        h.wait(2)
+        h.rreturn("load persp_t2")
+        h.wait(2)
+        assert _ui(h)["perspective"] == 2, f"Expected 3rd person front after disk load: {_ui(h)}"
+
+        # Reset to 0 and record 0 -> 1 -> 2 across scrub timeline
+        h.raw_send("key f5 tap")
+        h.wait(2)
+        assert _ui(h)["perspective"] == 0
+        h.rreturn("scrub on")
+        h.wait(12)
+        h.raw_send("key f5 tap")
+        h.wait(14)
+        assert _ui(h)["perspective"] == 1
+        h.raw_send("key f5 tap")
+        h.wait(12)
+        assert _ui(h)["perspective"] == 2
+
+        h.raw_send("key u tap")
+        h.wait(2)
+        assert _ui(h)["scrubbing"] is True and _ui(h)["perspective"] == 2
+
+        h.rreturn("scrub seek_ticks -16")
+        h.wait(2)
+        assert _ui(h)["perspective"] == 1, f"Scrub preview did not restore perspective 1: {_ui(h)}"
+
+        h.rreturn("scrub seek_ticks -14")
+        h.wait(2)
+        assert _ui(h)["perspective"] == 0, f"Scrub preview did not restore perspective 0: {_ui(h)}"
+
+        # Cancel must return to anchor perspective 2
+        h.raw_send("key esc tap")
+        h.wait(2)
+        assert _ui(h)["scrubbing"] is False and _ui(h)["perspective"] == 2, (
+            f"Scrub cancel failed to restore anchor perspective 2: {_ui(h)}"
+        )
+
+        # Re-open scrub -> seek to 1 -> commit -> stays 1
+        h.raw_send("key u tap")
+        h.wait(2)
+        h.rreturn("scrub seek_ticks -16")
+        h.wait(2)
+        assert _ui(h)["perspective"] == 1
+        h.raw_send("key enter tap")
+        h.wait(4)
+        assert _ui(h)["scrubbing"] is False and _ui(h)["perspective"] == 1, (
+            f"Scrub commit did not keep perspective 1: {_ui(h)}"
+        )
+    finally:
+        if _ui(h).get("scrubbing"):
+            h.rreturn("scrub cancel")
+        h.rreturn("scrub off")
+        for _ in range(4):
+            if _ui(h)["perspective"] == 0:
+                break
+            h.raw_send("key f5 tap")
+            h.wait(2)
+
+
+def test_132_creative_hotbar_direct_place_clears_hand_on_scrub(h):
+    """Item placed directly from creative menu into active hotbar slot must clear from visible hand on scrub."""
+    setup_clean_env(h)
+    try:
+        h.command("gamemode creative")
+        h.command("clear @s")
+        h.select_slot(0)
+        h.wait(4)
+        assert _ui(h)["visible_main_hand"] is None, f"Expected empty hand initially: {_ui(h)}"
+
+        h.rreturn("scrub on")
+        h.wait(14)
+
+        # Open Creative inventory, pick block from colored_blocks, place directly into active hotbar slot 0
+        h.raw_send("key e tap")
+        h.wait(3)
+        ui_tabs = _ui(h)
+        cb_pos = ui_tabs["creative_tabs"]["minecraft:colored_blocks"]
+        h.raw_send(f"click-at {cb_pos[0]} {cb_pos[1]}")
+        h.wait(2)
+        slot0 = _ui(h)["creative_slot0"]
+        h.raw_send(f"click-at {slot0[0]} {slot0[1]}")
+        h.wait(2)
+        picked = _ui(h)["carried"]
+        assert picked is not None, f"Failed to pick item in creative menu: {_ui(h)}"
+
+        scr = h.screen()
+        hotbar0_rect = None
+        for sl in scr.get("slots", []):
+            if sl.get("id") == 0 and isinstance(sl.get("rect"), list) and len(sl["rect"]) == 4:
+                hotbar0_rect = sl["rect"]
+                break
+        if hotbar0_rect is not None:
+            hx = int(round(hotbar0_rect[0] + hotbar0_rect[2] * 0.5))
+            hy = int(round(hotbar0_rect[1] + hotbar0_rect[3] * 0.5))
+            h.raw_send(f"click-at {hx} {hy}")
+        else:
+            h.click_slot(0)
+        h.wait(8)
+
+        # Close creative and wait a bit so visible_hands reflects held item in first person
+        h.raw_send("key esc tap")
+        h.wait(10)
+        ui_held = _ui(h)
+        assert ui_held["visible_main_hand"] is not None, (
+            f"Expected placed creative item in visible_main_hand: {ui_held}"
+        )
+
+        # Enter scrub and rewind back before creative menu opened
+        h.raw_send("key u tap")
+        h.wait(2)
+        h.rreturn("scrub seek_ticks -45")
+        h.wait(2)
+
+        ui_prev = _ui(h)
+        assert ui_prev["scrubbing"] is True
+        assert ui_prev["visible_main_hand"] is None, (
+            f"Creative hotbar item remained in visible hand during scrub preview! {ui_prev}"
+        )
+        inv_prev = h.inventory().get("hotbar", [])
+        assert inv_prev and inv_prev[0]["item"] is None, f"Hotbar slot 0 not empty on scrub preview: {inv_prev}"
+
+        # Scrub forward into active held state -> visible_main_hand must reappear!
+        h.rreturn("scrub seek_ticks 40")
+        h.wait(2)
+        assert _ui(h)["visible_main_hand"] is not None, (
+            f"Scrub forward failed to restore creative hand item: {_ui(h)}"
+        )
+
+        # Scrub backward again & commit -> must stay clear on hand after normal ticks resume!
+        h.rreturn("scrub seek_ticks -45")
+        h.wait(2)
+        assert _ui(h)["visible_main_hand"] is None
+        h.raw_send("key enter tap")
+        h.wait(8)
+        ui_comm = _ui(h)
+        assert ui_comm["scrubbing"] is False
+        assert ui_comm["visible_main_hand"] is None, (
+            f"Creative item returned or stayed in visible hand after scrub commit! {ui_comm}"
+        )
+        inv_comm = h.inventory().get("hotbar", [])
+        assert inv_comm and inv_comm[0]["item"] is None, f"Hotbar slot 0 refilled after commit: {inv_comm}"
+
+        # Case B: Trigger scrub IMMEDIATELY while Creative screen is still open right after direct drop into active slot 0
+        h.rreturn("scrub off")
+        h.wait(2)
+        h.command("clear @s")
+        h.select_slot(0)
+        h.wait(2)
+        h.rreturn("scrub on")
+        h.wait(14)
+        h.raw_send("key e tap")
+        h.wait(3)
+        cb_pos = _ui(h)["creative_tabs"]["minecraft:colored_blocks"]
+        h.raw_send(f"click-at {cb_pos[0]} {cb_pos[1]}")
+        h.wait(2)
+        slot0 = _ui(h)["creative_slot0"]
+        h.raw_send(f"click-at {slot0[0]} {slot0[1]}")
+        h.wait(2)
+        h.click_slot(0)
+        h.wait(8)
+        assert _ui(h)["visible_main_hand"] is not None, f"Expected visible hand filled inside Creative: {_ui(h)}"
+
+        # Press U directly inside Creative without closing screen -> rewind before placing -> commit!
+        h.raw_send("key u tap")
+        h.wait(2)
+        h.rreturn("scrub seek_ticks -32")
+        h.wait(2)
+        assert _ui(h)["visible_main_hand"] is None, (
+            f"Inside-creative scrub preview kept item in hand! {_ui(h)}"
+        )
+        h.raw_send("key enter tap")
+        h.wait(6)
+        assert _ui(h)["scrubbing"] is False
+        assert _ui(h)["visible_main_hand"] is None, (
+            f"Inside-creative scrub commit left item in visible hand! {_ui(h)}"
+        )
+        inv_b = h.inventory().get("hotbar", [])
+        assert inv_b and inv_b[0]["item"] is None, inv_b
+    finally:
+        if _ui(h).get("scrubbing"):
+            h.rreturn("scrub cancel")
+        h.rreturn("scrub off")
+        h.close_screen()
+        h.command("clear @s")
+        h.command("gamemode survival")
+        h.wait(2)
+
+
+def test_133_virtual_cursor_scrub_and_commit_warp(h):
+    """During scrub virtual cursor shows historical GUI pointer position and commit warps real cursor there."""
+    setup_clean_env(h)
+    try:
+        h.command("gamemode creative")
+        h.rreturn("scrub on")
+        h.wait(6)
+
+        h.raw_send("key e tap")
+        h.wait(3)
+        ui_open = _ui(h)
+        cb_pos = ui_open["creative_tabs"]["minecraft:colored_blocks"]
+        cx1, cy1 = int(round(cb_pos[0])), int(round(cb_pos[1]))
+        h.raw_send(f"click-at {cx1} {cy1}")
+        h.wait(16)
+        ui_t1 = _ui(h)
+        assert abs(ui_t1["cursor"][0] - cx1) <= 2.0 and abs(ui_t1["cursor"][1] - cy1) <= 2.0, ui_t1
+
+        # Move pointer to a distinct position elsewhere in the window without closing Creative
+        cx2, cy2 = cx1 + 90, cy1 + 55
+        h.raw_send(f"scroll-at {cx2} {cy2} 0")
+        h.wait(16)
+        ui_t2 = _ui(h)
+        assert abs(ui_t2["cursor"][0] - cx2) <= 2.0 and abs(ui_t2["cursor"][1] - cy2) <= 2.0, ui_t2
+
+        # Enter scrub and seek backward into T1 (cursor at cx1, cy1)
+        h.raw_send("key u tap")
+        h.wait(2)
+        h.rreturn("scrub seek_ticks -20")
+        h.wait(2)
+
+        ui_prev = _ui(h)
+        assert ui_prev["scrubbing"] is True
+        vc = ui_prev.get("virtual_cursor")
+        assert isinstance(vc, list) and len(vc) == 2, f"Expected virtual_cursor during scrub: {ui_prev}"
+        assert abs(vc[0] - cx1) <= 3.0 and abs(vc[1] - cy1) <= 3.0, (
+            f"Virtual cursor mismatch: expected ~({cx1}, {cy1}), got {vc}"
+        )
+
+        # Click HUD Apply pill (far from cx1, cy1) -> moves real mouse to apply_center & commits!
+        hud = h.rreturn("ui scrub_hud")
+        ax, ay = int(round(hud["apply_center"][0])), int(round(hud["apply_center"][1]))
+        assert abs(ax - cx1) > 10 or abs(ay - cy1) > 10, f"Apply pill too close to test coords: {hud}"
+        h.raw_send(f"click-at {ax} {ay}")
+        h.wait(4)
+
+        ui_done = _ui(h)
+        assert ui_done["scrubbing"] is False, f"Apply click did not commit scrub: {ui_done}"
+        assert ui_done.get("virtual_cursor") is None, f"Virtual cursor stayed active after commit: {ui_done}"
+        assert ui_done["pointer_captured"] is False, ui_done
+        cur = ui_done["cursor"]
+        assert abs(cur[0] - cx1) <= 3.0 and abs(cur[1] - cy1) <= 3.0, (
+            f"Real cursor did not warp to virtual cursor position ({cx1}, {cy1}) on commit! got {cur}"
+        )
+    finally:
+        if _ui(h).get("scrubbing"):
+            h.rreturn("scrub cancel")
+        h.rreturn("scrub off")
+        h.close_screen()
+        h.command("clear @s")
+        h.command("gamemode survival")
+        h.wait(2)

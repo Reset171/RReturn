@@ -1,6 +1,7 @@
 use super::super::{Dim, Game};
 use super::benchmark::*;
 use super::capture::capture_level_snapshot;
+use super::det_rng::*;
 use super::hydration::hydrate_slot_from_disk_on_server;
 use super::restore_level::apply_level_snapshot_in_place;
 use super::restore_players::{restore_offline_files, restore_players_on_rollback};
@@ -103,6 +104,7 @@ pub fn apply_timeline_snapshot_on_server(
     origin: RollbackOrigin<'_>,
 ) -> bool {
     let t_start = std::time::Instant::now();
+    mark_det_rng_server_thread(true);
     let is_scrub = matches!(origin, RollbackOrigin::ScrubSnapshot { .. });
     let prev_dim = game.dim;
     let bench_name = match origin {
@@ -180,10 +182,16 @@ pub fn apply_timeline_snapshot_on_server(
         game.clock.set_rate(snap.clock_rate);
         game.clock.set_frozen(snap.clock_frozen);
     }
+    if snap.det_rng_uniquifier != 0 {
+        set_det_rng_uniquifier(snap.det_rng_uniquifier);
+    }
     if policy.world_level_rng {
-        let _ = horizon_client::random_source::set_thread_uniquifier(
-            game.level.seed ^ snap.game_time.wrapping_mul(0x9E37_79B9_7F4A_7C15_u64 as i64),
-        );
+        let u = if snap.det_rng_uniquifier != 0 {
+            snap.det_rng_uniquifier
+        } else {
+            game.level.seed ^ snap.game_time.wrapping_mul(0x9E37_79B9_7F4A_7C15_u64 as i64)
+        };
+        let _ = horizon_client::random_source::set_thread_uniquifier(u);
     }
     game.portals = Default::default();
     game.load_portal_arrivals();
@@ -285,17 +293,17 @@ pub fn apply_timeline_snapshot_on_server(
     game.adv.unlocked.clear();
     game.adv.announced.clear();
     let mut restored_next = snap.next_entity.max(other_dims_entity_ceiling(target_dim));
-    while game
-        .lan
-        .as_ref()
-        .is_some_and(|h| h.hub.tracks(restored_next as i32))
-    {
-        restored_next = restored_next.saturating_add(1);
+    if let Some(host) = game.lan.as_ref() {
+        for g in host.hub.guests.as_slice() {
+            if g.entity_id >= 0 {
+                restored_next = restored_next.max(g.entity_id as u32);
+            }
+        }
     }
     bump_session_entity_ceiling(restored_next, target_dim);
     game.next_entity = restored_next;
     game.ticked_entities_through = snap.ticked_entities_through.max(restored_next);
-    game.ordered.announced = snap.ordered_announced;
+    game.rreturn_restore_ordered_state(&snap.ordered_state);
     game.creatures.cat.next_tick = snap.cat_tick;
     game.stats.rreturn_set_phantom_tick(snap.phantom_tick);
     game.level.player_extra = snap.player_extra.clone();

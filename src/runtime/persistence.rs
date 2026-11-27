@@ -8,18 +8,88 @@ use horizon_client::{
     effects::{PlayerEffects, SavedEffect},
     save::write_dat,
 };
-use horizon_core::geometry::Direction;
+use horizon_core::{
+    geometry::Direction,
+    ticks::{ChunkTicks, ScheduledTick},
+};
 use horizon_world::{
     level::MovingPiston,
     nbt::Tag,
 };
 use std::{
+    collections::HashMap,
     fs,
     io::Write,
     path::Path,
 };
 
+/// Serializes live pending and queued ticks per chunk, preserving both queues intact.
+fn encode_chunk_ticks_map(
+    chunk_ticks: &HashMap<(i32, i32), (ChunkTicks, ChunkTicks)>,
+    fluid: bool,
+    game_time: i64,
+) -> Vec<serde_json::Value> {
+    let mut keys: Vec<(i32, i32)> = chunk_ticks.keys().copied().collect();
+    keys.sort_unstable();
+    let mut out = Vec::new();
+    for (cx, cz) in keys {
+        let Some((bt, ft)) = chunk_ticks.get(&(cx, cz)) else {
+            continue;
+        };
+        let ct = if fluid { ft } else { bt };
+        if ct.count() == 0 {
+            continue;
+        }
+        let pending_len = ct.count().saturating_sub(ct.queued().len());
+        let encoded_pending: Vec<serde_json::Value> = if pending_len > 0 {
+            ct.pack(game_time)
+                .into_iter()
+                .take(pending_len)
+                .map(|s| {
+                    serde_json::json!([
+                        s.kind.0,
+                        s.pos.x,
+                        s.pos.y,
+                        s.pos.z,
+                        s.delay,
+                        s.priority as i8
+                    ])
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let mut ticks = ct.queued().to_vec();
+        ticks.sort_by_key(|t| (t.trigger_tick, t.priority as i8, t.sub_tick_order));
+        let encoded_queued: Vec<serde_json::Value> = ticks
+            .into_iter()
+            .map(|t| {
+                serde_json::json!([
+                    t.kind.0,
+                    t.pos.x,
+                    t.pos.y,
+                    t.pos.z,
+                    t.trigger_tick,
+                    t.priority as i8,
+                    t.sub_tick_order
+                ])
+            })
+            .collect();
+        out.push(serde_json::json!([cx, cz, encoded_pending, encoded_queued]));
+    }
+    out
+}
+
 pub fn save_slot_to_disk(world_root: &Path, slot: &str, snap: &TimelineSnapshot) -> bool {
+    save_slot_to_disk_with_facts(world_root, slot, snap, None)
+}
+
+pub fn save_slot_to_disk_with_facts(
+    world_root: &Path,
+    slot: &str,
+    snap: &TimelineSnapshot,
+    facts: Option<&horizon_client::blocks::BlockFacts>,
+) -> bool {
     let clean = slot.trim();
     if !is_valid_slot_name(clean) {
         return false;
@@ -100,14 +170,37 @@ pub fn save_slot_to_disk(world_root: &Path, slot: &str, snap: &TimelineSnapshot)
             ("guest_attachments", Tag::List(guest_att_list)),
             ("entity_attachments", Tag::List(entity_att_list)),
         ];
-        if let Some(ls) = snap.levels.get(&Dim::Overworld) {
-            globals_entries.push(("border_overworld", ls.border.pack()));
-        }
-        if let Some(ls) = snap.levels.get(&Dim::Nether) {
-            globals_entries.push(("border_nether", ls.border.pack()));
-        }
-        if let Some(ls) = snap.levels.get(&Dim::End) {
-            globals_entries.push(("border_end", ls.border.pack()));
+        for (dim, border_key, be_key) in [
+            (Dim::Overworld, "border_overworld", "block_entities_overworld"),
+            (Dim::Nether, "border_nether", "block_entities_nether"),
+            (Dim::End, "border_end", "block_entities_end"),
+        ] {
+            if let Some(ls) = snap.levels.get(&dim) {
+                globals_entries.push((border_key, ls.border.pack()));
+                if let Some(facts) = facts {
+                    let mut be_pos: Vec<(i32, i32, i32)> =
+                        ls.block_entities.keys().copied().collect();
+                    be_pos.sort_unstable();
+                    let encoded: Vec<Tag> = be_pos
+                        .into_iter()
+                        .filter(|p| p.1 != horizon_gameplay::minecarts::CART_KEY_Y)
+                        .filter_map(|p| {
+                            let be = ls.block_entities.get(&p)?;
+                            let bname = ls
+                                .chunks
+                                .get(&(p.0 >> 4, p.2 >> 4))
+                                .map(|c| {
+                                    facts.get(c.block(p.0 & 15, p.1, p.2 & 15)).name.as_ref()
+                                })
+                                .unwrap_or("minecraft:stone");
+                            Some(horizon_client::save::block_entity_encode::encode(
+                                p, be, bname,
+                            ))
+                        })
+                        .collect();
+                    globals_entries.push((be_key, Tag::List(encoded)));
+                }
+            }
         }
         if let Some(ft) = &snap.fight_tag {
             globals_entries.push(("fight_state", ft.clone()));
@@ -312,6 +405,7 @@ pub fn save_slot_to_disk(world_root: &Path, slot: &str, snap: &TimelineSnapshot)
 
         let mut loaded_chunks_json = serde_json::Map::new();
         let mut level_rng_json = serde_json::Map::new();
+        let mut level_rng_gaussian_json = serde_json::Map::new();
         let mut random_tick_values_json = serde_json::Map::new();
         let mut end_clocks_json = serde_json::Map::new();
         let mut level_redstone_json = serde_json::Map::new();
@@ -321,6 +415,10 @@ pub fn save_slot_to_disk(world_root: &Path, slot: &str, snap: &TimelineSnapshot)
             coords.sort_unstable();
             loaded_chunks_json.insert(dim.id().to_owned(), serde_json::json!(coords));
             level_rng_json.insert(dim.id().to_owned(), serde_json::json!(lsnap.random.state()));
+            level_rng_gaussian_json.insert(
+                dim.id().to_owned(),
+                serde_json::json!(lsnap.random.cached_gaussian().map(f64::to_bits)),
+            );
             random_tick_values_json.insert(
                 dim.id().to_owned(),
                 serde_json::json!(lsnap.random_tick_value),
@@ -367,6 +465,8 @@ pub fn save_slot_to_disk(world_root: &Path, slot: &str, snap: &TimelineSnapshot)
                 .iter()
                 .map(|(k, v)| serde_json::json!([k, v]))
                 .collect();
+            let died_list: Vec<serde_json::Value> =
+                lsnap.died.iter().map(|&id| serde_json::json!(id)).collect();
             let uuids_list: Vec<serde_json::Value> = lsnap
                 .persist_uuids
                 .iter()
@@ -403,6 +503,9 @@ pub fn save_slot_to_disk(world_root: &Path, slot: &str, snap: &TimelineSnapshot)
                         serde_json::json!(vec_arr),
                         serde_json::json!(m.extra.ints),
                         serde_json::json!(m.extra.adopted_body.is_some()),
+                        serde_json::json!(m.random.cached_gaussian().map(f64::to_bits)),
+                        serde_json::to_value(DiskMobExtra::from_mob(m))
+                            .unwrap_or(serde_json::Value::Null),
                     ])
                 })
                 .collect();
@@ -414,7 +517,10 @@ pub fn save_slot_to_disk(world_root: &Path, slot: &str, snap: &TimelineSnapshot)
                         d.id,
                         d.ticks,
                         d.bob_offset.to_bits(),
-                        d.random.state()
+                        d.random.state(),
+                        d.random.cached_gaussian().map(f64::to_bits),
+                        serde_json::to_value(DiskItemExtra::from_item(d))
+                            .unwrap_or(serde_json::Value::Null)
                     ])
                 })
                 .collect();
@@ -518,7 +624,11 @@ pub fn save_slot_to_disk(world_root: &Path, slot: &str, snap: &TimelineSnapshot)
                     })
                 })
                 .collect();
-            let mut rs_obj = serde_json::Map::with_capacity(22);
+            let chunk_block_ticks_rt =
+                encode_chunk_ticks_map(&lsnap.chunk_ticks, false, snap.game_time);
+            let chunk_fluid_ticks_rt =
+                encode_chunk_ticks_map(&lsnap.chunk_ticks, true, snap.game_time);
+            let mut rs_obj = serde_json::Map::with_capacity(25);
             rs_obj.insert("comparator_outputs".to_owned(), serde_json::Value::Array(comps));
             rs_obj.insert("torch_toggles".to_owned(), serde_json::Value::Array(torches));
             rs_obj.insert("moving_pistons".to_owned(), serde_json::Value::Array(moving));
@@ -526,6 +636,7 @@ pub fn save_slot_to_disk(world_root: &Path, slot: &str, snap: &TimelineSnapshot)
             rs_obj.insert("block_events".to_owned(), serde_json::Value::Array(events));
             rs_obj.insert("last_hurt_by_player".to_owned(), serde_json::Value::Array(hurt_by));
             rs_obj.insert("love_cause".to_owned(), serde_json::Value::Array(love));
+            rs_obj.insert("died".to_owned(), serde_json::Value::Array(died_list));
             rs_obj.insert("persist_uuids".to_owned(), serde_json::Value::Array(uuids_list));
             rs_obj.insert("mob_runtime".to_owned(), serde_json::Value::Array(mob_rt));
             rs_obj.insert("item_runtime".to_owned(), serde_json::Value::Array(item_rt));
@@ -541,6 +652,30 @@ pub fn save_slot_to_disk(world_root: &Path, slot: &str, snap: &TimelineSnapshot)
             rs_obj.insert("boat_velocities".to_owned(), serde_json::Value::Array(boat_vels));
             rs_obj.insert("cart_velocities".to_owned(), serde_json::Value::Array(cart_vels));
             rs_obj.insert("projectiles".to_owned(), serde_json::Value::Array(projectiles_rt));
+            let inhabited_rt: Vec<serde_json::Value> = {
+                let mut keys: Vec<(i32, i32)> = lsnap.inhabited.keys().copied().collect();
+                keys.sort_unstable();
+                keys.into_iter()
+                    .filter_map(|k| {
+                        lsnap
+                            .inhabited
+                            .get(&k)
+                            .map(|&v| serde_json::json!([k.0, k.1, v]))
+                    })
+                    .collect()
+            };
+            rs_obj.insert(
+                "chunk_block_ticks".to_owned(),
+                serde_json::Value::Array(chunk_block_ticks_rt),
+            );
+            rs_obj.insert(
+                "chunk_fluid_ticks".to_owned(),
+                serde_json::Value::Array(chunk_fluid_ticks_rt),
+            );
+            rs_obj.insert(
+                "inhabited".to_owned(),
+                serde_json::Value::Array(inhabited_rt),
+            );
             level_redstone_json.insert(dim.id().to_owned(), serde_json::Value::Object(rs_obj));
         }
 
@@ -688,6 +823,10 @@ pub fn save_slot_to_disk(world_root: &Path, slot: &str, snap: &TimelineSnapshot)
             serde_json::json!(snap.sound_seed_state),
         );
         meta_map.insert(
+            "det_rng_uniquifier".to_owned(),
+            serde_json::json!(snap.det_rng_uniquifier),
+        );
+        meta_map.insert(
             "cmd_post_effects".to_owned(),
             serde_json::json!(snap.cmd_post_effects),
         );
@@ -704,6 +843,10 @@ pub fn save_slot_to_disk(world_root: &Path, slot: &str, snap: &TimelineSnapshot)
             serde_json::Value::Object(loaded_chunks_json),
         );
         meta_map.insert("level_rng".to_owned(), serde_json::Value::Object(level_rng_json));
+        meta_map.insert(
+            "level_rng_gaussian".to_owned(),
+            serde_json::Value::Object(level_rng_gaussian_json),
+        );
         meta_map.insert(
             "random_tick_values".to_owned(),
             serde_json::Value::Object(random_tick_values_json),

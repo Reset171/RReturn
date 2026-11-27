@@ -83,6 +83,8 @@ pub struct AnchorClientState {
     pub inventory: Vec<Option<ItemStack>>,
     pub armor: [Option<ItemStack>; 4],
     pub offhand: Option<ItemStack>,
+    pub visible_hands: [(usize, Option<ItemStack>); 2],
+    pub hands_replaced: [bool; 2],
     pub using: Option<(usize, u32)>,
     pub use_duration: i32,
     pub fov_modifier: f32,
@@ -199,6 +201,8 @@ fn capture_anchor_client_state(game: &mut Game<'_>) -> AnchorClientState {
         inventory: game.inventory.clone(),
         armor: game.armor.clone(),
         offhand: game.offhand.clone(),
+        visible_hands: game.rreturn_hand_visual_state().0,
+        hands_replaced: game.rreturn_hand_visual_state().1,
         using: game.using,
         use_duration: game.use_duration,
         fov_modifier: game.view.fov_modifier,
@@ -366,6 +370,7 @@ fn restore_anchor_client_state(game: &mut Game<'_>, anchor: AnchorClientState) {
     game.avatar.bob_o = anchor.bob;
     game.snap_player_model_pitch();
     restore_client_ui_on_rollback(game, &anchor.ui, &RollbackPolicy::default());
+    game.rreturn_set_hand_visual_state(anchor.visible_hands, anchor.hands_replaced);
 }
 
 pub struct ScrubSession {
@@ -482,6 +487,36 @@ pub fn sync_pointer_capture_after_scrub(game: &mut Game<'_>) {
     }
 }
 
+fn next_remote_fence_nonce() -> u64 {
+    static FENCE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    FENCE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+fn send_owner_remote_fence(srv: &Game<'_>, nonce: u64) -> bool {
+    let Some(host) = srv.lan.as_ref() else {
+        return false;
+    };
+    let owner_uuid = host.owner.as_ref().map(|o| o.uuid);
+    let pkt = C::CustomPayload(horizon_protocol::packets::custom_payload::CustomPayload {
+        channel: "rreturn:fence".to_owned(),
+        data: nonce.to_le_bytes().to_vec(),
+    });
+    let Ok(body) = pkt.try_encode() else {
+        return false;
+    };
+    for g in host.hub.guests.as_slice() {
+        if g.address == horizon_client::lan::conn::MEMORY_ADDRESS
+            && owner_uuid.is_none_or(|u| g.uuid == u)
+            && g.participates_online()
+        {
+            g.sender.flush();
+            g.sender.send(body.clone());
+            return true;
+        }
+    }
+    false
+}
+
 pub fn start_scrub(game: &mut Game<'_>) {
     if !with_state(|st| st.scrub_enabled) {
         mod_chat(game, &tr("command.rreturn.scrub.disabled"));
@@ -495,17 +530,48 @@ pub fn start_scrub(game: &mut Game<'_>) {
         mod_chat(game, &tr("command.rreturn.no_permission"));
         return;
     }
-    let server_range = if let Some(server) = &game.integrated {
-        let (rng, players) = server
-            .call(|srv| (server_scrub_time_range(), collect_online_players(srv)))
-            .unwrap_or((None, Vec::new()));
-        if !players.is_empty() {
-            with_state_mut(|st| st.online_players = players);
-        }
-        rng
+    if session_lock().lock().is_ok_and(|s| s.active) {
+        return;
+    }
+
+    // Freeze the integrated server before reading its time range or draining client packets so
+    // any in-flight explosion/block updates settle cleanly into `anchor` and `frames`.
+    let start_fence = next_remote_fence_nonce();
+    let (srv_frozen, server_range, players, fenced) = if let Some(server) = &game.integrated {
+        server
+            .call(move |srv| {
+                let prev = srv.clock.frozen();
+                srv.clock.set_frozen(true);
+                if let Some(host) = srv.lan.as_ref() {
+                    let pkt = C::TickingState(play::TickingState {
+                        rate: srv.clock.rate(),
+                        frozen: true,
+                    });
+                    host.hub.broadcast_level(&pkt);
+                }
+                let fenced = send_owner_remote_fence(srv, start_fence);
+                (
+                    prev,
+                    server_scrub_time_range(),
+                    collect_online_players(srv),
+                    fenced,
+                )
+            })
+            .unwrap_or((game.clock.frozen(), None, Vec::new(), false))
     } else {
-        server_scrub_time_range()
+        (game.clock.frozen(), server_scrub_time_range(), Vec::new(), false)
     };
+    if !players.is_empty() {
+        with_state_mut(|st| st.online_players = players);
+    }
+
+    if game.remote.is_some() {
+        game.rreturn_drain_remote_until_fence(fenced.then_some(start_fence), false);
+    }
+
+    with_scrub_ring_mut(|r| {
+        r.flush_pending_deltas_for_scrub_start(game);
+    });
 
     let mut s = match session_lock().lock() {
         Ok(guard) => guard,
@@ -535,7 +601,7 @@ pub fn start_scrub(game: &mut Game<'_>) {
     s.start_time = Some(Instant::now());
     s.applied_block_tick = s.anchor_tick;
     s.was_frozen_before_scrub = game.clock.frozen();
-    let was_frozen = s.was_frozen_before_scrub;
+    s.server_was_frozen_before_scrub = srv_frozen;
     let start_t = s.current_time;
     SCRUB_ACTIVE.store(true, std::sync::atomic::Ordering::Release);
     drop(s);
@@ -547,40 +613,11 @@ pub fn start_scrub(game: &mut Game<'_>) {
     reset_scrub_ui_preview_cache();
     reset_scrub_hud_state();
 
-    with_scrub_ring_mut(|r| {
-        if r.reference_chunks.is_empty() {
-            r.reference_chunks = (&*game.world.chunks).clone();
-            r.last_world_revision = game.world.revision;
-        }
-    });
-
     game.stop_mining();
     if let Some(c) = game.audio.capture.as_mut() {
         c.clear();
     }
     game.clock.set_frozen(true);
-
-    let srv_frozen = if let Some(server) = &game.integrated {
-        server
-            .call(|srv| {
-                let prev = srv.clock.frozen();
-                srv.clock.set_frozen(true);
-                if let Some(host) = srv.lan.as_ref() {
-                    let pkt = C::TickingState(play::TickingState {
-                        rate: srv.clock.rate(),
-                        frozen: true,
-                    });
-                    host.hub.broadcast_level(&pkt);
-                }
-                prev
-            })
-            .unwrap_or(false)
-    } else {
-        was_frozen
-    };
-    if let Ok(mut s) = session_lock().lock() {
-        s.server_was_frozen_before_scrub = srv_frozen;
-    }
 
     if let Some(r) = game.remote.as_mut() {
         r.stepped.clear();
@@ -736,7 +773,6 @@ pub fn commit_scrub(game: &mut Game<'_>) {
     let was_frozen = s.was_frozen_before_scrub;
     let srv_was_frozen = s.server_was_frozen_before_scrub;
     s.active = false;
-    SCRUB_ACTIVE.store(false, std::sync::atomic::Ordering::Release);
     s.start_time = None;
     s.jog_accel = 1.0;
     s.applied_block_tick = final_tick;
@@ -747,6 +783,7 @@ pub fn commit_scrub(game: &mut Game<'_>) {
     reset_scrub_ui_preview_cache();
     reset_scrub_hud_state();
 
+    let mut commit_virtual_cursor: Option<[f32; 2]> = None;
     if final_tick < anchor {
         let target_ui: Option<ClientUiSnapshot> = with_scrub_ring(|r| {
             r.frames
@@ -756,9 +793,11 @@ pub fn commit_scrub(game: &mut Game<'_>) {
         });
         let t_commit_start = std::time::Instant::now();
         apply_interpolated_poses_to_game(game, final_time);
+        commit_virtual_cursor = take_scrub_virtual_cursor();
         game.extras.frame_partial_ticks = None;
 
-        let (did_rollback, restored_frozen, mat_us, srb_us) = if let Some(server) = &game.integrated {
+        let commit_fence = next_remote_fence_nonce();
+        let (did_rollback, restored_frozen, commit_fenced, mat_us, srb_us) = if let Some(server) = &game.integrated {
             server
                 .call(move |srv| {
                     let t_mat_0 = std::time::Instant::now();
@@ -781,6 +820,9 @@ pub fn commit_scrub(game: &mut Game<'_>) {
                             truncate_server_scrub_after(snap.game_time);
                         }
                         let frozen = srv.clock.frozen();
+                        if !frozen {
+                            srv.clock.set_frozen(true);
+                        }
                         if let Some(host) = srv.lan.as_ref() {
                             let pkt = C::TickingState(play::TickingState {
                                 rate: srv.clock.rate(),
@@ -788,13 +830,14 @@ pub fn commit_scrub(game: &mut Game<'_>) {
                             });
                             host.hub.broadcast_level(&pkt);
                         }
-                        (ok, frozen, mat_us, srb_us)
+                        let fenced = send_owner_remote_fence(srv, commit_fence);
+                        (ok, frozen, fenced, mat_us, srb_us)
                     } else {
                         srv.clock.set_frozen(srv_was_frozen);
-                        (false, srv_was_frozen, 0, 0)
+                        (false, srv_was_frozen, false, 0, 0)
                     }
                 })
-                .unwrap_or((false, was_frozen, 0, 0))
+                .unwrap_or((false, was_frozen, false, 0, 0))
         } else {
             let t_mat_0 = std::time::Instant::now();
             if let Some((snap, touched_unloaded, future_region_files)) =
@@ -815,18 +858,22 @@ pub fn commit_scrub(game: &mut Game<'_>) {
                 if ok {
                     truncate_server_scrub_after(snap.game_time);
                 }
-                (ok, game.clock.frozen(), mat_us, srb_us)
+                (ok, game.clock.frozen(), false, mat_us, srb_us)
             } else {
-                (false, was_frozen, 0, 0)
+                (false, was_frozen, false, 0, 0)
             }
         };
 
         let mut crb_us = 0;
         if did_rollback {
+            if game.remote.is_some() {
+                game.rreturn_drain_remote_until_fence(commit_fenced.then_some(commit_fence), true);
+            }
             close_client_container_local(game);
             game.screen = super::super::Screen::Playing;
             let t_crb_0 = std::time::Instant::now();
             apply_client_level_rollback(game, "scrub");
+            SCRUB_ACTIVE.store(false, std::sync::atomic::Ordering::Release);
             if let Some(ui) = target_ui {
                 let pol = resolve_local_client_policy(game, true);
                 restore_client_ui_on_rollback(game, &ui, &pol);
@@ -849,8 +896,21 @@ pub fn commit_scrub(game: &mut Game<'_>) {
                     }
                 }
             });
-        } else if let Some(anchor_state) = saved_anchor {
-            restore_anchor_client_state(game, anchor_state);
+            if !restored_frozen && let Some(server) = &game.integrated {
+                let _ = server.call(|srv| {
+                    srv.clock.set_frozen(false);
+                });
+            }
+        } else {
+            SCRUB_ACTIVE.store(false, std::sync::atomic::Ordering::Release);
+            if let Some(anchor_state) = saved_anchor {
+                restore_anchor_client_state(game, anchor_state);
+            }
+            if !restored_frozen && let Some(server) = &game.integrated {
+                let _ = server.call(|srv| {
+                    srv.clock.set_frozen(false);
+                });
+            }
         }
 
         let total_commit_us = t_commit_start.elapsed().as_micros() as u64;
@@ -882,6 +942,7 @@ pub fn commit_scrub(game: &mut Game<'_>) {
         let dt_str = format!("{:.1}", dt);
         mod_chat(game, &tr_args("message.rreturn.scrub.commit", &[&dt_str]));
     } else {
+        SCRUB_ACTIVE.store(false, std::sync::atomic::Ordering::Release);
         if let Some(anchor_state) = saved_anchor {
             restore_anchor_client_state(game, anchor_state);
         }
@@ -907,6 +968,11 @@ pub fn commit_scrub(game: &mut Game<'_>) {
     }
     clear_sprint_on_commit(game);
     sync_pointer_capture_after_scrub(game);
+    if !game.rreturn_pointer_captured()
+        && let Some([vx, vy]) = commit_virtual_cursor
+    {
+        game.rreturn_warp_cursor(vx, vy);
+    }
 }
 
 pub fn cancel_scrub(game: &mut Game<'_>) {

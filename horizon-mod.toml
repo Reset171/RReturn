@@ -109,6 +109,32 @@ file = "crates/horizon-client/src/game/interface/pointer_capture.rs"
 name = "rreturn_pointer_capture"
 source = "src/ext/pointer_capture_ext.rs"
 
+[[native.module]]
+id = "perspective_ext"
+file = "crates/horizon-client/src/game/interface/perspective.rs"
+name = "rreturn_perspective"
+source = "src/ext/perspective_ext.rs"
+
+[[native.module]]
+id = "hand_ext"
+file = "crates/horizon-client/src/game/items/hand.rs"
+name = "rreturn_hand"
+source = "src/ext/hand_ext.rs"
+
+[[native.module]]
+id = "ordered_ext"
+file = "crates/horizon-client/src/game/world/ordered_tick.rs"
+name = "rreturn_ordered"
+source = "src/ext/ordered_ext.rs"
+
+[[native.mixin]]
+id = "remote-poll-pre"
+target = "horizon_client::game::remote::Game<'_>::poll_remote"
+kind = "HEAD"
+cancellable = true
+helper = "src/hooks/hook_poll_remote_pre.rs"
+bindings = []
+
 [[native.mixin]]
 id = "remote-open-screen-pre"
 target = "horizon_client::game::remote::Game<'_>::remote_open_screen"
@@ -571,5 +597,259 @@ helper = "src/hooks/hook_draw_studio_bars.rs"
 bindings = [
   { name = "game", ty = "&Game<'_>", value = "&*self" },
   { name = "draw", ty = "&mut horizon_client::hud::HudBatch", value = "&mut *batch" },
+]
+
+[[native.mixin]]
+id = "det-rng-spill-item"
+target = "horizon_client::game::spill::prepare_item_random"
+kind = "WRAP_OPERATION"
+selector = "horizon_client::random_source::entity"
+ordinal = 0
+require = 1
+helper = "src/hooks/hook_det_entity_rng.rs"
+bindings = [
+  { name = "op", ty = "impl FnOnce() -> horizon_core::random::LegacyRandom", value = "$operation" },
+]
+
+[[native.mixin]]
+id = "det-rng-add-tnt"
+target = "horizon_client::game::tnt::Game<'_>::add_primed_tnt"
+kind = "WRAP_OPERATION"
+selector = "horizon_client::random_source::entity"
+ordinal = 0
+require = 1
+helper = "src/hooks/hook_det_entity_rng.rs"
+bindings = [
+  { name = "op", ty = "impl FnOnce() -> horizon_core::random::LegacyRandom", value = "$operation" },
+]
+
+[[native.mixin]]
+id = "det-rng-load-item-transferred"
+target = "horizon_client::game::persist::object_memory::Game<'_>::load_item_transferred"
+kind = "WRAP_OPERATION"
+selector = "random_source::entity"
+ordinal = 0
+require = 1
+helper = "src/hooks/hook_det_entity_rng.rs"
+bindings = [
+  { name = "op", ty = "impl FnOnce() -> horizon_core::random::LegacyRandom", value = "$operation" },
+]
+
+[[native.mixin]]
+id = "det-rng-constructor-uuid"
+target = "horizon_client::game::persist::with_constructor_uuid"
+kind = "WRAP_OPERATION"
+selector = "random_source::entity"
+ordinal = 0
+require = 1
+helper = "src/hooks/hook_det_entity_rng.rs"
+bindings = [
+  { name = "op", ty = "impl FnOnce() -> horizon_core::random::LegacyRandom", value = "$operation" },
+]
+
+[[native.mixin]]
+id = "det-rng-add-orb"
+target = "horizon_client::game::item_entities::Game<'_>::add_orb_toward"
+kind = "WRAP_OPERATION"
+selector = "random_source::entity"
+ordinal = 0
+require = 1
+helper = "src/hooks/hook_det_entity_rng.rs"
+bindings = [
+  { name = "op", ty = "impl FnOnce() -> horizon_core::random::LegacyRandom", value = "$operation" },
+]
+
+[[native.mixin]]
+id = "det-rng-drop-inventory"
+target = "horizon_client::game::item_entities::Game<'_>::drop_inventory"
+kind = "WRAP_OPERATION"
+selector = "random_source::entity"
+ordinal = 0
+require = 1
+helper = "src/hooks/hook_det_entity_rng.rs"
+bindings = [
+  { name = "op", ty = "impl FnOnce() -> horizon_core::random::LegacyRandom", value = "$operation" },
+]
+
+[[native.mixin]]
+id = "det-rng-throw-eyes"
+target = "horizon_client::game::item_entities::Game<'_>::throw_from_eyes"
+kind = "WRAP_OPERATION"
+selector = "random_source::entity"
+ordinal = 0
+require = 1
+helper = "src/hooks/hook_det_entity_rng.rs"
+bindings = [
+  { name = "op", ty = "impl FnOnce() -> horizon_core::random::LegacyRandom", value = "$operation" },
+]
+
+[[native.mixin]]
+id = "det-rng-firework-launch"
+target = "horizon_client::game::fireworks::Game<'_>::launch_firework"
+kind = "WRAP_OPERATION"
+selector = "random_source::entity"
+ordinal = 0
+require = 1
+helper = "src/hooks/hook_det_entity_rng.rs"
+bindings = [
+  { name = "op", ty = "impl FnOnce() -> horizon_core::random::LegacyRandom", value = "$operation" },
+]
+
+[[native.mixin]]
+id = "det-rng-firework-boost"
+target = "horizon_client::game::fireworks::Game<'_>::boost_firework"
+kind = "WRAP_OPERATION"
+selector = "random_source::entity"
+ordinal = 0
+require = 1
+helper = "src/hooks/hook_det_entity_rng.rs"
+bindings = [
+  { name = "op", ty = "impl FnOnce() -> horizon_core::random::LegacyRandom", value = "$operation" },
+]
+
+[[native.mixin]]
+id = "det-rng-item-frame"
+target = "horizon_client::game::frames::Game<'_>::place_item_frame"
+kind = "WRAP_OPERATION"
+selector = "horizon_client::random_source::entity"
+ordinal = 0
+require = 1
+helper = "src/hooks/hook_det_entity_rng.rs"
+bindings = [
+  { name = "op", ty = "impl FnOnce() -> horizon_core::random::LegacyRandom", value = "$operation" },
+]
+
+[[native.mixin]]
+id = "det-rng-painting"
+target = "horizon_client::game::paintings::Game<'_>::place_painting"
+kind = "WRAP_OPERATION"
+selector = "random_source::entity"
+ordinal = 0
+require = 1
+helper = "src/hooks/hook_det_entity_rng.rs"
+bindings = [
+  { name = "op", ty = "impl FnOnce() -> horizon_core::random::LegacyRandom", value = "$operation" },
+]
+
+[[native.mixin]]
+id = "det-rng-lightning"
+target = "horizon_client::game::lightning::Game<'_>::spawn_bolt"
+kind = "WRAP_OPERATION"
+selector = "random_source::entity"
+ordinal = 0
+require = 1
+helper = "src/hooks/hook_det_entity_rng.rs"
+bindings = [
+  { name = "op", ty = "impl FnOnce() -> horizon_core::random::LegacyRandom", value = "$operation" },
+]
+
+[[native.mixin]]
+id = "det-rng-place-armor-stand"
+target = "horizon_client::game::armor_stands::Game<'_>::place_armor_stand"
+kind = "WRAP_OPERATION"
+selector = "horizon_client::mobs::living_random"
+ordinal = 0
+require = 1
+helper = "src/hooks/hook_det_living_rng.rs"
+bindings = [
+  { name = "op", ty = "impl FnOnce() -> (horizon_core::random::EntityRandom, [i32; 4])", value = "$operation" },
+]
+
+[[native.mixin]]
+id = "det-rng-dispense-armor-stand"
+target = "horizon_client::game::dispenser::Game<'_>::dispense_armor_stand"
+kind = "WRAP_OPERATION"
+selector = "horizon_client::mobs::living_random"
+ordinal = 0
+require = 1
+helper = "src/hooks/hook_det_living_rng.rs"
+bindings = [
+  { name = "op", ty = "impl FnOnce() -> (horizon_core::random::EntityRandom, [i32; 4])", value = "$operation" },
+]
+
+[[native.mixin]]
+id = "det-rng-tick-beehive-pre"
+target = "horizon_client::game::beehives::Game<'_>::tick_beehive"
+kind = "HEAD"
+helper = "src/hooks/hook_det_mob_mark.rs"
+bindings = [
+  { name = "game", ty = "&Game<'_>", value = "&*self" },
+]
+
+[[native.mixin]]
+id = "det-rng-tick-beehive-post"
+target = "horizon_client::game::beehives::Game<'_>::tick_beehive"
+kind = "RETURN"
+helper = "src/hooks/hook_det_mob_reseed_mark.rs"
+bindings = [
+  { name = "_val", ty = "()", value = "$value" },
+  { name = "game", ty = "&mut Game<'_>", value = "&mut *self" },
+]
+
+[[native.mixin]]
+id = "det-rng-empty-hive-pre"
+target = "horizon_client::game::beehives::Game<'_>::empty_hive"
+kind = "HEAD"
+helper = "src/hooks/hook_det_mob_mark.rs"
+bindings = [
+  { name = "game", ty = "&Game<'_>", value = "&*self" },
+]
+
+[[native.mixin]]
+id = "det-rng-empty-hive-post"
+target = "horizon_client::game::beehives::Game<'_>::empty_hive"
+kind = "RETURN"
+helper = "src/hooks/hook_det_mob_reseed_mark.rs"
+bindings = [
+  { name = "_val", ty = "()", value = "$value" },
+  { name = "game", ty = "&mut Game<'_>", value = "&mut *self" },
+]
+
+[[native.mixin]]
+id = "det-rng-broken-hive-pre"
+target = "horizon_client::game::beehives::Game<'_>::hive_broken_by_player"
+kind = "HEAD"
+helper = "src/hooks/hook_det_mob_mark.rs"
+bindings = [
+  { name = "game", ty = "&Game<'_>", value = "&*self" },
+]
+
+[[native.mixin]]
+id = "det-rng-broken-hive-post"
+target = "horizon_client::game::beehives::Game<'_>::hive_broken_by_player"
+kind = "RETURN"
+helper = "src/hooks/hook_det_mob_reseed_mark.rs"
+bindings = [
+  { name = "_val", ty = "()", value = "$value" },
+  { name = "game", ty = "&mut Game<'_>", value = "&mut *self" },
+]
+
+[[native.mixin]]
+id = "det-rng-spawn-loaded-pre"
+target = "horizon_client::game::persist::loaded_pass::Game<'_>::spawn_loaded_entities"
+kind = "HEAD"
+helper = "src/hooks/hook_det_mob_mark.rs"
+bindings = [
+  { name = "game", ty = "&Game<'_>", value = "&*self" },
+]
+
+[[native.mixin]]
+id = "det-rng-spawn-loaded-post"
+target = "horizon_client::game::persist::loaded_pass::Game<'_>::spawn_loaded_entities"
+kind = "RETURN"
+helper = "src/hooks/hook_det_mob_reseed_mark.rs"
+bindings = [
+  { name = "_val", ty = "()", value = "$value" },
+  { name = "game", ty = "&mut Game<'_>", value = "&mut *self" },
+]
+
+[[native.mixin]]
+id = "det-rng-mobs-joined"
+target = "horizon_client::game::native_hooks::Game<'_>::native_mobs_joined"
+kind = "HEAD"
+helper = "src/hooks/hook_det_mobs_joined.rs"
+bindings = [
+  { name = "game", ty = "&mut Game<'_>", value = "&mut *self" },
+  { name = "from", ty = "usize", value = "from" },
 ]
 

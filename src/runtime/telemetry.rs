@@ -1,6 +1,70 @@
 use super::super::Game;
 use super::types::*;
 
+fn fnv_mix_u64(h: &mut u64, v: u64) {
+    *h ^= v;
+    *h = h.wrapping_mul(0x1000_0000_01b3);
+}
+
+fn fnv_mix_bytes(h: &mut u64, bytes: &[u8]) {
+    for &b in bytes {
+        *h ^= u64::from(b);
+        *h = h.wrapping_mul(0x1000_0000_01b3);
+    }
+}
+
+/// Computes an entity-ID-independent FNV-1a digest over server mobs, drops, and primed TNT.
+fn server_entities_digest(game: &Game<'_>) -> String {
+    let mut item_hashes: Vec<u64> = Vec::with_capacity(game.mobs.len() + game.dropped.len() + game.tnts.len());
+    for m in game.mobs.iter() {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        fnv_mix_u64(&mut h, 1);
+        fnv_mix_bytes(&mut h, m.kind.id.as_bytes());
+        fnv_mix_u64(&mut h, m.position.x.to_bits());
+        fnv_mix_u64(&mut h, m.position.y.to_bits());
+        fnv_mix_u64(&mut h, m.position.z.to_bits());
+        fnv_mix_u64(&mut h, m.velocity.x.to_bits());
+        fnv_mix_u64(&mut h, m.velocity.y.to_bits());
+        fnv_mix_u64(&mut h, m.velocity.z.to_bits());
+        fnv_mix_u64(&mut h, u64::from(m.health.to_bits()));
+        fnv_mix_u64(&mut h, m.age as u64);
+        fnv_mix_u64(&mut h, m.random.state());
+        fnv_mix_u64(&mut h, u64::from(m.removed));
+        item_hashes.push(h);
+    }
+    for d in game.dropped.iter() {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        fnv_mix_u64(&mut h, 2);
+        fnv_mix_bytes(&mut h, d.stack.item.as_bytes());
+        fnv_mix_u64(&mut h, u64::from(d.stack.count));
+        fnv_mix_u64(&mut h, d.position.x.to_bits());
+        fnv_mix_u64(&mut h, d.position.y.to_bits());
+        fnv_mix_u64(&mut h, d.position.z.to_bits());
+        fnv_mix_u64(&mut h, d.ticks as u64);
+        fnv_mix_u64(&mut h, d.age as u64);
+        fnv_mix_u64(&mut h, d.random.state());
+        item_hashes.push(h);
+    }
+    for t in game.tnts.iter() {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        fnv_mix_u64(&mut h, 3);
+        fnv_mix_u64(&mut h, t.position.x.to_bits());
+        fnv_mix_u64(&mut h, t.position.y.to_bits());
+        fnv_mix_u64(&mut h, t.position.z.to_bits());
+        fnv_mix_u64(&mut h, t.velocity.x.to_bits());
+        fnv_mix_u64(&mut h, t.velocity.y.to_bits());
+        fnv_mix_u64(&mut h, t.velocity.z.to_bits());
+        fnv_mix_u64(&mut h, t.fuse as u64);
+        item_hashes.push(h);
+    }
+    item_hashes.sort_unstable();
+    let mut out: u64 = 0xcbf2_9ce4_8422_2325;
+    for sig in item_hashes {
+        fnv_mix_u64(&mut out, sig);
+    }
+    format!("{out:016x}")
+}
+
 pub fn handle_bench_subcommand() -> String {
     let bench = with_state(|st| st.last_benchmark);
     match bench {
@@ -143,6 +207,7 @@ pub fn report_status_json(game: &Game<'_>) -> String {
             .collect()
     });
 
+    let entities_digest = server_entities_digest(game);
     serde_json::to_string_pretty(&serde_json::json!({
         "rreturn_version": MOD_VERSION,
         "has_checkpoint": has_cp,
@@ -150,6 +215,17 @@ pub fn report_status_json(game: &Game<'_>) -> String {
         "current_slot": current_slot,
         "game_time": now,
         "day_time": game.world.day_time,
+        "level_rng": game.world.random.state(),
+        "level_rng_gaussian": game.world.random.cached_gaussian().map(f64::to_bits),
+        "random_tick_value": game.block_ticks.random_tick_value,
+        "loaded_chunks": game.world.chunks.len(),
+        "lit_chunks": game.world.chunks.values().filter(|c| c.lit).count(),
+        "server_mobs": game.mobs.len(),
+        "server_dropped": game.dropped.len(),
+        "server_tnts": game.tnts.len(),
+        "server_blocks_queued": game.block_ticks.blocks.all_queued().count(),
+        "server_fluids_queued": game.block_ticks.fluids.all_queued().count(),
+        "server_entities_digest": entities_digest,
         "last_save_tick": last_save,
         "checkpoint_age_ticks": if has_cp { now - last_save } else { -1 },
         "anchor_mode": anchor_mode,

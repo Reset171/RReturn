@@ -6,6 +6,7 @@ use std::process::Command;
 const RUNTIME_FILES: &[&str] = &[
     "types.rs",
     "policy.rs",
+    "det_rng.rs",
     "snapshots.rs",
     "ui_snapshot.rs",
     "benchmark.rs",
@@ -110,6 +111,9 @@ use crate::game::end::rreturn_end::EndExt;
 use crate::game::fishing::rreturn_fishing::{GameFishingExt, HookExt};
 use crate::game::lan_menus::rreturn_lan_menus::LanMenusExt;
 use crate::game::mount_menu::rreturn_mount_menu::{MountMenuExt, MountMenuSnapshot};
+use crate::game::ordered_tick::rreturn_ordered::{OrderedExt, OrderedStateSnapshot};
+use crate::game::perspective::rreturn_perspective::PerspectiveExt;
+use crate::game::hand::rreturn_hand::HandExt;
 use crate::game::pointer_capture::rreturn_pointer_capture::PointerCaptureExt;
 use crate::game::potions::rreturn_potions::{PotionStateExt, ThrownPotionsSnapshot};
 use crate::game::recipe_book::rreturn_recipe_book::{RecipeBookExt, RecipeUiSnapshot};
@@ -139,12 +143,12 @@ use horizon_client::{
     keybinds,
     lan::{abilities::PlayerAbilities, guest::SavedBody},
     lang,
-    mobs::Species,
+    mobs::{armadillo, bee, warden, Species},
     mod_list::ModList,
     particles::Particle,
     raid::Raids,
     recipe_book::Settings as RecipeBookSettings,
-    save::{block_entity_encode, item_from_nbt, item_to_nbt, read_dat, write_dat, Level},
+    save::{block_entity_encode, insecure_uuid, item_from_nbt, item_to_nbt, read_dat, write_dat, Level},
     scoreboard::Scoreboard,
     sculk::WardenSpawnTracker,
     stopwatches::Stopwatches,
@@ -157,8 +161,8 @@ use horizon_core::{
     geometry::{Direction, Vec3},
     nbt::{self, Limits as NbtLimits, Tag},
     position::{BlockPos, ChunkPos},
-    random::{LegacyRandom, LevelRandom, RandomSource},
-    ticks::ChunkTicks,
+    random::{EntityRandom, LegacyRandom, LevelRandom, RandomSource},
+    ticks::{ChunkTicks, SavedTick, ScheduledTick, TickPriority, TickTypeId},
 };
 use horizon_world::food::Difficulty;
 use horizon_protocol::{
@@ -176,7 +180,7 @@ use horizon_world::{
     registry::BlockStateId,
 };
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
     fs::{self, File, OpenOptions},
     io::{Cursor, Read, Seek, SeekFrom, Write},

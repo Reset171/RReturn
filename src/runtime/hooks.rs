@@ -4,14 +4,15 @@ use super::super::{
 };
 use super::adaptive::tick_autosave_on_server;
 use super::capture::create_checkpoint_on_server;
+use super::det_rng::*;
 use super::hydration::hydrate_slot_from_disk_on_server;
 use super::load_disk::load_checkpoint_from_disk;
 use super::restore::rollback_checkpoint_on_server;
 use super::restore_client::{apply_client_level_rollback, apply_client_rollback_with_ui};
 use super::scrub::ensure_scrub_pointer_free;
 use super::scrub_hud::{
-    consume_scrub_hud_release, draw_scrub_hud, handle_scrub_hud_mouse_pressed,
-    handle_scrub_hud_mouse_released,
+    consume_scrub_hud_release, draw_scrub_hud, draw_virtual_cursor,
+    handle_scrub_hud_mouse_pressed, handle_scrub_hud_mouse_released,
 };
 use super::settings_ui::{
     close_global_settings_modal, flush_settings_ui_actions, handle_screen_char_typed,
@@ -414,6 +415,7 @@ pub fn handle_key(game: &mut Game<'_>, key: &str, action: mod_api::KeyAction) {
 }
 
 pub fn handle_server_started(game: &mut Game<'_>) {
+    reset_det_rng_for_world(game.level.seed);
     close_global_settings_modal();
     set_active_ui_world_root(&game.world_root);
     load_saved_settings(game);
@@ -473,6 +475,7 @@ pub fn handle_lifecycle(game: &mut Game<'_>, phase: WorldPhase) {
         WorldPhase::WorldCloseFinal
         | WorldPhase::WorldCloseFailed
         | WorldPhase::WorldOpenFailed => {
+            mark_det_rng_server_thread(false);
             clear_active_ui_world_root();
             reset_settings_ui_state();
             set_player_head_skins(Default::default());
@@ -574,6 +577,7 @@ pub fn handle_tick(game: &mut Game<'_>) {
 }
 
 pub fn handle_server_tick(game: &mut Game<'_>, world_running: bool) {
+    mark_det_rng_server_thread(true);
     observe_session_entity_ids(game);
     if game.world.game_time % 20 == 0 || with_state(|st| st.online_players.is_empty()) {
         let players = collect_online_players(game);
@@ -791,13 +795,15 @@ pub fn handle_draw_overlay_hud_post(
     game: &Game<'_>,
     draw: &mut horizon_client::hud::HudBatch,
 ) {
-    if with_state(|st| st.scrub_enabled)
-        && is_scrubbing()
-        && game.screen == super::super::Screen::Playing
+    if !with_state(|st| st.scrub_enabled) || !is_scrubbing() {
+        return;
+    }
+    if game.screen == super::super::Screen::Playing
         && (game.sign_edit.is_some() || game.book.is_some())
     {
         draw_scrub_hud(game, draw);
     }
+    draw_virtual_cursor(game, draw);
 }
 
 pub fn handle_render_gui_post(

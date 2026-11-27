@@ -20,7 +20,7 @@ use horizon_world::{
     nbt::Tag,
     registry::BlockStateId,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone)]
 pub struct DiskTnt {
@@ -89,6 +89,14 @@ pub struct HydratedEntitiesResult {
     pub portals_entities: HashMap<u32, horizon_client::nether_portal::PortalState>,
     pub last_hurt_by_player: HashMap<u32, super::super::combat::PlayerCredit>,
     pub love_cause: HashMap<u32, Option<u32>>,
+    pub died: HashSet<u32>,
+}
+
+fn tag_uuid_i32(tag: &Tag) -> Option<[i32; 4]> {
+    match tag.get("UUID") {
+        Some(Tag::IntArray(v)) if v.len() == 4 => Some([v[0], v[1], v[2], v[3]]),
+        _ => None,
+    }
 }
 
 pub fn hydrate_entities_from_disk(
@@ -98,14 +106,19 @@ pub fn hydrate_entities_from_disk(
     snap: &TimelineSnapshot,
     chunk_keys: &[(i32, i32)],
     meta: Option<&serde_json::Value>,
+    id_stride: u32,
     fresh_cursor: &mut u32,
     slot_orig_to_fresh: &mut HashMap<u32, u32>,
 ) -> HydratedEntitiesResult {
     let mut disk_last_hurt_by_player = HashMap::new();
     let mut disk_love_cause = HashMap::new();
+    let mut disk_died = HashSet::new();
+    let mut has_disk_died = false;
     let mut disk_uuid_to_id: HashMap<[i32; 4], u32> = HashMap::new();
     let mut disk_mob_rt: HashMap<u32, DiskMobRuntime> = HashMap::new();
+    let mut disk_mob_order: HashMap<u32, usize> = HashMap::new();
     let mut disk_item_rt: HashMap<u32, DiskItemRuntime> = HashMap::new();
+    let mut disk_item_order: HashMap<u32, usize> = HashMap::new();
     let mut disk_orb_rt: HashMap<u32, u32> = HashMap::new();
     let mut disk_portals_entities: HashMap<u32, horizon_client::nether_portal::PortalState> =
         HashMap::new();
@@ -144,6 +157,14 @@ pub fn hydrate_entities_from_disk(
                 }
             }
         }
+        if let Some(arr) = rs["died"].as_array() {
+            has_disk_died = true;
+            for row in arr {
+                if let Some(id) = row.as_u64() {
+                    disk_died.insert(id as u32);
+                }
+            }
+        }
         if let Some(arr) = rs["persist_uuids"].as_array() {
             for row in arr {
                 if let Some(a) = row.as_array()
@@ -162,7 +183,7 @@ pub fn hydrate_entities_from_disk(
             }
         }
         if let Some(arr) = rs["mob_runtime"].as_array() {
-            for row in arr {
+            for (idx, row) in arr.iter().enumerate() {
                 if let Some(a) = row.as_array()
                     && a.len() >= 7
                     && let (
@@ -239,6 +260,15 @@ pub fn hydrate_entities_from_disk(
                         .get(19)
                         .and_then(|v| v.as_bool())
                         .unwrap_or(true);
+                    let rng_gaussian = a
+                        .get(20)
+                        .and_then(|v| v.as_u64())
+                        .map(f64::from_bits);
+                    let extra: Option<DiskMobExtra> = a
+                        .get(21)
+                        .filter(|v| !v.is_null())
+                        .and_then(|v| serde_json::from_value(v.clone()).ok());
+                    disk_mob_order.insert(id as u32, idx);
                     disk_mob_rt.insert(
                         id as u32,
                         DiskMobRuntime {
@@ -249,6 +279,7 @@ pub fn hydrate_entities_from_disk(
                             previous_swell: psw as i32,
                             ambient_timer: amb as i32,
                             rng_state,
+                            rng_gaussian,
                             anger,
                             anger_end,
                             anger_stamp,
@@ -261,25 +292,37 @@ pub fn hydrate_entities_from_disk(
                             vector,
                             ints,
                             body_adopted,
+                            extra,
                         },
                     );
                 }
             }
         }
         if let Some(arr) = rs["item_runtime"].as_array() {
-            for row in arr {
+            for (idx, row) in arr.iter().enumerate() {
                 if let Some(a) = row.as_array()
                     && a.len() >= 3
                     && let (Some(id), Some(ticks), Some(bob)) =
                         (a[0].as_u64(), a[1].as_u64(), a[2].as_u64())
                 {
                     let rng_state = a.get(3).and_then(|v| v.as_u64()).unwrap_or(0);
+                    let rng_gaussian = a
+                        .get(4)
+                        .and_then(|v| v.as_u64())
+                        .map(f64::from_bits);
+                    let extra: Option<DiskItemExtra> = a
+                        .get(5)
+                        .filter(|v| !v.is_null())
+                        .and_then(|v| serde_json::from_value(v.clone()).ok());
+                    disk_item_order.insert(id as u32, idx);
                     disk_item_rt.insert(
                         id as u32,
                         DiskItemRuntime {
                             ticks: ticks as u32,
                             bob_offset: f32::from_bits(bob as u32),
                             rng_state,
+                            rng_gaussian,
+                            extra,
                         },
                     );
                 }
@@ -486,20 +529,61 @@ pub fn hydrate_entities_from_disk(
     let saved_breath = std::mem::take(&mut game.breath_clouds);
     let saved_fangs = std::mem::take(&mut game.fangs.list);
     let saved_ominous = std::mem::take(&mut game.ominous_spawners);
+    let saved_died = std::mem::take(&mut game.died);
 
     game.world.game_time = snap.game_time;
     let session_ceiling = session_entity_ceiling();
-    game.next_entity = (*fresh_cursor).max(saved_next_entity).max(snap.next_entity);
+    let base_min = session_ceiling.max(saved_next_entity);
+    let target_snap_next = snap.next_entity.saturating_add(id_stride);
+    let mut used_det_ids: HashSet<u32> = HashSet::new();
+    let mut overflow_tags: HashMap<(i32, i32), Vec<Tag>> = HashMap::new();
+    let mut max_spawned = 0u32;
 
     for &(cx, cz) in chunk_keys {
         let tags = cp_save.load_entities(cx, cz);
-        if !tags.is_empty() {
-            game.world.queue_entity_nbt((cx, cz), tags);
+        for tag in tags {
+            let has_passengers = matches!(
+                tag.get("Passengers"),
+                Some(Tag::List(l)) if !l.is_empty()
+            );
+            let det_id = if !has_passengers {
+                tag_uuid_i32(&tag)
+                    .and_then(|u| disk_uuid_to_id.get(&u).copied())
+                    .filter(|&oid| {
+                        oid > 0
+                            && oid <= snap.next_entity
+                            && oid.checked_add(id_stride).is_some_and(|did| did > base_min)
+                    })
+                    .map(|oid| oid + id_stride)
+                    .filter(|&did| used_det_ids.insert(did))
+            } else {
+                None
+            };
+            if let Some(did) = det_id {
+                game.next_entity = did - 1;
+                game.world.queue_entity_nbt((cx, cz), vec![tag]);
+                game.spawn_loaded_entities();
+                max_spawned = max_spawned.max(game.next_entity);
+            } else {
+                overflow_tags.entry((cx, cz)).or_default().push(tag);
+            }
         }
     }
-    game.spawn_loaded_entities();
 
-    let mut next_fresh = game.next_entity.max(*fresh_cursor);
+    let mut next_fresh = (*fresh_cursor)
+        .max(target_snap_next)
+        .max(base_min)
+        .max(max_spawned);
+    if !overflow_tags.is_empty() {
+        game.next_entity = next_fresh;
+        for (key, tags) in overflow_tags {
+            if !tags.is_empty() {
+                game.world.queue_entity_nbt(key, tags);
+            }
+        }
+        game.spawn_loaded_entities();
+        next_fresh = next_fresh.max(game.next_entity);
+    }
     let mut orig_to_fresh: HashMap<u32, u32> = HashMap::new();
     let mut spawned_to_orig: HashMap<u32, u32> = HashMap::new();
     for (&spawned_id, uuid) in game.persist.uuids.iter() {
@@ -518,10 +602,11 @@ pub fn hydrate_entities_from_disk(
             m.swell = rt.swell;
             m.previous_swell = rt.previous_swell;
             m.ambient_timer = rt.ambient_timer;
-            if rt.rng_state != 0 {
-                m.random = horizon_core::random::EntityRandom::own(LegacyRandom::from_state(
+            if rt.rng_state != 0 || rt.rng_gaussian.is_some() {
+                m.random = horizon_core::random::EntityRandom::own(LegacyRandom::from((
                     rt.rng_state,
-                ));
+                    rt.rng_gaussian,
+                )));
             }
             m.extra.anger = rt.anger;
             m.extra.anger_end = rt.anger_end;
@@ -534,22 +619,45 @@ pub fn hydrate_entities_from_disk(
             m.extra.flag2 = rt.flag2;
             m.extra.vector = rt.vector;
             m.extra.ints = rt.ints;
+            if let Some(extra) = &rt.extra {
+                extra.apply_to_mob(m);
+            }
             if rt.body_adopted {
                 horizon_client::mobs::sulfur_cube::adopt_body(m);
             }
         }
+    }
+    if !disk_mob_order.is_empty() {
+        let mut mobs_vec: Vec<Mob> = game.mobs.drain(..).collect();
+        mobs_vec.sort_by_key(|m| {
+            let rt_id = spawned_to_orig.get(&m.id).copied().unwrap_or(m.id);
+            disk_mob_order.get(&rt_id).copied().unwrap_or(usize::MAX)
+        });
+        game.mobs.extend(mobs_vec);
     }
     for d in game.dropped.iter_mut() {
         let rt_id = spawned_to_orig.get(&d.id).copied().unwrap_or(d.id);
         if let Some(rt) = disk_item_rt.get(&rt_id) {
             d.ticks = rt.ticks;
             d.bob_offset = rt.bob_offset;
-            if rt.rng_state != 0 {
-                d.random = horizon_core::random::EntityRandom::own(LegacyRandom::from_state(
+            if rt.rng_state != 0 || rt.rng_gaussian.is_some() {
+                d.random = horizon_core::random::EntityRandom::own(LegacyRandom::from((
                     rt.rng_state,
-                ));
+                    rt.rng_gaussian,
+                )));
+            }
+            if let Some(extra) = &rt.extra {
+                extra.apply_to_item(d);
             }
         }
+    }
+    if !disk_item_order.is_empty() {
+        let mut drops_vec: Vec<ItemEntity> = game.dropped.drain(..).collect();
+        drops_vec.sort_by_key(|d| {
+            let rt_id = spawned_to_orig.get(&d.id).copied().unwrap_or(d.id);
+            disk_item_order.get(&rt_id).copied().unwrap_or(usize::MAX)
+        });
+        game.dropped.extend(drops_vec);
     }
     for o in game.orbs.iter_mut() {
         let rt_id = spawned_to_orig.get(&o.id).copied().unwrap_or(o.id);
@@ -591,8 +699,16 @@ pub fn hydrate_entities_from_disk(
         if let Some(id) = existing_id {
             orig_to_fresh.insert(tnt_val.id, id);
         } else {
-            next_fresh = next_fresh.saturating_add(1);
-            let fresh_id = next_fresh;
+            let fresh_id = tnt_val
+                .id
+                .checked_add(id_stride)
+                .filter(|&did| {
+                    did > base_min && did <= target_snap_next && used_det_ids.insert(did)
+                })
+                .unwrap_or_else(|| {
+                    next_fresh = next_fresh.saturating_add(1);
+                    next_fresh
+                });
             orig_to_fresh.insert(tnt_val.id, fresh_id);
             game.tnts.push(horizon_gameplay::tnt::PrimedTnt {
                 attachment_lifetime: Default::default(),
@@ -669,20 +785,30 @@ pub fn hydrate_entities_from_disk(
                 ("FallDistance", Tag::Float((fb.fall_distance as f32).to_bits())),
                 ("OnGround", Tag::Byte(if fb.on_ground { 1 } else { 0 })),
             ]);
-            game.next_entity = next_fresh;
+            let try_det = fb
+                .id
+                .checked_add(id_stride)
+                .filter(|&did| {
+                    did > base_min && did <= target_snap_next && used_det_ids.insert(did)
+                });
+            game.next_entity = try_det.map_or(next_fresh, |did| did - 1);
             game.load_falling(tag, None);
             if !game.falling.is_empty() {
                 let last_idx = game.falling.len() - 1;
                 let mut assigned = 0u32;
                 game.falling.update(last_idx, |last| {
-                    if last.id <= next_fresh {
-                        next_fresh = next_fresh.saturating_add(1);
-                        last.id = next_fresh;
+                    if let Some(did) = try_det.filter(|&did| last.id == did) {
+                        assigned = did;
                     } else {
-                        next_fresh = last.id;
+                        if last.id <= next_fresh {
+                            next_fresh = next_fresh.saturating_add(1);
+                            last.id = next_fresh;
+                        } else {
+                            next_fresh = last.id;
+                        }
+                        assigned = last.id;
                     }
                     last.rotation = fb.rot;
-                    assigned = last.id;
                 });
                 next_fresh = next_fresh.max(game.next_entity);
                 if assigned != 0 {
@@ -738,19 +864,29 @@ pub fn hydrate_entities_from_disk(
                 ("Age", Tag::Int(pr.age as i32)),
                 ("inGround", Tag::Byte(if pr.stuck { 1 } else { 0 })),
             ]);
-            game.next_entity = next_fresh;
+            let try_det = pr
+                .id
+                .checked_add(id_stride)
+                .filter(|&did| {
+                    did > base_min && did <= target_snap_next && used_det_ids.insert(did)
+                });
+            game.next_entity = try_det.map_or(next_fresh, |did| did - 1);
             let _ = game.load_listed(&pr.kind, None, None, tag);
             if !game.creatures.projectiles.is_empty() {
                 let last_idx = game.creatures.projectiles.len() - 1;
                 let mut assigned = 0u32;
                 game.creatures.projectiles.update(last_idx, |last| {
-                    if last.id <= next_fresh {
-                        next_fresh = next_fresh.saturating_add(1);
-                        last.id = next_fresh;
+                    if let Some(did) = try_det.filter(|&did| last.id == did) {
+                        assigned = did;
                     } else {
-                        next_fresh = last.id;
+                        if last.id <= next_fresh {
+                            next_fresh = next_fresh.saturating_add(1);
+                            last.id = next_fresh;
+                        } else {
+                            next_fresh = last.id;
+                        }
+                        assigned = last.id;
                     }
-                    assigned = last.id;
                 });
                 next_fresh = next_fresh.max(game.next_entity);
                 if assigned != 0 {
@@ -782,6 +918,8 @@ pub fn hydrate_entities_from_disk(
             map_level_id(id).map(|nid| (nid, parent.and_then(map_level_id)))
         })
         .collect();
+    let remapped_disk_died: Option<HashSet<u32>> = has_disk_died
+        .then(|| disk_died.into_iter().filter_map(map_level_id).collect());
     *fresh_cursor = next_fresh;
     slot_orig_to_fresh.extend(orig_to_fresh);
 
@@ -880,6 +1018,9 @@ pub fn hydrate_entities_from_disk(
     }
     let knot_ids = std::mem::replace(&mut game.knot_ids, saved_knot_ids);
     let persist_mem = std::mem::replace(&mut game.persist, saved_persist);
+    let hydrated_died = std::mem::replace(&mut game.died, saved_died);
+    let remapped_died: HashSet<u32> = remapped_disk_died
+        .unwrap_or_else(|| hydrated_died.into_iter().collect());
     game.tridents = saved_tridents;
     game.rockets = saved_rockets;
     game.breath_clouds = saved_breath;
@@ -887,9 +1028,8 @@ pub fn hydrate_entities_from_disk(
     game.world.loaded_entities = saved_loaded_entities;
     game.world.game_time = saved_game_time;
     game.world.random = saved_random;
-    let advanced_next = next_fresh.max(saved_next_entity);
-    game.next_entity = advanced_next;
-    bump_session_entity_ceiling(advanced_next, dim);
+    game.next_entity = saved_next_entity;
+    let _ = (next_fresh, dim);
 
     HydratedEntitiesResult {
         mobs,
@@ -919,5 +1059,6 @@ pub fn hydrate_entities_from_disk(
         portals_entities: remapped_portals_entities,
         last_hurt_by_player: remapped_last_hurt_by_player,
         love_cause: remapped_love_cause,
+        died: remapped_died,
     }
 }

@@ -915,7 +915,10 @@ pub fn load_slot_from_disk(world_root: &Path, slot: &str) -> Option<TimelineSnap
         world_spawn_angle,
         next_entity,
         ticked_entities_through,
-        ordered_announced: horizon_client::join_seq::JoinSeq::upcoming(),
+        ordered_state: OrderedStateSnapshot {
+            announced: horizon_client::join_seq::JoinSeq::upcoming(),
+            ..Default::default()
+        },
         cat_tick,
         phantom_tick,
         player_extra,
@@ -937,6 +940,7 @@ pub fn load_slot_from_disk(world_root: &Path, slot: &str) -> Option<TimelineSnap
         command_storage: None,
         stopwatches_elapsed: None,
         sound_seed_state: meta["sound_seed_state"].as_u64(),
+        det_rng_uniquifier: meta["det_rng_uniquifier"].as_i64().unwrap_or(0),
         cmd_post_effects,
         guests,
         offline_player_data,

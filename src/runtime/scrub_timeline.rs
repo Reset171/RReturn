@@ -204,6 +204,10 @@ pub struct TickHistoryFrame {
     pub carried: Arc<Option<ItemStack>>,
     pub craft_grid: Arc<Vec<Option<ItemStack>>>,
     pub ender_items: Arc<Vec<Option<ItemStack>>>,
+    pub visible_hands: Arc<[(usize, Option<ItemStack>); 2]>,
+    pub hands_replaced: [bool; 2],
+    pub cursor_pos: [f32; 2],
+    pub pointer_captured: bool,
     pub ui: Arc<ClientUiSnapshot>,
     pub open_container_bes: Option<Arc<Vec<((i32, i32, i32), BlockEntity)>>>,
 }
@@ -519,6 +523,7 @@ pub struct ScrubHistoryRing {
     last_carried: Option<Arc<Option<ItemStack>>>,
     last_craft_grid: Option<Arc<Vec<Option<ItemStack>>>>,
     last_ender_items: Option<Arc<Vec<Option<ItemStack>>>>,
+    last_visible_hands: Option<Arc<[(usize, Option<ItemStack>); 2]>>,
     last_ui: Option<Arc<ClientUiSnapshot>>,
     last_open_bes: Option<Arc<Vec<((i32, i32, i32), BlockEntity)>>>,
 }
@@ -691,6 +696,7 @@ impl ScrubHistoryRing {
             last_carried: None,
             last_craft_grid: None,
             last_ender_items: None,
+            last_visible_hands: None,
             last_ui: None,
             last_open_bes: None,
         }
@@ -734,6 +740,7 @@ impl ScrubHistoryRing {
         self.last_carried = None;
         self.last_craft_grid = None;
         self.last_ender_items = None;
+        self.last_visible_hands = None;
         self.last_ui = None;
         self.last_open_bes = None;
     }
@@ -1007,11 +1014,177 @@ impl ScrubHistoryRing {
         }
     }
 
+    fn sync_reference_chunks(&mut self, game: &Game<'_>, chunks_membership_rev: u64) {
+        self.reference_chunks = (&*game.world.chunks).clone();
+        self.last_world_revision = game.world.revision;
+        self.last_chunks_membership_rev = chunks_membership_rev;
+    }
+
+    fn extract_and_advance_chunk_deltas(
+        &mut self,
+        game: &Game<'_>,
+        chunks_membership_rev: u64,
+    ) -> (
+        Vec<BlockDeltaRecord>,
+        Vec<SectionSwapDelta>,
+        Vec<BiomeDeltaRecord>,
+    ) {
+        let extracted = extract_chunk_deltas(&self.reference_chunks, &game.world.chunks);
+        for (&coord, live_chunk) in game.world.chunks.iter() {
+            if let Some(old_chunk) = self.reference_chunks.get(&coord) {
+                if !Arc::ptr_eq(live_chunk, old_chunk) {
+                    self.reference_chunks.insert(coord, Arc::clone(live_chunk));
+                }
+            } else {
+                self.reference_chunks.insert(coord, Arc::clone(live_chunk));
+            }
+        }
+        if self.reference_chunks.len() != game.world.chunks.len() {
+            self.reference_chunks
+                .retain(|k, _| game.world.chunks.contains_key(k));
+        }
+        self.last_world_revision = game.world.revision;
+        self.last_chunks_membership_rev = chunks_membership_rev;
+        extracted
+    }
+
+    fn merge_chunk_deltas_into_back(
+        &mut self,
+        min_y: i32,
+        deltas: Vec<BlockDeltaRecord>,
+        swaps: Vec<SectionSwapDelta>,
+        biome_deltas: Vec<BiomeDeltaRecord>,
+    ) {
+        let Some(back) = self.frames.back_mut() else {
+            return;
+        };
+        for swap in swaps {
+            if let Some(existing) = back
+                .section_swaps
+                .iter_mut()
+                .find(|s| s.cx == swap.cx && s.cz == swap.cz && s.s_idx == swap.s_idx)
+            {
+                existing.new_section = swap.new_section;
+            } else {
+                // Fold earlier per-block deltas in this section back into old_section so
+                // rewinding past `back` restores the exact pre-frame section state.
+                let mut pre_frame_sec = (*swap.old_section).clone();
+                let mut had_block_deltas = false;
+                back.block_deltas.retain(|d| {
+                    let in_sec = (d.x >> 4) == swap.cx
+                        && (d.z >> 4) == swap.cz
+                        && ((d.y - min_y) >> 4) as usize == swap.s_idx;
+                    if in_sec {
+                        let b_idx = (((d.y & 15) << 8) | ((d.z & 15) << 4) | (d.x & 15)) as usize;
+                        pre_frame_sec.set(b_idx, d.old_state);
+                        had_block_deltas = true;
+                        false
+                    } else {
+                        true
+                    }
+                });
+                let old_section = if had_block_deltas {
+                    Arc::new(pre_frame_sec)
+                } else {
+                    swap.old_section
+                };
+                back.section_swaps.push(SectionSwapDelta {
+                    cx: swap.cx,
+                    cz: swap.cz,
+                    s_idx: swap.s_idx,
+                    old_section,
+                    new_section: swap.new_section,
+                });
+            }
+        }
+        for d in deltas {
+            let cx = d.x >> 4;
+            let cz = d.z >> 4;
+            let s_idx = ((d.y - min_y) >> 4) as usize;
+            if let Some(swap) = back
+                .section_swaps
+                .iter_mut()
+                .find(|s| s.cx == cx && s.cz == cz && s.s_idx == s_idx)
+            {
+                let b_idx = (((d.y & 15) << 8) | ((d.z & 15) << 4) | (d.x & 15)) as usize;
+                Arc::make_mut(&mut swap.new_section).set(b_idx, d.new_state);
+            } else if let Some(existing) = back
+                .block_deltas
+                .iter_mut()
+                .find(|e| e.x == d.x && e.y == d.y && e.z == d.z)
+            {
+                existing.new_state = d.new_state;
+            } else {
+                back.block_deltas.push(d);
+            }
+        }
+        for b in biome_deltas {
+            if let Some(existing) = back
+                .biome_deltas
+                .iter_mut()
+                .find(|s| s.cx == b.cx && s.cz == b.cz && s.s_idx == b.s_idx)
+            {
+                existing.new_section = b.new_section;
+            } else {
+                back.biome_deltas.push(b);
+            }
+        }
+    }
+
+    pub fn flush_pending_deltas_for_scrub_start(&mut self, game: &Game<'_>) {
+        let chunks_membership_rev = game.world.chunks.membership_revision();
+        if self.reference_chunks.is_empty() {
+            self.sync_reference_chunks(game, chunks_membership_rev);
+            return;
+        }
+        if game.world.revision == self.last_world_revision
+            && chunks_membership_rev == self.last_chunks_membership_rev
+        {
+            return;
+        }
+        let (deltas, swaps, biome_deltas) =
+            self.extract_and_advance_chunk_deltas(game, chunks_membership_rev);
+        if deltas.is_empty() && swaps.is_empty() && biome_deltas.is_empty() {
+            return;
+        }
+        let Some(mut delta_frame) = self.frames.back().cloned() else {
+            return;
+        };
+        delta_frame.game_time = game.world.game_time.max(delta_frame.game_time + 1);
+        delta_frame.block_deltas = deltas;
+        delta_frame.section_swaps = swaps;
+        delta_frame.biome_deltas = biome_deltas;
+        delta_frame.sounds.clear();
+        let max_ticks = scrub_max_history_ticks();
+        while self.frames.len() >= max_ticks {
+            if let Some(evicted) = self.frames.pop_front()
+                && matches!(evicted.particles, ParticleFrameRef::Inline(_))
+            {
+                self.unsealed_inline_frames = self.unsealed_inline_frames.saturating_sub(1);
+            }
+        }
+        if matches!(delta_frame.particles, ParticleFrameRef::Inline(_)) {
+            self.unsealed_inline_frames += 1;
+        }
+        self.frames.push_back(delta_frame);
+        self.maybe_seal_client_segment();
+    }
+
     pub fn record_tick(&mut self, game: &mut Game<'_>) {
+        self.record_tick_inner(game, false);
+    }
+
+    pub fn record_initial_tick(&mut self, game: &mut Game<'_>) {
+        if self.frames.is_empty() && with_state(|st| st.scrub_enabled) && !is_scrubbing() {
+            self.record_tick_inner(game, true);
+        }
+    }
+
+    fn record_tick_inner(&mut self, game: &mut Game<'_>, force_frozen: bool) {
         if !with_state(|st| st.scrub_enabled) {
             return;
         }
-        if !game.clock.runs_normally() {
+        if !force_frozen && !game.clock.runs_normally() {
             return;
         }
         let t_client_start = std::time::Instant::now();
@@ -1023,6 +1196,22 @@ impl ScrubHistoryRing {
 
         if let Some(back) = self.frames.back() {
             if now == back.game_time {
+                if self.frames.len() >= 2
+                    && back.dim == game.dim
+                    && (game.world.revision != self.last_world_revision
+                        || chunks_membership_rev != self.last_chunks_membership_rev)
+                {
+                    let (deltas, swaps, biome_deltas) =
+                        self.extract_and_advance_chunk_deltas(game, chunks_membership_rev);
+                    if !deltas.is_empty() || !swaps.is_empty() || !biome_deltas.is_empty() {
+                        self.merge_chunk_deltas_into_back(
+                            game.world.shape.min_y,
+                            deltas,
+                            swaps,
+                            biome_deltas,
+                        );
+                    }
+                }
                 return;
             }
             if now < back.game_time {
@@ -1081,32 +1270,16 @@ impl ScrubHistoryRing {
         let (mut block_deltas, mut section_swaps, mut biome_deltas) =
             (Vec::new(), Vec::new(), Vec::new());
         if self.reference_chunks.is_empty() {
-            self.reference_chunks = (&*game.world.chunks).clone();
-            self.last_world_revision = game.world.revision;
-            self.last_chunks_membership_rev = chunks_membership_rev;
+            self.sync_reference_chunks(game, chunks_membership_rev);
             self.last_rollback_epoch = current_epoch;
         } else if force_extract
             || game.world.revision != self.last_world_revision
             || chunks_membership_rev != self.last_chunks_membership_rev
         {
-            let extracted = extract_chunk_deltas(&self.reference_chunks, &game.world.chunks);
+            let extracted = self.extract_and_advance_chunk_deltas(game, chunks_membership_rev);
             block_deltas = extracted.0;
             section_swaps = extracted.1;
             biome_deltas = extracted.2;
-            for (&coord, live_chunk) in game.world.chunks.iter() {
-                if let Some(old_chunk) = self.reference_chunks.get(&coord) {
-                    if !Arc::ptr_eq(live_chunk, old_chunk) {
-                        self.reference_chunks.insert(coord, Arc::clone(live_chunk));
-                    }
-                } else {
-                    self.reference_chunks.insert(coord, Arc::clone(live_chunk));
-                }
-            }
-            if self.reference_chunks.len() != game.world.chunks.len() {
-                self.reference_chunks.retain(|k, _| game.world.chunks.contains_key(k));
-            }
-            self.last_world_revision = game.world.revision;
-            self.last_chunks_membership_rev = chunks_membership_rev;
         }
         let t_deltas = t_deltas_0.elapsed();
 
@@ -1197,6 +1370,18 @@ impl ScrubHistoryRing {
             self.last_ender_items = Some(Arc::clone(&arc));
             arc
         };
+        let (raw_visible_hands, hands_replaced) = game.rreturn_hand_visual_state();
+        let visible_hands = if let Some(prev) = &self.last_visible_hands
+            && **prev == raw_visible_hands
+        {
+            Arc::clone(prev)
+        } else {
+            let arc = Arc::new(raw_visible_hands);
+            self.last_visible_hands = Some(Arc::clone(&arc));
+            arc
+        };
+        let cursor_pos = [game.cursor.0, game.cursor.1];
+        let pointer_captured = game.rreturn_pointer_captured();
         let live_ui = capture_client_ui_snapshot(game);
         let ui = if let Some(prev) = &self.last_ui
             && **prev == live_ui
@@ -1734,6 +1919,10 @@ impl ScrubHistoryRing {
             carried,
             craft_grid,
             ender_items,
+            visible_hands,
+            hands_replaced,
+            cursor_pos,
+            pointer_captured,
             ui,
             open_container_bes,
         });

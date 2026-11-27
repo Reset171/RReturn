@@ -2,6 +2,7 @@ use super::super::{game_mode::mode_from_id, Game};
 use super::rrtl::{MobPoseRecord, ParticleTickState};
 use super::scrub::ensure_scrub_pointer_free;
 use super::scrub_audio::play_scrub_sounds;
+use super::scrub_hud::set_scrub_virtual_cursor;
 use super::scrub_timeline::{
     EntityPoseRecord, sync_mob_appearance_from_template, with_scrub_ring,
 };
@@ -418,6 +419,10 @@ pub fn apply_interpolated_poses_to_game(game: &mut Game<'_>, target_time: f64) {
         game.inventory = (*chosen_frame.player_inventory).clone();
         game.armor = (*chosen_frame.player_armor).clone();
         game.offhand = (*chosen_frame.player_offhand).clone();
+        game.rreturn_set_hand_visual_state(
+            (*chosen_frame.visible_hands).clone(),
+            chosen_frame.hands_replaced,
+        );
     }
     if scrub_policy.player_ender_chest {
         game.ender_items = (*chosen_frame.ender_items).clone();
@@ -445,6 +450,19 @@ pub fn apply_interpolated_poses_to_game(game: &mut Game<'_>, target_time: f64) {
             true
         }
     });
+    if !chosen_frame.pointer_captured {
+        let vc = if !left_frame.pointer_captured && !right_frame.pointer_captured {
+            [
+                lerp_f32(left_frame.cursor_pos[0], right_frame.cursor_pos[0], alpha),
+                lerp_f32(left_frame.cursor_pos[1], right_frame.cursor_pos[1], alpha),
+            ]
+        } else {
+            chosen_frame.cursor_pos
+        };
+        set_scrub_virtual_cursor(Some(vc));
+    } else {
+        set_scrub_virtual_cursor(None);
+    }
     if ui_changed {
         if scrub_policy.player_inventory || scrub_policy.player_recipe_book || scrub_policy.player_abilities {
             apply_client_ui_exact(
@@ -471,6 +489,9 @@ pub fn apply_interpolated_poses_to_game(game: &mut Game<'_>, target_time: f64) {
                 *dst = src.clone();
             }
         }
+    }
+    if game.rreturn_camera_type() != chosen_frame.ui.perspective {
+        game.rreturn_set_camera_type(chosen_frame.ui.perspective);
     }
     ensure_scrub_pointer_free(game);
     if scrub_policy.block_entities {

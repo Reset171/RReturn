@@ -1,4 +1,5 @@
 use super::super::{Dim, Game};
+use super::det_rng::*;
 use super::hydration_chunks::*;
 use super::hydration_entities::*;
 use super::load_disk::load_slot_from_disk;
@@ -15,11 +16,17 @@ use std::{
     sync::Arc,
 };
 
+/// Congruence stride applied to hydrated disk entity IDs and `next_entity` so
+/// periodic engine checks (`% 2, 4, 10, 20, 40, 120, 300, 1200`) stay identical
+/// while preventing ID collisions across loads in the same session.
+const DISK_ID_MOD_STRIDE: u32 = 24_000;
+
 pub fn hydrate_level_from_disk(
     game: &mut Game<'_>,
     slot: &str,
     dim: Dim,
     snap: &TimelineSnapshot,
+    id_stride: u32,
     fresh_cursor: &mut u32,
     slot_orig_to_fresh: &mut HashMap<u32, u32>,
 ) -> Option<LevelSnapshot> {
@@ -61,6 +68,7 @@ pub fn hydrate_level_from_disk(
         snap,
         &chunk_keys,
         meta_val.as_ref(),
+        id_stride,
         fresh_cursor,
         slot_orig_to_fresh,
     );
@@ -69,19 +77,53 @@ pub fn hydrate_level_from_disk(
 
     let hydrated_random = chunks_res
         .level_rng
-        .map(|st| LevelRandom::for_level(LegacyRandom::from_state(st)))
+        .map(|st| LevelRandom::for_level(LegacyRandom::from((st, chunks_res.level_rng_gaussian))))
         .unwrap_or_else(|| game.world.random.clone());
     let hydrated_rtv = chunks_res
         .random_tick_value
         .unwrap_or(game.block_ticks.random_tick_value);
 
     let globals_tag = read_dat(&cp_dir.join("rreturn_globals.dat"));
-    let border_key = match dim {
-        Dim::Overworld => "border_overworld",
-        Dim::Nether => "border_nether",
-        Dim::End => "border_end",
-        Dim::Extra(_) => "border_extra",
+    let (border_key, be_key) = match dim {
+        Dim::Overworld => ("border_overworld", "block_entities_overworld"),
+        Dim::Nether => ("border_nether", "block_entities_nether"),
+        Dim::End => ("border_end", "block_entities_end"),
+        Dim::Extra(_) => ("border_extra", "block_entities_extra"),
     };
+    let mut block_entities = chunks_res.block_entities;
+    if let Some(horizon_core::nbt::Tag::List(be_list)) =
+        globals_tag.as_ref().and_then(|t| t.get(be_key))
+    {
+        let facts = game.res.facts();
+        block_entities.clear();
+        for tag in be_list {
+            let (
+                Some(horizon_core::nbt::Tag::Int(x)),
+                Some(horizon_core::nbt::Tag::Int(y)),
+                Some(horizon_core::nbt::Tag::Int(z)),
+            ) = (tag.get("x"), tag.get("y"), tag.get("z"))
+            else {
+                continue;
+            };
+            let pos = (*x, *y, *z);
+            let block_name = chunks_res
+                .chunks
+                .get(&(pos.0 >> 4, pos.2 >> 4))
+                .map(|c| {
+                    facts
+                        .get(c.block(pos.0 & 15, pos.1, pos.2 & 15))
+                        .name
+                        .as_ref()
+                })
+                .unwrap_or("minecraft:stone");
+            if let Some((decoded_pos, be)) =
+                horizon_client::save::decode_block_entity_for_block(tag, block_name)
+                    .or_else(|| horizon_client::save::decode_block_entity(tag))
+            {
+                block_entities.insert(decoded_pos, be);
+            }
+        }
+    }
     let hydrated_border = globals_tag
         .as_ref()
         .and_then(|t| t.get(border_key))
@@ -100,7 +142,7 @@ pub fn hydrate_level_from_disk(
 
     Some(LevelSnapshot {
         chunks: chunks_res.chunks,
-        block_entities: chunks_res.block_entities,
+        block_entities,
         block_names: chunks_res.block_names,
         be_attachments: chunks_res.be_attachments,
         world_attachments: chunks_res.world_attachments,
@@ -152,6 +194,7 @@ pub fn hydrate_level_from_disk(
         raids_mem: None,
         last_hurt_by_player: entities_res.last_hurt_by_player,
         love_cause: entities_res.love_cause,
+        died: entities_res.died,
     })
 }
 
@@ -182,6 +225,8 @@ fn remap_id_keyed_map<V>(
 fn remap_timeline_snapshot_after_hydration(
     snap: &mut TimelineSnapshot,
     orig_to_fresh: &HashMap<u32, u32>,
+    id_stride: u32,
+    target_snap_next: u32,
     fresh_cursor: &mut u32,
     session_ceiling: u32,
 ) {
@@ -189,11 +234,17 @@ fn remap_timeline_snapshot_after_hydration(
         gs.vehicle = gs
             .vehicle
             .and_then(|vid| remap_hydrated_id(vid, orig_to_fresh, session_ceiling));
-        if let Some(hook) = gs.hook.as_mut()
-            && (hook.id <= *fresh_cursor || hook.id <= session_ceiling)
-        {
-            *fresh_cursor = fresh_cursor.saturating_add(1);
-            hook.id = *fresh_cursor;
+        if let Some(hook) = gs.hook.as_mut() {
+            if let Some(shifted) = hook
+                .id
+                .checked_add(id_stride)
+                .filter(|&did| did > session_ceiling && did <= target_snap_next)
+            {
+                hook.id = shifted;
+            } else if hook.id <= *fresh_cursor || hook.id <= session_ceiling {
+                *fresh_cursor = fresh_cursor.saturating_add(1);
+                hook.id = *fresh_cursor;
+            }
         }
     }
     remap_id_keyed_map(&mut snap.portals_entities, orig_to_fresh, session_ceiling);
@@ -218,7 +269,14 @@ fn remap_timeline_snapshot_after_hydration(
         }
     }
 
-    snap.next_entity = snap.next_entity.max(*fresh_cursor);
+    let extra = (*fresh_cursor).saturating_sub(target_snap_next);
+    let aligned_next = if extra == 0 {
+        target_snap_next
+    } else {
+        target_snap_next.saturating_add(extra.div_ceil(DISK_ID_MOD_STRIDE) * DISK_ID_MOD_STRIDE)
+    };
+    *fresh_cursor = aligned_next;
+    snap.next_entity = snap.next_entity.max(aligned_next);
     snap.ticked_entities_through = snap.ticked_entities_through.max(snap.next_entity);
 }
 
@@ -232,8 +290,16 @@ pub fn hydrate_slot_from_disk_on_server(
     };
 
     observe_session_entity_ids(game);
+    let saved_det_rng = det_rng_raw_state();
     let session_ceiling = session_entity_ceiling();
-    let mut fresh_cursor = session_ceiling.max(game.next_entity).max(snap.next_entity);
+    let min_safe_base = session_ceiling.max(game.next_entity);
+    let id_stride = if min_safe_base == 0 {
+        0
+    } else {
+        (min_safe_base + 1).div_ceil(DISK_ID_MOD_STRIDE) * DISK_ID_MOD_STRIDE
+    };
+    let target_snap_next = snap.next_entity.saturating_add(id_stride);
+    let mut fresh_cursor = target_snap_next.max(min_safe_base);
     let mut slot_orig_to_fresh: HashMap<u32, u32> = HashMap::new();
     let mut any_hydrated = false;
 
@@ -244,6 +310,7 @@ pub fn hydrate_slot_from_disk_on_server(
                 slot,
                 dim,
                 &snap,
+                id_stride,
                 &mut fresh_cursor,
                 &mut slot_orig_to_fresh,
             ) {
@@ -266,11 +333,13 @@ pub fn hydrate_slot_from_disk_on_server(
         remap_timeline_snapshot_after_hydration(
             &mut snap,
             &slot_orig_to_fresh,
+            id_stride,
+            target_snap_next,
             &mut fresh_cursor,
-            session_ceiling,
+            min_safe_base,
         );
-        bump_session_entity_ceiling(snap.next_entity, game.dim);
     }
+    restore_det_rng_raw(saved_det_rng.0, saved_det_rng.1);
 
     let arc = Arc::new(snap);
     set_slot_snapshot(slot, Arc::clone(&arc));

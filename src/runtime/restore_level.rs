@@ -177,6 +177,18 @@ pub fn apply_level_snapshot_in_place(
             for (wx, wy, wz, want) in changed_coords {
                 let _ = game.world.set(wx, wy, wz, BlockStateId(want));
             }
+        } else if is_scrub
+            && policy.blocks
+            && game.lan.as_ref().is_none_or(|h| h.hub.guests.len() <= 1)
+        {
+            game.world.block_log_held.clear();
+            if let Some(log) = game.world.block_log.as_mut() {
+                log.clear();
+            }
+            game.world.bulk_log.clear();
+            if let Some(log) = game.world.light_log.as_mut() {
+                log.clear();
+            }
         }
         bench_accum(Phase::ChunkBlocks, t_blocks);
 
@@ -308,12 +320,6 @@ pub fn apply_level_snapshot_in_place(
         game.random_tick_sections.remove(&key);
         game.portals.sections.remove(&key);
     }
-    if game.tick_chunks.synchronize(&game.world.chunks) {
-        let added = game.tick_chunks.take_added();
-        game.tick_chunks.recycle_added(added);
-    }
-    game.update_chunk_tickets();
-    game.start_ticking_chunks();
 
     if policy.block_ticks || policy.fluid_ticks {
         let mut old_ticks = FxHashMap::default();
@@ -328,6 +334,11 @@ pub fn apply_level_snapshot_in_place(
         }
         game.block_ticks.blocks = Default::default();
         game.block_ticks.fluids = Default::default();
+        game.tick_chunks.clear();
+        if game.tick_chunks.synchronize(&game.world.chunks) {
+            let added = game.tick_chunks.take_added();
+            game.tick_chunks.recycle_added(added);
+        }
 
         let mut snap_chunk_keys: Vec<(i32, i32)> = game.world.chunks.keys().copied().collect();
         snap_chunk_keys.sort_unstable();
@@ -339,31 +350,31 @@ pub fn apply_level_snapshot_in_place(
                 .get(&(cx, cz))
                 .cloned()
                 .unwrap_or_default();
-            let b_to_add = if policy.block_ticks {
-                let mut b = snap_b;
-                b.unpack(snap_game_time);
-                b
-            } else {
-                old_b.clone()
-            };
-            let f_to_add = if policy.fluid_ticks {
-                let mut f = snap_f;
-                f.unpack(snap_game_time);
-                f
-            } else {
-                old_f.clone()
-            };
+            let b_to_add = if policy.block_ticks { snap_b } else { old_b.clone() };
+            let f_to_add = if policy.fluid_ticks { snap_f } else { old_f.clone() };
             if is_scrub
                 && (!chunk_ticks_eq(Some(&old_b), &b_to_add)
                     || !chunk_ticks_eq(Some(&old_f), &f_to_add))
             {
                 scrub_dirty_chunks.insert((cx, cz));
             }
-            let _ = game.block_ticks.add_chunk(cpos, b_to_add, f_to_add);
+            let has_pending = b_to_add.count() > b_to_add.queued().len()
+                || f_to_add.count() > f_to_add.queued().len();
+            if game.block_ticks.add_chunk(cpos, b_to_add, f_to_add).is_ok() && has_pending {
+                game.tick_chunks.wait((cx, cz));
+            }
         }
         game.block_ticks.random_tick_value = snap.random_tick_value;
         game.block_ticks.comparator_outputs = snap.comparator_outputs.clone();
         game.block_ticks.torch_toggles = snap.torch_toggles.clone();
+        game.update_chunk_tickets();
+    } else {
+        if game.tick_chunks.synchronize(&game.world.chunks) {
+            let added = game.tick_chunks.take_added();
+            game.tick_chunks.recycle_added(added);
+        }
+        game.update_chunk_tickets();
+        game.start_ticking_chunks();
     }
 
     if policy.block_events {
@@ -595,7 +606,12 @@ pub fn apply_level_snapshot_in_place(
 
     game.last_hurt_by_player = snap.last_hurt_by_player.clone();
     game.love_cause = snap.love_cause.clone();
-    game.died.clear();
+    if policy.entities_presence {
+        game.died.clear();
+        for &id in &snap.died {
+            game.died.insert(id);
+        }
+    }
     game.combat = Default::default();
     game.guest_combat.clear();
     game.stabbed.clear();

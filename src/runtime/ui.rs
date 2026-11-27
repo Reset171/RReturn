@@ -1,7 +1,8 @@
 use super::super::Game;
 use super::policy::{PlayerPolicyOverrides, PlayerProfileOverrides, RollbackPolicy};
+use super::scrub::{cancel_scrub, is_scrubbing};
 use super::scrub_audio::clear_reverse_audio_cache;
-use super::scrub_server::clear_server_scrub;
+use super::scrub_server::{clear_server_scrub, record_initial_server_tick};
 use super::scrub_timeline::with_scrub_ring_mut;
 use super::storage::{global_settings_path, world_settings_path};
 use super::types::*;
@@ -10,22 +11,32 @@ use std::{fs, path::Path};
 
 pub fn sync_scrub_runtime(game: &mut Game<'_>, enabled: bool) {
     if !enabled {
+        if is_scrubbing() {
+            cancel_scrub(game);
+        }
+        with_state_mut(|st| st.scrub_enabled = false);
         with_scrub_ring_mut(|r| r.clear());
         clear_server_scrub();
         clear_reverse_audio_cache();
         game.audio.capture = None;
         game.audio.record_heard = false;
     } else {
+        with_state_mut(|st| st.scrub_enabled = true);
         if game.audio.capture.is_none() {
             game.audio.capture = Some(Vec::new());
         }
         game.audio.record_heard = true;
+        if !game.world.chunks.is_empty() && game.native_window() {
+            with_scrub_ring_mut(|r| r.record_initial_tick(game));
+        }
     }
     if let Some(server) = &game.integrated {
-        let _ = server.call(move |_| {
+        let _ = server.call(move |srv| {
             with_state_mut(|st| st.scrub_enabled = enabled);
             if !enabled {
                 clear_server_scrub();
+            } else if !srv.world.chunks.is_empty() {
+                record_initial_server_tick(srv);
             }
         });
     }

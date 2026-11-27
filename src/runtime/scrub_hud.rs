@@ -23,6 +23,7 @@ struct ScrubHudState {
     dragging_track: bool,
     pending_action: Option<ScrubHudAction>,
     suppress_next_release: bool,
+    virtual_cursor: Option<[f32; 2]>,
 }
 
 thread_local! {
@@ -402,4 +403,55 @@ pub fn draw_scrub_hud(game: &Game<'_>, draw: &mut HudBatch) {
         st.apply_rect = apply_rect;
         st.cancel_rect = cancel_rect;
     });
+}
+
+pub fn set_scrub_virtual_cursor(pos: Option<[f32; 2]>) {
+    SCRUB_HUD_STATE.with(|c| c.borrow_mut().virtual_cursor = pos);
+}
+
+pub fn get_scrub_virtual_cursor() -> Option<[f32; 2]> {
+    SCRUB_HUD_STATE.with(|c| c.borrow().virtual_cursor)
+}
+
+pub fn take_scrub_virtual_cursor() -> Option<[f32; 2]> {
+    SCRUB_HUD_STATE.with(|c| c.borrow_mut().virtual_cursor.take())
+}
+
+pub fn draw_virtual_cursor(game: &Game<'_>, draw: &mut HudBatch) {
+    let Some([vx, vy]) = get_scrub_virtual_cursor() else {
+        return;
+    };
+    if !vx.is_finite() || !vy.is_finite() {
+        return;
+    }
+    let (gui_w, gui_h) = game.gui_size();
+    let x = vx.clamp(0.0, (gui_w - 1.0).max(0.0)).round();
+    let y = vy.clamp(0.0, (gui_h - 1.0).max(0.0)).round();
+    const ARROW_ROWS: [(f32, f32, f32, f32, f32); 17] = [
+        (0.0, 0.0, 2.0, 0.0, 0.0),
+        (1.0, 0.0, 3.0, 1.0, 1.0),
+        (2.0, 0.0, 4.0, 1.0, 2.0),
+        (3.0, 0.0, 5.0, 1.0, 3.0),
+        (4.0, 0.0, 6.0, 1.0, 4.0),
+        (5.0, 0.0, 7.0, 1.0, 5.0),
+        (6.0, 0.0, 8.0, 1.0, 6.0),
+        (7.0, 0.0, 9.0, 1.0, 7.0),
+        (8.0, 0.0, 10.0, 1.0, 8.0),
+        (9.0, 0.0, 10.0, 1.0, 5.0),
+        (10.0, 0.0, 6.0, 1.0, 3.0),
+        (11.0, 0.0, 3.0, 1.0, 1.0),
+        (11.0, 5.0, 4.0, 6.0, 2.0),
+        (12.0, 0.0, 2.0, 0.0, 0.0),
+        (12.0, 5.0, 4.0, 6.0, 2.0),
+        (13.0, 6.0, 4.0, 7.0, 2.0),
+        (14.0, 7.0, 3.0, 0.0, 0.0),
+    ];
+    const BORDER: u32 = 0xFF0B_0F18;
+    const CORE: u32 = 0xFFF8_FAFC;
+    for &(dy, bx, bw, cx, cw) in &ARROW_ROWS {
+        game.native_fill(draw, [x + bx, y + dy, bw, 1.0], BORDER);
+        if cw > 0.0 {
+            game.native_fill(draw, [x + cx, y + dy, cw, 1.0], CORE);
+        }
+    }
 }

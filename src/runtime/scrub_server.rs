@@ -1,5 +1,6 @@
 use super::super::{Dim, Game};
 use super::capture::snapshot_stopwatches_elapsed;
+use super::det_rng::*;
 use super::rrtl::*;
 use super::scrub_perf::*;
 use super::scrub_server_diff::*;
@@ -540,7 +541,8 @@ impl ServerScrubJournal {
             world_spawn_angle: game.level.world_spawn_angle,
             next_entity: game.next_entity,
             ticked_entities_through: game.ticked_entities_through,
-            ordered_announced: game.ordered.announced,
+            det_rng_uniquifier: current_det_rng_uniquifier(),
+            ordered_state: game.rreturn_capture_ordered_state(),
             cat_tick: game.creatures.cat.next_tick,
             phantom_tick: game.stats.rreturn_phantom_tick(),
             player_extra,
@@ -924,6 +926,7 @@ impl ServerScrubJournal {
                     raids_mem: lrec.raids_mem.as_deref().cloned(),
                     last_hurt_by_player: (*lrec.last_hurt_by_player).clone(),
                     love_cause: (*lrec.love_cause).clone(),
+                    died: (*lrec.died).clone(),
                 },
             );
         }
@@ -965,7 +968,7 @@ impl ServerScrubJournal {
             world_spawn_angle: rec.world_spawn_angle,
             next_entity: rec.next_entity,
             ticked_entities_through: rec.ticked_entities_through,
-            ordered_announced: rec.ordered_announced,
+            ordered_state: rec.ordered_state.clone(),
             cat_tick: rec.cat_tick,
             phantom_tick: rec.phantom_tick,
             player_extra: (*rec.player_extra).clone(),
@@ -987,6 +990,7 @@ impl ServerScrubJournal {
             command_storage: Some((*rec.command_storage).clone()),
             stopwatches_elapsed: Some((*rec.stopwatches_elapsed).clone()),
             sound_seed_state: None,
+            det_rng_uniquifier: rec.det_rng_uniquifier,
             cmd_post_effects: (*rec.cmd_post_effects).clone(),
             guests,
             offline_player_data: HashMap::new(),
@@ -1085,14 +1089,25 @@ pub fn cached_server_scrub_time_range() -> Option<(i64, i64)> {
 }
 
 pub fn record_server_tick(game: &Game<'_>) {
+    record_server_tick_mode(game, false);
+}
+
+pub fn record_initial_server_tick(game: &Game<'_>) {
+    record_server_tick_mode(game, true);
+}
+
+fn record_server_tick_mode(game: &Game<'_>, only_if_empty: bool) {
     if !with_state(|st| st.scrub_enabled) {
         return;
     }
-    if !game.clock.runs_normally() {
+    if !only_if_empty && !game.clock.runs_normally() {
         return;
     }
     SERVER_JOURNAL.with(|cell| {
         let mut j = cell.borrow_mut();
+        if only_if_empty && !j.segments.is_empty() {
+            return;
+        }
         j.record_tick_inner(game);
         update_cached_server_range(j.time_range());
     });

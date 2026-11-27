@@ -1,7 +1,8 @@
 use super::super::{
     Dim, Game,
 };
-use super::persistence::{save_checkpoint_to_disk, save_slot_to_disk};
+use super::det_rng::*;
+use super::persistence::{save_checkpoint_to_disk, save_slot_to_disk_with_facts};
 use super::scrub_perf::*;
 use super::snapshots::*;
 use super::types::*;
@@ -72,8 +73,7 @@ pub fn capture_chunk_ticks(
         let cpos = ChunkPos::new(cx, cz);
         let b = ticks.blocks.chunk(cpos);
         let f = ticks.fluids.chunk(cpos);
-        if b.is_some_and(|t| !t.positions.is_empty()) || f.is_some_and(|t| !t.positions.is_empty())
-        {
+        if b.is_some_and(|t| t.count() > 0) || f.is_some_and(|t| t.count() > 0) {
             out.insert(
                 (cx, cz),
                 (
@@ -293,6 +293,7 @@ fn capture_level_snapshot_opts(game: &Game<'_>, dim: Dim, read_disk_raids: bool)
         raids_mem,
         last_hurt_by_player: game.last_hurt_by_player.clone(),
         love_cause: game.love_cause.clone(),
+        died: game.died.iter().copied().collect(),
     }
 }
 
@@ -469,6 +470,7 @@ fn capture_parked_snapshot_opts(
         raids_mem,
         last_hurt_by_player: HashMap::new(),
         love_cause: HashMap::new(),
+        died: Default::default(),
     }
 }
 
@@ -710,7 +712,7 @@ pub fn capture_timeline_snapshot_in_memory(game: &Game<'_>) -> Arc<TimelineSnaps
         world_spawn_angle: game.level.world_spawn_angle,
         next_entity: game.next_entity,
         ticked_entities_through: game.ticked_entities_through,
-        ordered_announced: game.ordered.announced,
+        ordered_state: game.rreturn_capture_ordered_state(),
         cat_tick: game.creatures.cat.next_tick,
         phantom_tick: game.stats.rreturn_phantom_tick(),
         player_extra: game.level.player_extra.clone(),
@@ -749,6 +751,7 @@ pub fn capture_timeline_snapshot_in_memory(game: &Game<'_>) -> Arc<TimelineSnaps
         command_storage: Some(game.score.storage.clone()),
         stopwatches_elapsed: Some(snapshot_stopwatches_elapsed(&game.score.stopwatches)),
         sound_seed_state: None,
+        det_rng_uniquifier: current_det_rng_uniquifier(),
         cmd_post_effects: game.cmds.post_effects.clone(),
         guests,
         offline_player_data: HashMap::new(),
@@ -903,7 +906,7 @@ pub fn create_slot_checkpoint_on_server(
         world_spawn_angle: game.level.world_spawn_angle,
         next_entity: game.next_entity,
         ticked_entities_through: game.ticked_entities_through,
-        ordered_announced: game.ordered.announced,
+        ordered_state: game.rreturn_capture_ordered_state(),
         cat_tick: game.creatures.cat.next_tick,
         phantom_tick: game.stats.rreturn_phantom_tick(),
         player_extra: game.level.player_extra.clone(),
@@ -942,6 +945,7 @@ pub fn create_slot_checkpoint_on_server(
         command_storage: Some(game.score.storage.clone()),
         stopwatches_elapsed: Some(snapshot_stopwatches_elapsed(&game.score.stopwatches)),
         sound_seed_state: None,
+        det_rng_uniquifier: current_det_rng_uniquifier(),
         cmd_post_effects: game.cmds.post_effects.clone(),
         guests,
         offline_player_data,
@@ -957,7 +961,7 @@ pub fn create_slot_checkpoint_on_server(
     bench_accum(Phase::CaptureGlobals, t_globals);
 
     let t_world_state = std::time::Instant::now();
-    if !save_slot_to_disk(&game.world_root, slot, &timeline) {
+    if !save_slot_to_disk_with_facts(&game.world_root, slot, &timeline, Some(game.res.facts())) {
         let _ = bench_end_and_log();
         return false;
     }

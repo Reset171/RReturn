@@ -452,6 +452,11 @@ fn empty_love_cause() -> Arc<HashMap<u32, Option<u32>>> {
     Arc::clone(E.get_or_init(|| Arc::new(HashMap::new())))
 }
 
+fn empty_died() -> Arc<HashSet<u32>> {
+    static E: OnceLock<Arc<HashSet<u32>>> = OnceLock::new();
+    Arc::clone(E.get_or_init(|| Arc::new(HashSet::new())))
+}
+
 fn empty_command_clocks() -> Arc<BTreeMap<String, (i64, super::super::chat::WorldClock)>> {
     static E: OnceLock<Arc<BTreeMap<String, (i64, super::super::chat::WorldClock)>>> =
         OnceLock::new();
@@ -1294,6 +1299,11 @@ pub fn capture_cow_level_direct(
     } else {
         Arc::new(game.love_cause.clone())
     };
+    let died = if game.died.is_empty() {
+        empty_died()
+    } else {
+        Arc::new(game.died.iter().copied().collect())
+    };
 
     CowLevelRecord {
         chunk_changes,
@@ -1353,6 +1363,7 @@ pub fn capture_cow_level_direct(
         raids_mem,
         last_hurt_by_player,
         love_cause,
+        died,
     }
 }
 
@@ -1773,6 +1784,7 @@ pub fn capture_cow_parked_direct(
         raids_mem,
         last_hurt_by_player: empty_hurt_by_player(),
         love_cause: empty_love_cause(),
+        died: empty_died(),
     }
 }
 

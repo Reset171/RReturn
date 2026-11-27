@@ -17,7 +17,7 @@ use super::snapshots::*;
 use super::storage::*;
 use super::telemetry::*;
 use super::types::*;
-use super::ui::save_current_settings;
+use super::ui::{save_current_settings, sync_scrub_runtime};
 use super::ui_snapshot::*;
 use horizon_protocol::{
     packets::play::{self, Clientbound as C},
@@ -965,66 +965,20 @@ fn handle_scrub_subcommand(game: &mut Game<'_>, args: &[&str], requester: Option
     let sub = args.first().copied().unwrap_or("status");
     match sub {
         "on" | "enable" | "1" | "true" => {
-            with_state_mut(|st| st.scrub_enabled = true);
-            if game.audio.capture.is_none() {
-                game.audio.capture = Some(Vec::new());
-            }
-            game.audio.record_heard = true;
-            if let Some(server) = &game.integrated {
-                let _ = server.call(|_| {
-                    with_state_mut(|st| st.scrub_enabled = true);
-                });
-            }
+            sync_scrub_runtime(game, true);
             save_current_settings(game);
             let state_str = tr("ui.rreturn.on");
             tr_args("command.rreturn.scrub.status", &[&state_str])
         }
         "off" | "disable" | "0" | "false" => {
-            if is_scrubbing() {
-                cancel_scrub(game);
-            }
-            with_state_mut(|st| st.scrub_enabled = false);
-            with_scrub_ring_mut(|r| r.clear());
-            clear_server_scrub();
-            clear_reverse_audio_cache();
-            game.audio.capture = None;
-            game.audio.record_heard = false;
-            if let Some(server) = &game.integrated {
-                let _ = server.call(|_| {
-                    with_state_mut(|st| st.scrub_enabled = false);
-                    clear_server_scrub();
-                });
-            }
+            sync_scrub_runtime(game, false);
             save_current_settings(game);
             let state_str = tr("ui.rreturn.off");
             tr_args("command.rreturn.scrub.status", &[&state_str])
         }
         "toggle" => {
             let next = with_state(|st| !st.scrub_enabled);
-            if !next && is_scrubbing() {
-                cancel_scrub(game);
-            }
-            with_state_mut(|st| st.scrub_enabled = next);
-            if !next {
-                with_scrub_ring_mut(|r| r.clear());
-                clear_server_scrub();
-                clear_reverse_audio_cache();
-                game.audio.capture = None;
-                game.audio.record_heard = false;
-            } else {
-                if game.audio.capture.is_none() {
-                    game.audio.capture = Some(Vec::new());
-                }
-                game.audio.record_heard = true;
-            }
-            if let Some(server) = &game.integrated {
-                let _ = server.call(move |_| {
-                    with_state_mut(|st| st.scrub_enabled = next);
-                    if !next {
-                        clear_server_scrub();
-                    }
-                });
-            }
+            sync_scrub_runtime(game, next);
             save_current_settings(game);
             let state_str = if next {
                 tr("ui.rreturn.on")

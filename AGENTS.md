@@ -65,6 +65,7 @@ Violating any of these breaks `horizon-launcher native-build`:
 - `src/runtime/` — Modular runtime implementation:
   - `types.rs` — `RReturnState`, `AnchorMode`, `RollbackOrigin`, permissions, `mod_chat`, localization.
   - `policy.rs` — `RollbackPolicy` (35 deterministic rollback flags).
+  - `det_rng.rs` — Deterministic server-thread `random_source::entity` / `living_random` PRNG state across save, rollback, and scrub.
   - `snapshots.rs`, `ui_snapshot.rs` — `TimelineSnapshot`, `LevelSnapshot`, `GuestSnapshot`, `ClientBlockSnapshot`, `ClientUiSnapshot` & cursor/menu/chat persistence, `ROLLBACK_EPOCH`.
   - `capture.rs` — In-memory and disk checkpoint capture for active and parked dimensions.
   - `storage.rs` — Slot directories, atomic/incremental copying, pruning of extra disk files.

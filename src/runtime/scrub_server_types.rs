@@ -283,6 +283,7 @@ pub struct CowLevelRecord {
     pub raids_mem: Option<Arc<Raids>>,
     pub last_hurt_by_player: Arc<HashMap<u32, super::super::combat::PlayerCredit>>,
     pub love_cause: Arc<HashMap<u32, Option<u32>>>,
+    pub died: Arc<HashSet<u32>>,
 }
 
 #[derive(Clone)]
@@ -313,7 +314,8 @@ pub struct ServerTickRecord {
     pub world_spawn_angle: [f32; 2],
     pub next_entity: u32,
     pub ticked_entities_through: u32,
-    pub ordered_announced: horizon_client::join_seq::JoinSeq,
+    pub det_rng_uniquifier: i64,
+    pub ordered_state: OrderedStateSnapshot,
     pub cat_tick: i32,
     pub phantom_tick: i32,
     pub player_extra: Arc<Option<Tag>>,

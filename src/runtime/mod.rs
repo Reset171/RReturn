@@ -1,5 +1,6 @@
 pub mod types;
 pub mod policy;
+pub mod det_rng;
 pub mod snapshots;
 pub mod ui_snapshot;
 pub mod benchmark;
@@ -40,6 +41,7 @@ pub mod hooks;
 
 pub use types::*;
 pub use policy::*;
+pub use det_rng::*;
 pub use snapshots::*;
 pub use ui_snapshot::*;
 pub use benchmark::*;

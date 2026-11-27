@@ -5,6 +5,7 @@ use super::super::{
 };
 use super::policy::RollbackPolicy;
 use super::scrub::is_scrubbing;
+use super::scrub_hud::get_scrub_virtual_cursor;
 use super::storage::slot_dir;
 use super::types::*;
 use horizon_client::{
@@ -70,6 +71,7 @@ pub struct ClientUiSnapshot {
     pub book: Option<BookScreenSnapshot>,
     pub command_block: Option<CommandBlockUiSnapshot>,
     pub gamemode_switcher_selected: Option<i32>,
+    pub perspective: u8,
 }
 
 #[derive(Default)]
@@ -422,6 +424,7 @@ pub fn capture_client_ui_snapshot(game: &Game<'_>) -> ClientUiSnapshot {
         gamemode_switcher_selected: (game.screen == Screen::GameModeSwitcher)
             .then(|| game.gamemode_switcher.as_ref().map(|s| s.selected.id()))
             .flatten(),
+        perspective: game.rreturn_camera_type(),
     }
 }
 
@@ -710,6 +713,7 @@ fn ui_snapshot_to_json(s: &ClientUiSnapshot) -> serde_json::Value {
         "book": book,
         "command_block": cb,
         "gamemode_switcher_selected": s.gamemode_switcher_selected,
+        "perspective": s.perspective,
     })
 }
 
@@ -899,6 +903,7 @@ fn ui_snapshot_from_json(v: &serde_json::Value) -> Option<ClientUiSnapshot> {
         book,
         command_block,
         gamemode_switcher_selected: v["gamemode_switcher_selected"].as_i64().map(|x| x as i32),
+        perspective: v["perspective"].as_u64().map(|x| (x as u8).min(2)).unwrap_or(0),
     })
 }
 
@@ -1099,6 +1104,7 @@ pub fn apply_client_ui_exact(
     if ui.screen != "game_mode_switcher" {
         game.gamemode_switcher = None;
     }
+    game.rreturn_set_camera_type(ui.perspective);
 
     match ui.screen.as_str() {
         "creative" => {
@@ -1349,6 +1355,10 @@ pub fn restore_client_ui_on_rollback(
         game.set_mode_id(gm);
     }
     apply_client_ui_exact(game, ui, restore_items, restore_recipe_book, false);
+    if restore_items {
+        game.rreturn_sync_hands_to_inventory();
+        game.rreturn_sync_creative_cache();
+    }
 }
 
 pub fn ui_state_json(game: &Game<'_>) -> serde_json::Value {
@@ -1376,7 +1386,7 @@ pub fn ui_state_json(game: &Game<'_>) -> serde_json::Value {
             (oy + 18.0 + 8.0).round() as i32
         ]);
     }
-    serde_json::json!({
+    let mut out = serde_json::json!({
         "screen": s.screen,
         "creative_tab": s.creative_tab_id,
         "creative_selected": s.creative_selected,
@@ -1456,5 +1466,28 @@ pub fn ui_state_json(game: &Game<'_>) -> serde_json::Value {
         "text_input_focused": is_text_input_focused(game),
         "pointer_captured": game.rreturn_pointer_captured(),
         "scrubbing": is_scrubbing(),
-    })
+    });
+    if let Some(map) = out.as_object_mut() {
+        let (vis_hands, _) = game.rreturn_hand_visual_state();
+        map.insert("perspective".into(), serde_json::json!(s.perspective));
+        map.insert(
+            "perspective_name".into(),
+            serde_json::json!(match s.perspective {
+                1 => "third_person_back",
+                2 => "third_person_front",
+                _ => "first_person",
+            }),
+        );
+        map.insert("cursor".into(), serde_json::json!([game.cursor.0, game.cursor.1]));
+        map.insert("virtual_cursor".into(), serde_json::json!(get_scrub_virtual_cursor()));
+        map.insert(
+            "visible_main_hand".into(),
+            serde_json::json!(vis_hands[0].1.as_ref().map(|st| st.item.to_string())),
+        );
+        map.insert(
+            "visible_off_hand".into(),
+            serde_json::json!(vis_hands[1].1.as_ref().map(|st| st.item.to_string())),
+        );
+    }
+    out
 }
